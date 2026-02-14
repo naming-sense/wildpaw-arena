@@ -6,6 +6,7 @@ add_executable(wildpaw-room
   src/snapshot_builder.cpp
   src/interest_manager.cpp
   src/wire_json.cpp
+  src/wire_binary.cpp
 )
 
 target_include_directories(wildpaw-room

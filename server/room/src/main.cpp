@@ -14,12 +14,14 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "room/interest_manager.hpp"
 #include "room/room_session.hpp"
 #include "room/room_simulation.hpp"
 #include "room/snapshot_builder.hpp"
+#include "room/wire_binary.hpp"
 #include "room/wire_json.hpp"
 
 namespace beast = boost::beast;
@@ -74,7 +76,9 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
         reliability_(playerId) {}
 
   void start();
-  void send(std::string message);
+
+  void sendText(std::string message);
+  void sendBinary(std::vector<std::uint8_t> payload);
 
   void noteClientEnvelope(const wildpaw::room::wire::EnvelopeMeta& meta) {
     reliability_.onClientPacket(meta.seq, meta.ack, meta.ackBits);
@@ -83,19 +87,30 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
   [[nodiscard]] wildpaw::room::wire::EnvelopeMeta nextEnvelopeMeta() {
     const std::uint32_t seq = reliability_.nextServerSequence();
     const auto& ackState = reliability_.outboundAckState();
-    return {.seq = seq, .ack = ackState.ack, .ackBits = ackState.ackBits};
+
+    wildpaw::room::wire::EnvelopeMeta meta;
+    meta.seq = seq;
+    meta.ack = ackState.ack;
+    meta.ackBits = ackState.ackBits;
+    return meta;
   }
 
   [[nodiscard]] std::uint32_t playerId() const { return playerId_; }
 
  private:
+  struct OutboundMessage {
+    bool isText{true};
+    std::string textPayload;
+    std::vector<std::uint8_t> binaryPayload;
+  };
+
   void doRead();
   void doWrite();
   void onClosed(const beast::error_code& ec);
 
   websocket::stream<beast::tcp_stream> ws_;
   beast::flat_buffer readBuffer_;
-  std::deque<std::string> writeQueue_;
+  std::deque<OutboundMessage> writeQueue_;
 
   RoomServer& server_;
   std::uint32_t playerId_{0};
@@ -147,12 +162,12 @@ class RoomServer {
     sessions_[playerId] = session;
     simulation_.addPlayer(playerId);
 
-    session->send(wildpaw::room::wire::encodeWelcome(
+    session->sendText(wildpaw::room::wire::encodeWelcome(
         playerId, simulation_.tickRate(), simulation_.currentTick(),
         session->nextEnvelopeMeta()));
 
     const auto base = simulation_.snapshot();
-    session->send(wildpaw::room::wire::encodeSnapshotBase(
+    session->sendText(wildpaw::room::wire::encodeSnapshotBase(
         base, unixTimeMs(), session->nextEnvelopeMeta()));
 
     std::cout << "[room] player connected: " << playerId
@@ -167,7 +182,7 @@ class RoomServer {
 
     const auto envelopeType = wildpaw::room::wire::extractEnvelopeType(raw);
     if (!envelopeType.has_value()) {
-      session->send(wildpaw::room::wire::encodeEvent(
+      session->sendText(wildpaw::room::wire::encodeEvent(
           "warn", "invalid-envelope", session->nextEnvelopeMeta()));
       return;
     }
@@ -180,15 +195,16 @@ class RoomServer {
     if (*envelopeType == "C2S_INPUT") {
       const auto inputFrame = wildpaw::room::wire::decodeInputEnvelope(raw);
       if (!inputFrame.has_value()) {
-        session->send(wildpaw::room::wire::encodeEvent(
+        session->sendText(wildpaw::room::wire::encodeEvent(
             "warn", "invalid-input-payload", session->nextEnvelopeMeta()));
         return;
       }
 
       // 구형 클라이언트(메타 없는 경우) 호환: seq를 inputSeq로 대체.
       if (!envelopeMeta.has_value()) {
-        session->noteClientEnvelope(
-            {.seq = inputFrame->inputSeq, .ack = 0, .ackBits = 0});
+        wildpaw::room::wire::EnvelopeMeta fallbackMeta;
+        fallbackMeta.seq = inputFrame->inputSeq;
+        session->noteClientEnvelope(fallbackMeta);
       }
 
       simulation_.pushInput(playerId, *inputFrame);
@@ -196,19 +212,19 @@ class RoomServer {
     }
 
     if (*envelopeType == "C2S_HELLO") {
-      session->send(wildpaw::room::wire::encodeWelcome(
+      session->sendText(wildpaw::room::wire::encodeWelcome(
           playerId, simulation_.tickRate(), simulation_.currentTick(),
           session->nextEnvelopeMeta()));
       return;
     }
 
     if (*envelopeType == "C2S_PING") {
-      session->send(wildpaw::room::wire::encodeEvent(
+      session->sendText(wildpaw::room::wire::encodeEvent(
           "pong", "ok", session->nextEnvelopeMeta()));
       return;
     }
 
-    session->send(wildpaw::room::wire::encodeEvent(
+    session->sendText(wildpaw::room::wire::encodeEvent(
         "warn", "unsupported-message-type", session->nextEnvelopeMeta()));
   }
 
@@ -273,9 +289,10 @@ class RoomServer {
             continue;
           }
 
-          session->send(wildpaw::room::wire::encodeSnapshotDelta(
-              deltaSnapshot, serverTimeMs, visibleChanged,
-              session->nextEnvelopeMeta()));
+          const auto meta = session->nextEnvelopeMeta();
+          auto payload = wildpaw::room::wire::encodeSnapshotDeltaBinary(
+              deltaSnapshot, serverTimeMs, visibleChanged, meta);
+          session->sendBinary(std::move(payload));
         }
       }
 
@@ -309,7 +326,7 @@ void WsSession::start() {
       websocket::stream_base::timeout::suggested(beast::role_type::server));
   ws_.set_option(websocket::stream_base::decorator(
       [](websocket::response_type& response) {
-        response.set(beast::http::field::server, "wildpaw-room/0.3");
+        response.set(beast::http::field::server, "wildpaw-room/0.4");
       }));
   ws_.text(true);
 
@@ -333,6 +350,14 @@ void WsSession::doRead() {
       return;
     }
 
+    if (!self->ws_.got_text()) {
+      self->readBuffer_.consume(self->readBuffer_.size());
+      self->sendText(wildpaw::room::wire::encodeEvent(
+          "warn", "binary-c2s-not-supported", self->nextEnvelopeMeta()));
+      self->doRead();
+      return;
+    }
+
     const std::string payload = beast::buffers_to_string(self->readBuffer_.data());
     self->readBuffer_.consume(self->readBuffer_.size());
 
@@ -341,12 +366,33 @@ void WsSession::doRead() {
   });
 }
 
-void WsSession::send(std::string message) {
+void WsSession::sendText(std::string message) {
   auto self = shared_from_this();
   net::post(ws_.get_executor(),
             [self, message = std::move(message)]() mutable {
               const bool writing = !self->writeQueue_.empty();
-              self->writeQueue_.push_back(std::move(message));
+
+              OutboundMessage outbound;
+              outbound.isText = true;
+              outbound.textPayload = std::move(message);
+              self->writeQueue_.push_back(std::move(outbound));
+
+              if (!writing) {
+                self->doWrite();
+              }
+            });
+}
+
+void WsSession::sendBinary(std::vector<std::uint8_t> payload) {
+  auto self = shared_from_this();
+  net::post(ws_.get_executor(),
+            [self, payload = std::move(payload)]() mutable {
+              const bool writing = !self->writeQueue_.empty();
+
+              OutboundMessage outbound;
+              outbound.isText = false;
+              outbound.binaryPayload = std::move(payload);
+              self->writeQueue_.push_back(std::move(outbound));
 
               if (!writing) {
                 self->doWrite();
@@ -356,7 +402,27 @@ void WsSession::send(std::string message) {
 
 void WsSession::doWrite() {
   auto self = shared_from_this();
-  ws_.async_write(net::buffer(writeQueue_.front()),
+  auto& front = writeQueue_.front();
+
+  ws_.text(front.isText);
+
+  if (front.isText) {
+    ws_.async_write(net::buffer(front.textPayload),
+                    [self](beast::error_code ec, std::size_t) {
+                      if (ec) {
+                        self->onClosed(ec);
+                        return;
+                      }
+
+                      self->writeQueue_.pop_front();
+                      if (!self->writeQueue_.empty()) {
+                        self->doWrite();
+                      }
+                    });
+    return;
+  }
+
+  ws_.async_write(net::buffer(front.binaryPayload),
                   [self](beast::error_code ec, std::size_t) {
                     if (ec) {
                       self->onClosed(ec);
