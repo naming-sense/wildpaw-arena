@@ -12,6 +12,9 @@ export interface InputFrame {
   moveY: -1 | 0 | 1;
   fire: boolean;
   aimRadian: number;
+  skillQ?: boolean;
+  skillE?: boolean;
+  skillR?: boolean;
 }
 
 export interface PlayerSnapshot {

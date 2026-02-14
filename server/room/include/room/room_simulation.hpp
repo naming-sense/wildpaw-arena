@@ -13,6 +13,26 @@ struct Vec2 {
   float y{0.0f};
 };
 
+enum class SkillSlot : std::uint8_t {
+  None = 0,
+  Q,
+  E,
+  R,
+};
+
+enum class CombatEventType : std::uint8_t {
+  ShotFired = 0,
+  SkillCast,
+  DamageApplied,
+  Knockout,
+};
+
+enum class ProjectilePhase : std::uint8_t {
+  Spawn = 0,
+  Hit,
+  Despawn,
+};
+
 struct PlayerState {
   std::uint32_t playerId{0};
   Vec2 position{};
@@ -20,6 +40,27 @@ struct PlayerState {
   std::uint16_t hp{100};
   bool alive{true};
   std::uint32_t lastProcessedInputSeq{0};
+};
+
+struct CombatEvent {
+  CombatEventType type{CombatEventType::ShotFired};
+  std::uint32_t sourcePlayerId{0};
+  std::uint32_t targetPlayerId{0};
+  SkillSlot skillSlot{SkillSlot::None};
+  std::uint16_t damage{0};
+  bool critical{false};
+  std::uint32_t serverTick{0};
+  Vec2 position{};
+};
+
+struct ProjectileEvent {
+  std::uint32_t projectileId{0};
+  std::uint32_t ownerPlayerId{0};
+  std::uint32_t targetPlayerId{0};
+  ProjectilePhase phase{ProjectilePhase::Spawn};
+  std::uint32_t serverTick{0};
+  Vec2 position{};
+  Vec2 velocity{};
 };
 
 struct WorldSnapshot {
@@ -38,6 +79,9 @@ class RoomSimulation {
   WorldSnapshot tick();
   [[nodiscard]] WorldSnapshot snapshot() const;
 
+  std::vector<CombatEvent> drainCombatEvents();
+  std::vector<ProjectileEvent> drainProjectileEvents();
+
   [[nodiscard]] std::uint32_t tickRate() const { return tickRate_; }
   [[nodiscard]] std::uint32_t currentTick() const { return tick_; }
 
@@ -49,10 +93,16 @@ class RoomSimulation {
 
   std::uint32_t tickRate_{30};
   std::uint32_t tick_{0};
+  std::uint32_t nextProjectileId_{1};
 
   InputBuffer inputBuffer_;
   std::unordered_map<std::uint32_t, PlayerState> players_;
   std::unordered_map<std::uint32_t, InputFrame> frameInputs_;
+  std::unordered_map<std::uint32_t, InputFrame> previousFrameInputs_;
+  std::unordered_map<std::uint32_t, std::uint32_t> lastFireTick_;
+
+  std::vector<CombatEvent> pendingCombatEvents_;
+  std::vector<ProjectileEvent> pendingProjectileEvents_;
 };
 
 }  // namespace wildpaw::room

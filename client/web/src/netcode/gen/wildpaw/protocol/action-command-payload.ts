@@ -2,22 +2,22 @@
 
 import * as flatbuffers from 'flatbuffers';
 
-export class InputPayload {
+export class ActionCommandPayload {
   bb: flatbuffers.ByteBuffer|null = null;
   bb_pos = 0;
-  __init(i:number, bb:flatbuffers.ByteBuffer):InputPayload {
+  __init(i:number, bb:flatbuffers.ByteBuffer):ActionCommandPayload {
   this.bb_pos = i;
   this.bb = bb;
   return this;
 }
 
-static getRootAsInputPayload(bb:flatbuffers.ByteBuffer, obj?:InputPayload):InputPayload {
-  return (obj || new InputPayload()).__init(bb.readInt32(bb.position()) + bb.position(), bb);
+static getRootAsActionCommandPayload(bb:flatbuffers.ByteBuffer, obj?:ActionCommandPayload):ActionCommandPayload {
+  return (obj || new ActionCommandPayload()).__init(bb.readInt32(bb.position()) + bb.position(), bb);
 }
 
-static getSizePrefixedRootAsInputPayload(bb:flatbuffers.ByteBuffer, obj?:InputPayload):InputPayload {
+static getSizePrefixedRootAsActionCommandPayload(bb:flatbuffers.ByteBuffer, obj?:ActionCommandPayload):ActionCommandPayload {
   bb.setPosition(bb.position() + flatbuffers.SIZE_PREFIX_LENGTH);
-  return (obj || new InputPayload()).__init(bb.readInt32(bb.position()) + bb.position(), bb);
+  return (obj || new ActionCommandPayload()).__init(bb.readInt32(bb.position()) + bb.position(), bb);
 }
 
 inputSeq():number {
@@ -60,7 +60,7 @@ skillR():boolean {
   return offset ? !!this.bb!.readInt8(this.bb_pos + offset) : false;
 }
 
-static startInputPayload(builder:flatbuffers.Builder) {
+static startActionCommandPayload(builder:flatbuffers.Builder) {
   builder.startObject(8);
 }
 
@@ -96,21 +96,21 @@ static addSkillR(builder:flatbuffers.Builder, skillR:boolean) {
   builder.addFieldInt8(7, +skillR, +false);
 }
 
-static endInputPayload(builder:flatbuffers.Builder):flatbuffers.Offset {
+static endActionCommandPayload(builder:flatbuffers.Builder):flatbuffers.Offset {
   const offset = builder.endObject();
   return offset;
 }
 
-static createInputPayload(builder:flatbuffers.Builder, inputSeq:number, moveX:number, moveY:number, fire:boolean, aimRadian:number, skillQ:boolean, skillE:boolean, skillR:boolean):flatbuffers.Offset {
-  InputPayload.startInputPayload(builder);
-  InputPayload.addInputSeq(builder, inputSeq);
-  InputPayload.addMoveX(builder, moveX);
-  InputPayload.addMoveY(builder, moveY);
-  InputPayload.addFire(builder, fire);
-  InputPayload.addAimRadian(builder, aimRadian);
-  InputPayload.addSkillQ(builder, skillQ);
-  InputPayload.addSkillE(builder, skillE);
-  InputPayload.addSkillR(builder, skillR);
-  return InputPayload.endInputPayload(builder);
+static createActionCommandPayload(builder:flatbuffers.Builder, inputSeq:number, moveX:number, moveY:number, fire:boolean, aimRadian:number, skillQ:boolean, skillE:boolean, skillR:boolean):flatbuffers.Offset {
+  ActionCommandPayload.startActionCommandPayload(builder);
+  ActionCommandPayload.addInputSeq(builder, inputSeq);
+  ActionCommandPayload.addMoveX(builder, moveX);
+  ActionCommandPayload.addMoveY(builder, moveY);
+  ActionCommandPayload.addFire(builder, fire);
+  ActionCommandPayload.addAimRadian(builder, aimRadian);
+  ActionCommandPayload.addSkillQ(builder, skillQ);
+  ActionCommandPayload.addSkillE(builder, skillE);
+  ActionCommandPayload.addSkillR(builder, skillR);
+  return ActionCommandPayload.endActionCommandPayload(builder);
 }
 }

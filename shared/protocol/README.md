@@ -32,8 +32,11 @@ flatc --ts -o client/web/src/netcode/gen shared/protocol/fbs/wildpaw_protocol.fb
 
 `MessagePayload`에는 현재 아래 타입이 포함됩니다.
 - `HelloPayload`
-- `InputPayload`
+- `InputPayload` (legacy-compat)
+- `ActionCommandPayload` (권장 C2S 입력)
 - `PingPayload`
 - `WelcomePayload`
 - `SnapshotPayload`
+- `CombatEventPayload`
+- `ProjectileEventPayload`
 - `EventPayload`

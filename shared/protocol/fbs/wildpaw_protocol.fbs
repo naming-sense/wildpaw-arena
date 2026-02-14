@@ -5,6 +5,26 @@ enum SnapshotKind : ubyte {
   Delta = 1,
 }
 
+enum SkillSlot : ubyte {
+  None = 0,
+  Q = 1,
+  E = 2,
+  R = 3,
+}
+
+enum CombatEventType : ubyte {
+  ShotFired = 0,
+  SkillCast = 1,
+  DamageApplied = 2,
+  Knockout = 3,
+}
+
+enum ProjectilePhase : ubyte {
+  Spawn = 0,
+  Hit = 1,
+  Despawn = 2,
+}
+
 table Vec2 {
   x:float;
   y:float;
@@ -30,6 +50,20 @@ table InputPayload {
   move_y:byte;
   fire:bool;
   aim_radian:float;
+  skill_q:bool;
+  skill_e:bool;
+  skill_r:bool;
+}
+
+table ActionCommandPayload {
+  input_seq:uint;
+  move_x:byte;
+  move_y:byte;
+  fire:bool;
+  aim_radian:float;
+  skill_q:bool;
+  skill_e:bool;
+  skill_r:bool;
 }
 
 table PingPayload {}
@@ -47,6 +81,30 @@ table SnapshotPayload {
   players:[PlayerState];
 }
 
+table CombatEventPayload {
+  event_type:CombatEventType = ShotFired;
+  source_player_id:uint;
+  target_player_id:uint;
+  skill_slot:SkillSlot = None;
+  damage:ushort;
+  is_critical:bool;
+  server_tick:uint;
+  x:float;
+  y:float;
+}
+
+table ProjectileEventPayload {
+  projectile_id:uint;
+  owner_player_id:uint;
+  target_player_id:uint;
+  phase:ProjectilePhase = Spawn;
+  server_tick:uint;
+  x:float;
+  y:float;
+  vx:float;
+  vy:float;
+}
+
 table EventPayload {
   name:string;
   message:string;
@@ -55,9 +113,12 @@ table EventPayload {
 union MessagePayload {
   HelloPayload,
   InputPayload,
+  ActionCommandPayload,
   PingPayload,
   WelcomePayload,
   SnapshotPayload,
+  CombatEventPayload,
+  ProjectileEventPayload,
   EventPayload,
 }
 

@@ -1,8 +1,8 @@
 import * as flatbuffers from "flatbuffers";
 
+import { ActionCommandPayload } from "../src/netcode/gen/wildpaw/protocol/action-command-payload";
 import { Envelope } from "../src/netcode/gen/wildpaw/protocol/envelope";
 import { HelloPayload } from "../src/netcode/gen/wildpaw/protocol/hello-payload";
-import { InputPayload } from "../src/netcode/gen/wildpaw/protocol/input-payload";
 import { MessagePayload } from "../src/netcode/gen/wildpaw/protocol/message-payload";
 import { SnapshotPayload } from "../src/netcode/gen/wildpaw/protocol/snapshot-payload";
 
@@ -104,13 +104,23 @@ function buildInputFrame(
   inputSeq: number,
 ): Uint8Array {
   const builder = new flatbuffers.Builder(96);
-  const payload = InputPayload.createInputPayload(builder, inputSeq, 1, 0, false, 0);
+  const payload = ActionCommandPayload.createActionCommandPayload(
+    builder,
+    inputSeq,
+    1,
+    0,
+    false,
+    0,
+    false,
+    false,
+    false,
+  );
   const envelope = Envelope.createEnvelope(
     builder,
     meta.seq,
     meta.ack,
     meta.ackBits,
-    MessagePayload.InputPayload,
+    MessagePayload.ActionCommandPayload,
     payload,
   );
   Envelope.finishEnvelopeBuffer(builder, envelope);

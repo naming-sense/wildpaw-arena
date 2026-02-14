@@ -28,6 +28,9 @@ struct HelloPayloadBuilder;
 struct InputPayload;
 struct InputPayloadBuilder;
 
+struct ActionCommandPayload;
+struct ActionCommandPayloadBuilder;
+
 struct PingPayload;
 struct PingPayloadBuilder;
 
@@ -36,6 +39,12 @@ struct WelcomePayloadBuilder;
 
 struct SnapshotPayload;
 struct SnapshotPayloadBuilder;
+
+struct CombatEventPayload;
+struct CombatEventPayloadBuilder;
+
+struct ProjectileEventPayload;
+struct ProjectileEventPayloadBuilder;
 
 struct EventPayload;
 struct EventPayloadBuilder;
@@ -73,39 +82,153 @@ inline const char *EnumNameSnapshotKind(SnapshotKind e) {
   return EnumNamesSnapshotKind()[index];
 }
 
+enum class SkillSlot : uint8_t {
+  None = 0,
+  Q = 1,
+  E = 2,
+  R = 3,
+  MIN = None,
+  MAX = R
+};
+
+inline const SkillSlot (&EnumValuesSkillSlot())[4] {
+  static const SkillSlot values[] = {
+    SkillSlot::None,
+    SkillSlot::Q,
+    SkillSlot::E,
+    SkillSlot::R
+  };
+  return values;
+}
+
+inline const char * const *EnumNamesSkillSlot() {
+  static const char * const names[5] = {
+    "None",
+    "Q",
+    "E",
+    "R",
+    nullptr
+  };
+  return names;
+}
+
+inline const char *EnumNameSkillSlot(SkillSlot e) {
+  if (flatbuffers::IsOutRange(e, SkillSlot::None, SkillSlot::R)) return "";
+  const size_t index = static_cast<size_t>(e);
+  return EnumNamesSkillSlot()[index];
+}
+
+enum class CombatEventType : uint8_t {
+  ShotFired = 0,
+  SkillCast = 1,
+  DamageApplied = 2,
+  Knockout = 3,
+  MIN = ShotFired,
+  MAX = Knockout
+};
+
+inline const CombatEventType (&EnumValuesCombatEventType())[4] {
+  static const CombatEventType values[] = {
+    CombatEventType::ShotFired,
+    CombatEventType::SkillCast,
+    CombatEventType::DamageApplied,
+    CombatEventType::Knockout
+  };
+  return values;
+}
+
+inline const char * const *EnumNamesCombatEventType() {
+  static const char * const names[5] = {
+    "ShotFired",
+    "SkillCast",
+    "DamageApplied",
+    "Knockout",
+    nullptr
+  };
+  return names;
+}
+
+inline const char *EnumNameCombatEventType(CombatEventType e) {
+  if (flatbuffers::IsOutRange(e, CombatEventType::ShotFired, CombatEventType::Knockout)) return "";
+  const size_t index = static_cast<size_t>(e);
+  return EnumNamesCombatEventType()[index];
+}
+
+enum class ProjectilePhase : uint8_t {
+  Spawn = 0,
+  Hit = 1,
+  Despawn = 2,
+  MIN = Spawn,
+  MAX = Despawn
+};
+
+inline const ProjectilePhase (&EnumValuesProjectilePhase())[3] {
+  static const ProjectilePhase values[] = {
+    ProjectilePhase::Spawn,
+    ProjectilePhase::Hit,
+    ProjectilePhase::Despawn
+  };
+  return values;
+}
+
+inline const char * const *EnumNamesProjectilePhase() {
+  static const char * const names[4] = {
+    "Spawn",
+    "Hit",
+    "Despawn",
+    nullptr
+  };
+  return names;
+}
+
+inline const char *EnumNameProjectilePhase(ProjectilePhase e) {
+  if (flatbuffers::IsOutRange(e, ProjectilePhase::Spawn, ProjectilePhase::Despawn)) return "";
+  const size_t index = static_cast<size_t>(e);
+  return EnumNamesProjectilePhase()[index];
+}
+
 enum class MessagePayload : uint8_t {
   NONE = 0,
   HelloPayload = 1,
   InputPayload = 2,
-  PingPayload = 3,
-  WelcomePayload = 4,
-  SnapshotPayload = 5,
-  EventPayload = 6,
+  ActionCommandPayload = 3,
+  PingPayload = 4,
+  WelcomePayload = 5,
+  SnapshotPayload = 6,
+  CombatEventPayload = 7,
+  ProjectileEventPayload = 8,
+  EventPayload = 9,
   MIN = NONE,
   MAX = EventPayload
 };
 
-inline const MessagePayload (&EnumValuesMessagePayload())[7] {
+inline const MessagePayload (&EnumValuesMessagePayload())[10] {
   static const MessagePayload values[] = {
     MessagePayload::NONE,
     MessagePayload::HelloPayload,
     MessagePayload::InputPayload,
+    MessagePayload::ActionCommandPayload,
     MessagePayload::PingPayload,
     MessagePayload::WelcomePayload,
     MessagePayload::SnapshotPayload,
+    MessagePayload::CombatEventPayload,
+    MessagePayload::ProjectileEventPayload,
     MessagePayload::EventPayload
   };
   return values;
 }
 
 inline const char * const *EnumNamesMessagePayload() {
-  static const char * const names[8] = {
+  static const char * const names[11] = {
     "NONE",
     "HelloPayload",
     "InputPayload",
+    "ActionCommandPayload",
     "PingPayload",
     "WelcomePayload",
     "SnapshotPayload",
+    "CombatEventPayload",
+    "ProjectileEventPayload",
     "EventPayload",
     nullptr
   };
@@ -130,6 +253,10 @@ template<> struct MessagePayloadTraits<wildpaw::protocol::InputPayload> {
   static const MessagePayload enum_value = MessagePayload::InputPayload;
 };
 
+template<> struct MessagePayloadTraits<wildpaw::protocol::ActionCommandPayload> {
+  static const MessagePayload enum_value = MessagePayload::ActionCommandPayload;
+};
+
 template<> struct MessagePayloadTraits<wildpaw::protocol::PingPayload> {
   static const MessagePayload enum_value = MessagePayload::PingPayload;
 };
@@ -140,6 +267,14 @@ template<> struct MessagePayloadTraits<wildpaw::protocol::WelcomePayload> {
 
 template<> struct MessagePayloadTraits<wildpaw::protocol::SnapshotPayload> {
   static const MessagePayload enum_value = MessagePayload::SnapshotPayload;
+};
+
+template<> struct MessagePayloadTraits<wildpaw::protocol::CombatEventPayload> {
+  static const MessagePayload enum_value = MessagePayload::CombatEventPayload;
+};
+
+template<> struct MessagePayloadTraits<wildpaw::protocol::ProjectileEventPayload> {
+  static const MessagePayload enum_value = MessagePayload::ProjectileEventPayload;
 };
 
 template<> struct MessagePayloadTraits<wildpaw::protocol::EventPayload> {
@@ -365,7 +500,10 @@ struct InputPayload FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
     VT_MOVE_X = 6,
     VT_MOVE_Y = 8,
     VT_FIRE = 10,
-    VT_AIM_RADIAN = 12
+    VT_AIM_RADIAN = 12,
+    VT_SKILL_Q = 14,
+    VT_SKILL_E = 16,
+    VT_SKILL_R = 18
   };
   uint32_t input_seq() const {
     return GetField<uint32_t>(VT_INPUT_SEQ, 0);
@@ -382,6 +520,15 @@ struct InputPayload FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   float aim_radian() const {
     return GetField<float>(VT_AIM_RADIAN, 0.0f);
   }
+  bool skill_q() const {
+    return GetField<uint8_t>(VT_SKILL_Q, 0) != 0;
+  }
+  bool skill_e() const {
+    return GetField<uint8_t>(VT_SKILL_E, 0) != 0;
+  }
+  bool skill_r() const {
+    return GetField<uint8_t>(VT_SKILL_R, 0) != 0;
+  }
   bool Verify(flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyField<uint32_t>(verifier, VT_INPUT_SEQ, 4) &&
@@ -389,6 +536,9 @@ struct InputPayload FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
            VerifyField<int8_t>(verifier, VT_MOVE_Y, 1) &&
            VerifyField<uint8_t>(verifier, VT_FIRE, 1) &&
            VerifyField<float>(verifier, VT_AIM_RADIAN, 4) &&
+           VerifyField<uint8_t>(verifier, VT_SKILL_Q, 1) &&
+           VerifyField<uint8_t>(verifier, VT_SKILL_E, 1) &&
+           VerifyField<uint8_t>(verifier, VT_SKILL_R, 1) &&
            verifier.EndTable();
   }
 };
@@ -412,6 +562,15 @@ struct InputPayloadBuilder {
   void add_aim_radian(float aim_radian) {
     fbb_.AddElement<float>(InputPayload::VT_AIM_RADIAN, aim_radian, 0.0f);
   }
+  void add_skill_q(bool skill_q) {
+    fbb_.AddElement<uint8_t>(InputPayload::VT_SKILL_Q, static_cast<uint8_t>(skill_q), 0);
+  }
+  void add_skill_e(bool skill_e) {
+    fbb_.AddElement<uint8_t>(InputPayload::VT_SKILL_E, static_cast<uint8_t>(skill_e), 0);
+  }
+  void add_skill_r(bool skill_r) {
+    fbb_.AddElement<uint8_t>(InputPayload::VT_SKILL_R, static_cast<uint8_t>(skill_r), 0);
+  }
   explicit InputPayloadBuilder(flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
     start_ = fbb_.StartTable();
@@ -429,10 +588,127 @@ inline flatbuffers::Offset<InputPayload> CreateInputPayload(
     int8_t move_x = 0,
     int8_t move_y = 0,
     bool fire = false,
-    float aim_radian = 0.0f) {
+    float aim_radian = 0.0f,
+    bool skill_q = false,
+    bool skill_e = false,
+    bool skill_r = false) {
   InputPayloadBuilder builder_(_fbb);
   builder_.add_aim_radian(aim_radian);
   builder_.add_input_seq(input_seq);
+  builder_.add_skill_r(skill_r);
+  builder_.add_skill_e(skill_e);
+  builder_.add_skill_q(skill_q);
+  builder_.add_fire(fire);
+  builder_.add_move_y(move_y);
+  builder_.add_move_x(move_x);
+  return builder_.Finish();
+}
+
+struct ActionCommandPayload FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
+  typedef ActionCommandPayloadBuilder Builder;
+  enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
+    VT_INPUT_SEQ = 4,
+    VT_MOVE_X = 6,
+    VT_MOVE_Y = 8,
+    VT_FIRE = 10,
+    VT_AIM_RADIAN = 12,
+    VT_SKILL_Q = 14,
+    VT_SKILL_E = 16,
+    VT_SKILL_R = 18
+  };
+  uint32_t input_seq() const {
+    return GetField<uint32_t>(VT_INPUT_SEQ, 0);
+  }
+  int8_t move_x() const {
+    return GetField<int8_t>(VT_MOVE_X, 0);
+  }
+  int8_t move_y() const {
+    return GetField<int8_t>(VT_MOVE_Y, 0);
+  }
+  bool fire() const {
+    return GetField<uint8_t>(VT_FIRE, 0) != 0;
+  }
+  float aim_radian() const {
+    return GetField<float>(VT_AIM_RADIAN, 0.0f);
+  }
+  bool skill_q() const {
+    return GetField<uint8_t>(VT_SKILL_Q, 0) != 0;
+  }
+  bool skill_e() const {
+    return GetField<uint8_t>(VT_SKILL_E, 0) != 0;
+  }
+  bool skill_r() const {
+    return GetField<uint8_t>(VT_SKILL_R, 0) != 0;
+  }
+  bool Verify(flatbuffers::Verifier &verifier) const {
+    return VerifyTableStart(verifier) &&
+           VerifyField<uint32_t>(verifier, VT_INPUT_SEQ, 4) &&
+           VerifyField<int8_t>(verifier, VT_MOVE_X, 1) &&
+           VerifyField<int8_t>(verifier, VT_MOVE_Y, 1) &&
+           VerifyField<uint8_t>(verifier, VT_FIRE, 1) &&
+           VerifyField<float>(verifier, VT_AIM_RADIAN, 4) &&
+           VerifyField<uint8_t>(verifier, VT_SKILL_Q, 1) &&
+           VerifyField<uint8_t>(verifier, VT_SKILL_E, 1) &&
+           VerifyField<uint8_t>(verifier, VT_SKILL_R, 1) &&
+           verifier.EndTable();
+  }
+};
+
+struct ActionCommandPayloadBuilder {
+  typedef ActionCommandPayload Table;
+  flatbuffers::FlatBufferBuilder &fbb_;
+  flatbuffers::uoffset_t start_;
+  void add_input_seq(uint32_t input_seq) {
+    fbb_.AddElement<uint32_t>(ActionCommandPayload::VT_INPUT_SEQ, input_seq, 0);
+  }
+  void add_move_x(int8_t move_x) {
+    fbb_.AddElement<int8_t>(ActionCommandPayload::VT_MOVE_X, move_x, 0);
+  }
+  void add_move_y(int8_t move_y) {
+    fbb_.AddElement<int8_t>(ActionCommandPayload::VT_MOVE_Y, move_y, 0);
+  }
+  void add_fire(bool fire) {
+    fbb_.AddElement<uint8_t>(ActionCommandPayload::VT_FIRE, static_cast<uint8_t>(fire), 0);
+  }
+  void add_aim_radian(float aim_radian) {
+    fbb_.AddElement<float>(ActionCommandPayload::VT_AIM_RADIAN, aim_radian, 0.0f);
+  }
+  void add_skill_q(bool skill_q) {
+    fbb_.AddElement<uint8_t>(ActionCommandPayload::VT_SKILL_Q, static_cast<uint8_t>(skill_q), 0);
+  }
+  void add_skill_e(bool skill_e) {
+    fbb_.AddElement<uint8_t>(ActionCommandPayload::VT_SKILL_E, static_cast<uint8_t>(skill_e), 0);
+  }
+  void add_skill_r(bool skill_r) {
+    fbb_.AddElement<uint8_t>(ActionCommandPayload::VT_SKILL_R, static_cast<uint8_t>(skill_r), 0);
+  }
+  explicit ActionCommandPayloadBuilder(flatbuffers::FlatBufferBuilder &_fbb)
+        : fbb_(_fbb) {
+    start_ = fbb_.StartTable();
+  }
+  flatbuffers::Offset<ActionCommandPayload> Finish() {
+    const auto end = fbb_.EndTable(start_);
+    auto o = flatbuffers::Offset<ActionCommandPayload>(end);
+    return o;
+  }
+};
+
+inline flatbuffers::Offset<ActionCommandPayload> CreateActionCommandPayload(
+    flatbuffers::FlatBufferBuilder &_fbb,
+    uint32_t input_seq = 0,
+    int8_t move_x = 0,
+    int8_t move_y = 0,
+    bool fire = false,
+    float aim_radian = 0.0f,
+    bool skill_q = false,
+    bool skill_e = false,
+    bool skill_r = false) {
+  ActionCommandPayloadBuilder builder_(_fbb);
+  builder_.add_aim_radian(aim_radian);
+  builder_.add_input_seq(input_seq);
+  builder_.add_skill_r(skill_r);
+  builder_.add_skill_e(skill_e);
+  builder_.add_skill_q(skill_q);
   builder_.add_fire(fire);
   builder_.add_move_y(move_y);
   builder_.add_move_x(move_x);
@@ -617,6 +893,248 @@ inline flatbuffers::Offset<SnapshotPayload> CreateSnapshotPayloadDirect(
       players__);
 }
 
+struct CombatEventPayload FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
+  typedef CombatEventPayloadBuilder Builder;
+  enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
+    VT_EVENT_TYPE = 4,
+    VT_SOURCE_PLAYER_ID = 6,
+    VT_TARGET_PLAYER_ID = 8,
+    VT_SKILL_SLOT = 10,
+    VT_DAMAGE = 12,
+    VT_IS_CRITICAL = 14,
+    VT_SERVER_TICK = 16,
+    VT_X = 18,
+    VT_Y = 20
+  };
+  wildpaw::protocol::CombatEventType event_type() const {
+    return static_cast<wildpaw::protocol::CombatEventType>(GetField<uint8_t>(VT_EVENT_TYPE, 0));
+  }
+  uint32_t source_player_id() const {
+    return GetField<uint32_t>(VT_SOURCE_PLAYER_ID, 0);
+  }
+  uint32_t target_player_id() const {
+    return GetField<uint32_t>(VT_TARGET_PLAYER_ID, 0);
+  }
+  wildpaw::protocol::SkillSlot skill_slot() const {
+    return static_cast<wildpaw::protocol::SkillSlot>(GetField<uint8_t>(VT_SKILL_SLOT, 0));
+  }
+  uint16_t damage() const {
+    return GetField<uint16_t>(VT_DAMAGE, 0);
+  }
+  bool is_critical() const {
+    return GetField<uint8_t>(VT_IS_CRITICAL, 0) != 0;
+  }
+  uint32_t server_tick() const {
+    return GetField<uint32_t>(VT_SERVER_TICK, 0);
+  }
+  float x() const {
+    return GetField<float>(VT_X, 0.0f);
+  }
+  float y() const {
+    return GetField<float>(VT_Y, 0.0f);
+  }
+  bool Verify(flatbuffers::Verifier &verifier) const {
+    return VerifyTableStart(verifier) &&
+           VerifyField<uint8_t>(verifier, VT_EVENT_TYPE, 1) &&
+           VerifyField<uint32_t>(verifier, VT_SOURCE_PLAYER_ID, 4) &&
+           VerifyField<uint32_t>(verifier, VT_TARGET_PLAYER_ID, 4) &&
+           VerifyField<uint8_t>(verifier, VT_SKILL_SLOT, 1) &&
+           VerifyField<uint16_t>(verifier, VT_DAMAGE, 2) &&
+           VerifyField<uint8_t>(verifier, VT_IS_CRITICAL, 1) &&
+           VerifyField<uint32_t>(verifier, VT_SERVER_TICK, 4) &&
+           VerifyField<float>(verifier, VT_X, 4) &&
+           VerifyField<float>(verifier, VT_Y, 4) &&
+           verifier.EndTable();
+  }
+};
+
+struct CombatEventPayloadBuilder {
+  typedef CombatEventPayload Table;
+  flatbuffers::FlatBufferBuilder &fbb_;
+  flatbuffers::uoffset_t start_;
+  void add_event_type(wildpaw::protocol::CombatEventType event_type) {
+    fbb_.AddElement<uint8_t>(CombatEventPayload::VT_EVENT_TYPE, static_cast<uint8_t>(event_type), 0);
+  }
+  void add_source_player_id(uint32_t source_player_id) {
+    fbb_.AddElement<uint32_t>(CombatEventPayload::VT_SOURCE_PLAYER_ID, source_player_id, 0);
+  }
+  void add_target_player_id(uint32_t target_player_id) {
+    fbb_.AddElement<uint32_t>(CombatEventPayload::VT_TARGET_PLAYER_ID, target_player_id, 0);
+  }
+  void add_skill_slot(wildpaw::protocol::SkillSlot skill_slot) {
+    fbb_.AddElement<uint8_t>(CombatEventPayload::VT_SKILL_SLOT, static_cast<uint8_t>(skill_slot), 0);
+  }
+  void add_damage(uint16_t damage) {
+    fbb_.AddElement<uint16_t>(CombatEventPayload::VT_DAMAGE, damage, 0);
+  }
+  void add_is_critical(bool is_critical) {
+    fbb_.AddElement<uint8_t>(CombatEventPayload::VT_IS_CRITICAL, static_cast<uint8_t>(is_critical), 0);
+  }
+  void add_server_tick(uint32_t server_tick) {
+    fbb_.AddElement<uint32_t>(CombatEventPayload::VT_SERVER_TICK, server_tick, 0);
+  }
+  void add_x(float x) {
+    fbb_.AddElement<float>(CombatEventPayload::VT_X, x, 0.0f);
+  }
+  void add_y(float y) {
+    fbb_.AddElement<float>(CombatEventPayload::VT_Y, y, 0.0f);
+  }
+  explicit CombatEventPayloadBuilder(flatbuffers::FlatBufferBuilder &_fbb)
+        : fbb_(_fbb) {
+    start_ = fbb_.StartTable();
+  }
+  flatbuffers::Offset<CombatEventPayload> Finish() {
+    const auto end = fbb_.EndTable(start_);
+    auto o = flatbuffers::Offset<CombatEventPayload>(end);
+    return o;
+  }
+};
+
+inline flatbuffers::Offset<CombatEventPayload> CreateCombatEventPayload(
+    flatbuffers::FlatBufferBuilder &_fbb,
+    wildpaw::protocol::CombatEventType event_type = wildpaw::protocol::CombatEventType::ShotFired,
+    uint32_t source_player_id = 0,
+    uint32_t target_player_id = 0,
+    wildpaw::protocol::SkillSlot skill_slot = wildpaw::protocol::SkillSlot::None,
+    uint16_t damage = 0,
+    bool is_critical = false,
+    uint32_t server_tick = 0,
+    float x = 0.0f,
+    float y = 0.0f) {
+  CombatEventPayloadBuilder builder_(_fbb);
+  builder_.add_y(y);
+  builder_.add_x(x);
+  builder_.add_server_tick(server_tick);
+  builder_.add_target_player_id(target_player_id);
+  builder_.add_source_player_id(source_player_id);
+  builder_.add_damage(damage);
+  builder_.add_is_critical(is_critical);
+  builder_.add_skill_slot(skill_slot);
+  builder_.add_event_type(event_type);
+  return builder_.Finish();
+}
+
+struct ProjectileEventPayload FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
+  typedef ProjectileEventPayloadBuilder Builder;
+  enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
+    VT_PROJECTILE_ID = 4,
+    VT_OWNER_PLAYER_ID = 6,
+    VT_TARGET_PLAYER_ID = 8,
+    VT_PHASE = 10,
+    VT_SERVER_TICK = 12,
+    VT_X = 14,
+    VT_Y = 16,
+    VT_VX = 18,
+    VT_VY = 20
+  };
+  uint32_t projectile_id() const {
+    return GetField<uint32_t>(VT_PROJECTILE_ID, 0);
+  }
+  uint32_t owner_player_id() const {
+    return GetField<uint32_t>(VT_OWNER_PLAYER_ID, 0);
+  }
+  uint32_t target_player_id() const {
+    return GetField<uint32_t>(VT_TARGET_PLAYER_ID, 0);
+  }
+  wildpaw::protocol::ProjectilePhase phase() const {
+    return static_cast<wildpaw::protocol::ProjectilePhase>(GetField<uint8_t>(VT_PHASE, 0));
+  }
+  uint32_t server_tick() const {
+    return GetField<uint32_t>(VT_SERVER_TICK, 0);
+  }
+  float x() const {
+    return GetField<float>(VT_X, 0.0f);
+  }
+  float y() const {
+    return GetField<float>(VT_Y, 0.0f);
+  }
+  float vx() const {
+    return GetField<float>(VT_VX, 0.0f);
+  }
+  float vy() const {
+    return GetField<float>(VT_VY, 0.0f);
+  }
+  bool Verify(flatbuffers::Verifier &verifier) const {
+    return VerifyTableStart(verifier) &&
+           VerifyField<uint32_t>(verifier, VT_PROJECTILE_ID, 4) &&
+           VerifyField<uint32_t>(verifier, VT_OWNER_PLAYER_ID, 4) &&
+           VerifyField<uint32_t>(verifier, VT_TARGET_PLAYER_ID, 4) &&
+           VerifyField<uint8_t>(verifier, VT_PHASE, 1) &&
+           VerifyField<uint32_t>(verifier, VT_SERVER_TICK, 4) &&
+           VerifyField<float>(verifier, VT_X, 4) &&
+           VerifyField<float>(verifier, VT_Y, 4) &&
+           VerifyField<float>(verifier, VT_VX, 4) &&
+           VerifyField<float>(verifier, VT_VY, 4) &&
+           verifier.EndTable();
+  }
+};
+
+struct ProjectileEventPayloadBuilder {
+  typedef ProjectileEventPayload Table;
+  flatbuffers::FlatBufferBuilder &fbb_;
+  flatbuffers::uoffset_t start_;
+  void add_projectile_id(uint32_t projectile_id) {
+    fbb_.AddElement<uint32_t>(ProjectileEventPayload::VT_PROJECTILE_ID, projectile_id, 0);
+  }
+  void add_owner_player_id(uint32_t owner_player_id) {
+    fbb_.AddElement<uint32_t>(ProjectileEventPayload::VT_OWNER_PLAYER_ID, owner_player_id, 0);
+  }
+  void add_target_player_id(uint32_t target_player_id) {
+    fbb_.AddElement<uint32_t>(ProjectileEventPayload::VT_TARGET_PLAYER_ID, target_player_id, 0);
+  }
+  void add_phase(wildpaw::protocol::ProjectilePhase phase) {
+    fbb_.AddElement<uint8_t>(ProjectileEventPayload::VT_PHASE, static_cast<uint8_t>(phase), 0);
+  }
+  void add_server_tick(uint32_t server_tick) {
+    fbb_.AddElement<uint32_t>(ProjectileEventPayload::VT_SERVER_TICK, server_tick, 0);
+  }
+  void add_x(float x) {
+    fbb_.AddElement<float>(ProjectileEventPayload::VT_X, x, 0.0f);
+  }
+  void add_y(float y) {
+    fbb_.AddElement<float>(ProjectileEventPayload::VT_Y, y, 0.0f);
+  }
+  void add_vx(float vx) {
+    fbb_.AddElement<float>(ProjectileEventPayload::VT_VX, vx, 0.0f);
+  }
+  void add_vy(float vy) {
+    fbb_.AddElement<float>(ProjectileEventPayload::VT_VY, vy, 0.0f);
+  }
+  explicit ProjectileEventPayloadBuilder(flatbuffers::FlatBufferBuilder &_fbb)
+        : fbb_(_fbb) {
+    start_ = fbb_.StartTable();
+  }
+  flatbuffers::Offset<ProjectileEventPayload> Finish() {
+    const auto end = fbb_.EndTable(start_);
+    auto o = flatbuffers::Offset<ProjectileEventPayload>(end);
+    return o;
+  }
+};
+
+inline flatbuffers::Offset<ProjectileEventPayload> CreateProjectileEventPayload(
+    flatbuffers::FlatBufferBuilder &_fbb,
+    uint32_t projectile_id = 0,
+    uint32_t owner_player_id = 0,
+    uint32_t target_player_id = 0,
+    wildpaw::protocol::ProjectilePhase phase = wildpaw::protocol::ProjectilePhase::Spawn,
+    uint32_t server_tick = 0,
+    float x = 0.0f,
+    float y = 0.0f,
+    float vx = 0.0f,
+    float vy = 0.0f) {
+  ProjectileEventPayloadBuilder builder_(_fbb);
+  builder_.add_vy(vy);
+  builder_.add_vx(vx);
+  builder_.add_y(y);
+  builder_.add_x(x);
+  builder_.add_server_tick(server_tick);
+  builder_.add_target_player_id(target_player_id);
+  builder_.add_owner_player_id(owner_player_id);
+  builder_.add_projectile_id(projectile_id);
+  builder_.add_phase(phase);
+  return builder_.Finish();
+}
+
 struct EventPayload FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   typedef EventPayloadBuilder Builder;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
@@ -713,6 +1231,9 @@ struct Envelope FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   const wildpaw::protocol::InputPayload *payload_as_InputPayload() const {
     return payload_type() == wildpaw::protocol::MessagePayload::InputPayload ? static_cast<const wildpaw::protocol::InputPayload *>(payload()) : nullptr;
   }
+  const wildpaw::protocol::ActionCommandPayload *payload_as_ActionCommandPayload() const {
+    return payload_type() == wildpaw::protocol::MessagePayload::ActionCommandPayload ? static_cast<const wildpaw::protocol::ActionCommandPayload *>(payload()) : nullptr;
+  }
   const wildpaw::protocol::PingPayload *payload_as_PingPayload() const {
     return payload_type() == wildpaw::protocol::MessagePayload::PingPayload ? static_cast<const wildpaw::protocol::PingPayload *>(payload()) : nullptr;
   }
@@ -721,6 +1242,12 @@ struct Envelope FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   }
   const wildpaw::protocol::SnapshotPayload *payload_as_SnapshotPayload() const {
     return payload_type() == wildpaw::protocol::MessagePayload::SnapshotPayload ? static_cast<const wildpaw::protocol::SnapshotPayload *>(payload()) : nullptr;
+  }
+  const wildpaw::protocol::CombatEventPayload *payload_as_CombatEventPayload() const {
+    return payload_type() == wildpaw::protocol::MessagePayload::CombatEventPayload ? static_cast<const wildpaw::protocol::CombatEventPayload *>(payload()) : nullptr;
+  }
+  const wildpaw::protocol::ProjectileEventPayload *payload_as_ProjectileEventPayload() const {
+    return payload_type() == wildpaw::protocol::MessagePayload::ProjectileEventPayload ? static_cast<const wildpaw::protocol::ProjectileEventPayload *>(payload()) : nullptr;
   }
   const wildpaw::protocol::EventPayload *payload_as_EventPayload() const {
     return payload_type() == wildpaw::protocol::MessagePayload::EventPayload ? static_cast<const wildpaw::protocol::EventPayload *>(payload()) : nullptr;
@@ -745,6 +1272,10 @@ template<> inline const wildpaw::protocol::InputPayload *Envelope::payload_as<wi
   return payload_as_InputPayload();
 }
 
+template<> inline const wildpaw::protocol::ActionCommandPayload *Envelope::payload_as<wildpaw::protocol::ActionCommandPayload>() const {
+  return payload_as_ActionCommandPayload();
+}
+
 template<> inline const wildpaw::protocol::PingPayload *Envelope::payload_as<wildpaw::protocol::PingPayload>() const {
   return payload_as_PingPayload();
 }
@@ -755,6 +1286,14 @@ template<> inline const wildpaw::protocol::WelcomePayload *Envelope::payload_as<
 
 template<> inline const wildpaw::protocol::SnapshotPayload *Envelope::payload_as<wildpaw::protocol::SnapshotPayload>() const {
   return payload_as_SnapshotPayload();
+}
+
+template<> inline const wildpaw::protocol::CombatEventPayload *Envelope::payload_as<wildpaw::protocol::CombatEventPayload>() const {
+  return payload_as_CombatEventPayload();
+}
+
+template<> inline const wildpaw::protocol::ProjectileEventPayload *Envelope::payload_as<wildpaw::protocol::ProjectileEventPayload>() const {
+  return payload_as_ProjectileEventPayload();
 }
 
 template<> inline const wildpaw::protocol::EventPayload *Envelope::payload_as<wildpaw::protocol::EventPayload>() const {
@@ -820,6 +1359,10 @@ inline bool VerifyMessagePayload(flatbuffers::Verifier &verifier, const void *ob
       auto ptr = reinterpret_cast<const wildpaw::protocol::InputPayload *>(obj);
       return verifier.VerifyTable(ptr);
     }
+    case MessagePayload::ActionCommandPayload: {
+      auto ptr = reinterpret_cast<const wildpaw::protocol::ActionCommandPayload *>(obj);
+      return verifier.VerifyTable(ptr);
+    }
     case MessagePayload::PingPayload: {
       auto ptr = reinterpret_cast<const wildpaw::protocol::PingPayload *>(obj);
       return verifier.VerifyTable(ptr);
@@ -830,6 +1373,14 @@ inline bool VerifyMessagePayload(flatbuffers::Verifier &verifier, const void *ob
     }
     case MessagePayload::SnapshotPayload: {
       auto ptr = reinterpret_cast<const wildpaw::protocol::SnapshotPayload *>(obj);
+      return verifier.VerifyTable(ptr);
+    }
+    case MessagePayload::CombatEventPayload: {
+      auto ptr = reinterpret_cast<const wildpaw::protocol::CombatEventPayload *>(obj);
+      return verifier.VerifyTable(ptr);
+    }
+    case MessagePayload::ProjectileEventPayload: {
+      auto ptr = reinterpret_cast<const wildpaw::protocol::ProjectileEventPayload *>(obj);
       return verifier.VerifyTable(ptr);
     }
     case MessagePayload::EventPayload: {

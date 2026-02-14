@@ -12,12 +12,72 @@
 namespace wildpaw::room::wire {
 namespace {
 
-std::vector<std::uint8_t> finalizeEnvelope(flatbuffers::FlatBufferBuilder& builder,
-                                           flatbuffers::Offset<wildpaw::protocol::Envelope> envelope) {
+std::vector<std::uint8_t> finalizeEnvelope(
+    flatbuffers::FlatBufferBuilder& builder,
+    flatbuffers::Offset<wildpaw::protocol::Envelope> envelope) {
   wildpaw::protocol::FinishEnvelopeBuffer(builder, envelope);
   const auto* ptr = builder.GetBufferPointer();
   const auto size = builder.GetSize();
   return std::vector<std::uint8_t>(ptr, ptr + size);
+}
+
+wildpaw::protocol::SkillSlot toProtocolSkillSlot(SkillSlot slot) {
+  switch (slot) {
+    case SkillSlot::Q:
+      return wildpaw::protocol::SkillSlot::Q;
+    case SkillSlot::E:
+      return wildpaw::protocol::SkillSlot::E;
+    case SkillSlot::R:
+      return wildpaw::protocol::SkillSlot::R;
+    case SkillSlot::None:
+    default:
+      return wildpaw::protocol::SkillSlot::None;
+  }
+}
+
+wildpaw::protocol::CombatEventType toProtocolCombatEventType(CombatEventType type) {
+  switch (type) {
+    case CombatEventType::SkillCast:
+      return wildpaw::protocol::CombatEventType::SkillCast;
+    case CombatEventType::DamageApplied:
+      return wildpaw::protocol::CombatEventType::DamageApplied;
+    case CombatEventType::Knockout:
+      return wildpaw::protocol::CombatEventType::Knockout;
+    case CombatEventType::ShotFired:
+    default:
+      return wildpaw::protocol::CombatEventType::ShotFired;
+  }
+}
+
+wildpaw::protocol::ProjectilePhase toProtocolProjectilePhase(ProjectilePhase phase) {
+  switch (phase) {
+    case ProjectilePhase::Hit:
+      return wildpaw::protocol::ProjectilePhase::Hit;
+    case ProjectilePhase::Despawn:
+      return wildpaw::protocol::ProjectilePhase::Despawn;
+    case ProjectilePhase::Spawn:
+    default:
+      return wildpaw::protocol::ProjectilePhase::Spawn;
+  }
+}
+
+void fillInputFrameFromProtocol(InputFrame& dst,
+                                std::uint32_t inputSeq,
+                                int moveX,
+                                int moveY,
+                                bool fire,
+                                float aimRadian,
+                                bool skillQ,
+                                bool skillE,
+                                bool skillR) {
+  dst.inputSeq = inputSeq;
+  dst.moveX = static_cast<std::int8_t>(std::clamp(moveX, -1, 1));
+  dst.moveY = static_cast<std::int8_t>(std::clamp(moveY, -1, 1));
+  dst.firing = fire;
+  dst.aimRadian = aimRadian;
+  dst.skillQ = skillQ;
+  dst.skillE = skillE;
+  dst.skillR = skillR;
 }
 
 }  // namespace
@@ -51,9 +111,11 @@ std::optional<DecodedClientEnvelope> decodeClientEnvelope(
       }
 
       decoded.type = ClientMessageType::Hello;
-      decoded.roomToken = hello->room_token() != nullptr ? hello->room_token()->str() : "";
-      decoded.clientVersion =
-          hello->client_version() != nullptr ? hello->client_version()->str() : "";
+      decoded.roomToken =
+          hello->room_token() != nullptr ? hello->room_token()->str() : "";
+      decoded.clientVersion = hello->client_version() != nullptr
+                                  ? hello->client_version()->str()
+                                  : "";
       return decoded;
     }
 
@@ -64,11 +126,25 @@ std::optional<DecodedClientEnvelope> decodeClientEnvelope(
       }
 
       decoded.type = ClientMessageType::Input;
-      decoded.input.inputSeq = input->input_seq();
-      decoded.input.moveX = static_cast<std::int8_t>(std::clamp<int>(input->move_x(), -1, 1));
-      decoded.input.moveY = static_cast<std::int8_t>(std::clamp<int>(input->move_y(), -1, 1));
-      decoded.input.firing = input->fire();
-      decoded.input.aimRadian = input->aim_radian();
+      fillInputFrameFromProtocol(decoded.input, input->input_seq(), input->move_x(),
+                                 input->move_y(), input->fire(),
+                                 input->aim_radian(), input->skill_q(),
+                                 input->skill_e(), input->skill_r());
+      return decoded;
+    }
+
+    case wildpaw::protocol::MessagePayload::ActionCommandPayload: {
+      const auto* action = envelope->payload_as_ActionCommandPayload();
+      if (action == nullptr) {
+        return std::nullopt;
+      }
+
+      decoded.type = ClientMessageType::ActionCommand;
+      fillInputFrameFromProtocol(decoded.input, action->input_seq(),
+                                 action->move_x(), action->move_y(),
+                                 action->fire(), action->aim_radian(),
+                                 action->skill_q(), action->skill_e(),
+                                 action->skill_r());
       return decoded;
     }
 
@@ -131,6 +207,40 @@ std::vector<std::uint8_t> encodeSnapshotEnvelope(
   const auto envelope = wildpaw::protocol::CreateEnvelope(
       builder, meta.seq, meta.ack, meta.ackBits,
       wildpaw::protocol::MessagePayload::SnapshotPayload, payload.Union());
+
+  return finalizeEnvelope(builder, envelope);
+}
+
+std::vector<std::uint8_t> encodeCombatEventEnvelope(const CombatEvent& event,
+                                                    const EnvelopeMeta& meta) {
+  flatbuffers::FlatBufferBuilder builder(256);
+
+  const auto payload = wildpaw::protocol::CreateCombatEventPayload(
+      builder, toProtocolCombatEventType(event.type), event.sourcePlayerId,
+      event.targetPlayerId, toProtocolSkillSlot(event.skillSlot), event.damage,
+      event.critical, event.serverTick, event.position.x, event.position.y);
+
+  const auto envelope = wildpaw::protocol::CreateEnvelope(
+      builder, meta.seq, meta.ack, meta.ackBits,
+      wildpaw::protocol::MessagePayload::CombatEventPayload, payload.Union());
+
+  return finalizeEnvelope(builder, envelope);
+}
+
+std::vector<std::uint8_t> encodeProjectileEventEnvelope(
+    const ProjectileEvent& event,
+    const EnvelopeMeta& meta) {
+  flatbuffers::FlatBufferBuilder builder(256);
+
+  const auto payload = wildpaw::protocol::CreateProjectileEventPayload(
+      builder, event.projectileId, event.ownerPlayerId, event.targetPlayerId,
+      toProtocolProjectilePhase(event.phase), event.serverTick, event.position.x,
+      event.position.y, event.velocity.x, event.velocity.y);
+
+  const auto envelope = wildpaw::protocol::CreateEnvelope(
+      builder, meta.seq, meta.ack, meta.ackBits,
+      wildpaw::protocol::MessagePayload::ProjectileEventPayload,
+      payload.Union());
 
   return finalizeEnvelope(builder, envelope);
 }

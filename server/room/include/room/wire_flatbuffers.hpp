@@ -16,6 +16,7 @@ enum class ClientMessageType {
   Invalid = 0,
   Hello,
   Input,
+  ActionCommand,
   Ping,
 };
 
@@ -27,7 +28,7 @@ struct DecodedClientEnvelope {
   std::string roomToken;
   std::string clientVersion;
 
-  // Input payload
+  // Input/Action payload
   InputFrame input{};
 };
 
@@ -44,6 +45,13 @@ std::vector<std::uint8_t> encodeSnapshotEnvelope(
     std::uint32_t serverTick,
     std::uint64_t serverTimeMs,
     std::span<const PlayerState> players,
+    const EnvelopeMeta& meta);
+
+std::vector<std::uint8_t> encodeCombatEventEnvelope(const CombatEvent& event,
+                                                    const EnvelopeMeta& meta);
+
+std::vector<std::uint8_t> encodeProjectileEventEnvelope(
+    const ProjectileEvent& event,
     const EnvelopeMeta& meta);
 
 std::vector<std::uint8_t> encodeEventEnvelope(std::string_view eventName,

@@ -1,12 +1,15 @@
 import * as flatbuffers from "flatbuffers";
 
 import type { InputFrame, PlayerSnapshot, WorldSnapshot } from "./types";
+import { ActionCommandPayload } from "./gen/wildpaw/protocol/action-command-payload";
+import { CombatEventPayload } from "./gen/wildpaw/protocol/combat-event-payload";
 import { Envelope } from "./gen/wildpaw/protocol/envelope";
 import { EventPayload } from "./gen/wildpaw/protocol/event-payload";
 import { HelloPayload } from "./gen/wildpaw/protocol/hello-payload";
 import { InputPayload } from "./gen/wildpaw/protocol/input-payload";
 import { MessagePayload } from "./gen/wildpaw/protocol/message-payload";
 import { PingPayload } from "./gen/wildpaw/protocol/ping-payload";
+import { ProjectileEventPayload } from "./gen/wildpaw/protocol/projectile-event-payload";
 import { SnapshotKind } from "./gen/wildpaw/protocol/snapshot-kind";
 import { SnapshotPayload } from "./gen/wildpaw/protocol/snapshot-payload";
 import { WelcomePayload } from "./gen/wildpaw/protocol/welcome-payload";
@@ -91,7 +94,7 @@ export class RealtimeClient {
   }
 
   sendInput(input: InputFrame): void {
-    this.sendEnvelope("C2S_INPUT", input);
+    this.sendEnvelope("C2S_ACTION_COMMAND", input);
   }
 
   sendPing(): void {
@@ -111,7 +114,7 @@ export class RealtimeClient {
   }
 
   private sendEnvelope(
-    type: "C2S_HELLO" | "C2S_INPUT" | "C2S_PING",
+    type: "C2S_HELLO" | "C2S_INPUT" | "C2S_ACTION_COMMAND" | "C2S_PING",
     payload: unknown,
   ): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
@@ -135,6 +138,7 @@ export class RealtimeClient {
       );
       payloadType = MessagePayload.HelloPayload;
     } else if (type === "C2S_INPUT") {
+      // 하위 호환: 기존 InputPayload도 계속 송신 가능.
       const input = payload as InputFrame;
       payloadOffset = InputPayload.createInputPayload(
         builder,
@@ -143,8 +147,25 @@ export class RealtimeClient {
         input.moveY,
         input.fire,
         input.aimRadian,
+        Boolean(input.skillQ),
+        Boolean(input.skillE),
+        Boolean(input.skillR),
       );
       payloadType = MessagePayload.InputPayload;
+    } else if (type === "C2S_ACTION_COMMAND") {
+      const input = payload as InputFrame;
+      payloadOffset = ActionCommandPayload.createActionCommandPayload(
+        builder,
+        input.inputSeq,
+        input.moveX,
+        input.moveY,
+        input.fire,
+        input.aimRadian,
+        Boolean(input.skillQ),
+        Boolean(input.skillE),
+        Boolean(input.skillR),
+      );
+      payloadType = MessagePayload.ActionCommandPayload;
     } else if (type === "C2S_PING") {
       payloadOffset = PingPayload.createPingPayload(builder);
       payloadType = MessagePayload.PingPayload;
@@ -253,6 +274,56 @@ export class RealtimeClient {
             : "S2C_SNAPSHOT_BASE",
           { players: players.length },
         );
+        return;
+      }
+
+      case MessagePayload.CombatEventPayload: {
+        const combatPayload = envelope.payload(new CombatEventPayload()) as
+          | CombatEventPayload
+          | null;
+        if (!combatPayload) {
+          return;
+        }
+
+        this.options.onEvent?.("S2C_COMBAT_EVENT", {
+          eventType: combatPayload.eventType(),
+          sourcePlayerId: combatPayload.sourcePlayerId(),
+          targetPlayerId: combatPayload.targetPlayerId(),
+          skillSlot: combatPayload.skillSlot(),
+          damage: combatPayload.damage(),
+          isCritical: combatPayload.isCritical(),
+          serverTick: combatPayload.serverTick(),
+          position: {
+            x: combatPayload.x(),
+            y: combatPayload.y(),
+          },
+        });
+        return;
+      }
+
+      case MessagePayload.ProjectileEventPayload: {
+        const projectilePayload = envelope.payload(new ProjectileEventPayload()) as
+          | ProjectileEventPayload
+          | null;
+        if (!projectilePayload) {
+          return;
+        }
+
+        this.options.onEvent?.("S2C_PROJECTILE_EVENT", {
+          projectileId: projectilePayload.projectileId(),
+          ownerPlayerId: projectilePayload.ownerPlayerId(),
+          targetPlayerId: projectilePayload.targetPlayerId(),
+          phase: projectilePayload.phase(),
+          serverTick: projectilePayload.serverTick(),
+          position: {
+            x: projectilePayload.x(),
+            y: projectilePayload.y(),
+          },
+          velocity: {
+            x: projectilePayload.vx(),
+            y: projectilePayload.vy(),
+          },
+        });
         return;
       }
 

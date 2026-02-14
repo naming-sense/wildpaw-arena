@@ -14,6 +14,11 @@ struct InputFrame {
   std::int8_t moveY{0};   // -1, 0, 1
   bool firing{false};
   float aimRadian{0.0f};
+
+  // 전투 액션
+  bool skillQ{false};
+  bool skillE{false};
+  bool skillR{false};
 };
 
 class InputBuffer {

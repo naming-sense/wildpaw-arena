@@ -296,6 +296,16 @@ class RoomServer {
     out << "wildpaw_room_event_sent_total "
         << eventSentTotal_.load(std::memory_order_relaxed) << "\n";
 
+    out << "# HELP wildpaw_room_combat_event_sent_total Combat event payloads sent\n";
+    out << "# TYPE wildpaw_room_combat_event_sent_total counter\n";
+    out << "wildpaw_room_combat_event_sent_total "
+        << combatEventSentTotal_.load(std::memory_order_relaxed) << "\n";
+
+    out << "# HELP wildpaw_room_projectile_event_sent_total Projectile event payloads sent\n";
+    out << "# TYPE wildpaw_room_projectile_event_sent_total counter\n";
+    out << "wildpaw_room_projectile_event_sent_total "
+        << projectileEventSentTotal_.load(std::memory_order_relaxed) << "\n";
+
     out << "# HELP wildpaw_room_reliable_inflight_packets Reliable in-flight packets\n";
     out << "# TYPE wildpaw_room_reliable_inflight_packets gauge\n";
     out << "wildpaw_room_reliable_inflight_packets " << reliableInFlight << "\n";
@@ -368,6 +378,7 @@ class RoomServer {
         return;
 
       case wildpaw::room::wire::ClientMessageType::Input:
+      case wildpaw::room::wire::ClientMessageType::ActionCommand:
         enqueueInput(playerId, decoded->input);
         inputFramesTotal_.fetch_add(1, std::memory_order_relaxed);
         return;
@@ -542,6 +553,8 @@ class RoomServer {
 
     wildpaw::room::WorldSnapshot worldSnapshot;
     wildpaw::room::SnapshotDelta deltaSnapshot;
+    std::vector<wildpaw::room::CombatEvent> combatEvents;
+    std::vector<wildpaw::room::ProjectileEvent> projectileEvents;
 
     {
       std::lock_guard<std::mutex> lock(simulationMutex_);
@@ -552,6 +565,8 @@ class RoomServer {
 
       worldSnapshot = simulation_.tick();
       deltaSnapshot = snapshotBuilder_.buildDelta(worldSnapshot);
+      combatEvents = simulation_.drainCombatEvents();
+      projectileEvents = simulation_.drainProjectileEvents();
     }
 
     tickTotal_.fetch_add(1, std::memory_order_relaxed);
@@ -577,6 +592,26 @@ class RoomServer {
             true, deltaSnapshot.serverTick, serverTimeMs, visibleChanged, meta);
         session->sendBinary(std::move(payload));
         snapshotDeltaSentTotal_.fetch_add(1, std::memory_order_relaxed);
+      }
+    }
+
+    if (!combatEvents.empty() || !projectileEvents.empty()) {
+      for (const auto& [_, session] : sessions) {
+        for (const auto& combatEvent : combatEvents) {
+          const auto meta = session->nextEnvelopeMeta();
+          auto payload =
+              wildpaw::room::wire::encodeCombatEventEnvelope(combatEvent, meta);
+          session->sendBinary(std::move(payload));
+          combatEventSentTotal_.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        for (const auto& projectileEvent : projectileEvents) {
+          const auto meta = session->nextEnvelopeMeta();
+          auto payload = wildpaw::room::wire::encodeProjectileEventEnvelope(
+              projectileEvent, meta);
+          session->sendBinary(std::move(payload));
+          projectileEventSentTotal_.fetch_add(1, std::memory_order_relaxed);
+        }
       }
     }
 
@@ -636,6 +671,8 @@ class RoomServer {
   std::atomic<std::uint64_t> snapshotBaseSentTotal_{0};
   std::atomic<std::uint64_t> snapshotDeltaSentTotal_{0};
   std::atomic<std::uint64_t> eventSentTotal_{0};
+  std::atomic<std::uint64_t> combatEventSentTotal_{0};
+  std::atomic<std::uint64_t> projectileEventSentTotal_{0};
 
   std::atomic<std::uint64_t> retransmitSentTotal_{0};
   std::atomic<std::uint64_t> retransmitDroppedTotal_{0};

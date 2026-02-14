@@ -7,8 +7,8 @@ Three.js 클라이언트에 붙일 netcode 모듈 스캐폴드입니다.
 - `prediction.ts`: 로컬 예측/복구
 - `interpolation.ts`: 원격 플레이어 보간 버퍼
 - `netClient.ts`: FlatBuffers 기반 realtime transport
-  - C2S binary envelope 송신 (`HELLO/INPUT/PING`)
-  - S2C binary envelope 수신 (`WELCOME/SNAPSHOT/EVENT`)
+  - C2S binary envelope 송신 (`HELLO/ACTION_COMMAND/PING`, `INPUT` 하위호환)
+  - S2C binary envelope 수신 (`WELCOME/SNAPSHOT/COMBAT_EVENT/PROJECTILE_EVENT/EVENT`)
   - `seq/ack/ackBits` 자동 추적
 - `src/netcode/gen/*`: flatc로 생성된 TS 코드
 

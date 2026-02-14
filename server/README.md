@@ -42,13 +42,18 @@ cmake --build build -j
 
 ### C2S payload
 - `HelloPayload`
-- `InputPayload`
+- `ActionCommandPayload` (권장)
+- `InputPayload` (legacy-compat)
 - `PingPayload`
 
 ### S2C payload
 - `WelcomePayload`
 - `SnapshotPayload` (`kind=Base|Delta`)
+- `CombatEventPayload` (사격/스킬/데미지/다운)
+- `ProjectileEventPayload` (spawn/hit/despawn)
 - `EventPayload`
+
+> 현재 combat/skill 판정은 스캐폴드용 서버 authoritative 샘플 룰(고정 데미지/간단 거리 판정)입니다.
 
 ## 코드젠
 ```bash
@@ -66,6 +71,8 @@ curl -s http://127.0.0.1:9100/metrics
 - `wildpaw_room_retransmit_sent_total`
 - `wildpaw_room_retransmit_dropped_total`
 - `wildpaw_room_reliable_inflight_packets`
+- `wildpaw_room_combat_event_sent_total`
+- `wildpaw_room_projectile_event_sent_total`
 
 ## 로컬 부하 벤치
 ```bash
