@@ -1,24 +1,21 @@
+import * as flatbuffers from "flatbuffers";
+
 import type { InputFrame, PlayerSnapshot, WorldSnapshot } from "./types";
+import { Envelope } from "./gen/wildpaw/protocol/envelope";
+import { EventPayload } from "./gen/wildpaw/protocol/event-payload";
+import { HelloPayload } from "./gen/wildpaw/protocol/hello-payload";
+import { InputPayload } from "./gen/wildpaw/protocol/input-payload";
+import { MessagePayload } from "./gen/wildpaw/protocol/message-payload";
+import { PingPayload } from "./gen/wildpaw/protocol/ping-payload";
+import { SnapshotKind } from "./gen/wildpaw/protocol/snapshot-kind";
+import { SnapshotPayload } from "./gen/wildpaw/protocol/snapshot-payload";
+import { WelcomePayload } from "./gen/wildpaw/protocol/welcome-payload";
 
 export interface RealtimeClientOptions {
   url: string;
   onSnapshot?: (snapshot: WorldSnapshot) => void;
   onEvent?: (eventName: string, payload: unknown) => void;
 }
-
-type JsonEnvelope = {
-  seq?: number;
-  ack?: number;
-  ackBits?: number;
-  t: string;
-  d: unknown;
-};
-
-const BINARY_MAGIC = 0x57445031; // "WDP1"
-const BINARY_VERSION = 1;
-const BINARY_TYPE_SNAPSHOT_DELTA = 1;
-const BINARY_HEADER_SIZE = 36;
-const BINARY_PLAYER_RECORD_SIZE = 28;
 
 class SequenceTracker {
   private nextLocalSeq = 1;
@@ -70,79 +67,8 @@ class SequenceTracker {
   }
 }
 
-function toNumberFromU64(view: DataView, offset: number): number {
-  if (typeof view.getBigUint64 === "function") {
-    return Number(view.getBigUint64(offset, true));
-  }
-
-  const low = view.getUint32(offset, true);
-  const high = view.getUint32(offset + 4, true);
-  return high * 2 ** 32 + low;
-}
-
-function decodeBinarySnapshotDelta(buffer: ArrayBuffer):
-  | { seq: number; snapshot: WorldSnapshot }
-  | null {
-  if (buffer.byteLength < BINARY_HEADER_SIZE) {
-    return null;
-  }
-
-  const view = new DataView(buffer);
-  const magic = view.getUint32(0, true);
-  const version = view.getUint16(4, true);
-  const messageType = view.getUint16(6, true);
-
-  if (magic !== BINARY_MAGIC || version !== BINARY_VERSION) {
-    return null;
-  }
-
-  if (messageType !== BINARY_TYPE_SNAPSHOT_DELTA) {
-    return null;
-  }
-
-  const seq = view.getUint32(8, true);
-  const serverTick = view.getUint32(20, true);
-  const serverTimeMs = toNumberFromU64(view, 24);
-  const playerCount = view.getUint16(32, true);
-
-  const expectedSize = BINARY_HEADER_SIZE + playerCount * BINARY_PLAYER_RECORD_SIZE;
-  if (buffer.byteLength < expectedSize) {
-    return null;
-  }
-
-  const players: PlayerSnapshot[] = [];
-  let offset = BINARY_HEADER_SIZE;
-
-  for (let i = 0; i < playerCount; i += 1) {
-    const playerId = view.getUint32(offset + 0, true);
-    const posX = view.getFloat32(offset + 4, true);
-    const posY = view.getFloat32(offset + 8, true);
-    const velX = view.getFloat32(offset + 12, true);
-    const velY = view.getFloat32(offset + 16, true);
-    const hp = view.getUint16(offset + 20, true);
-    const alive = view.getUint8(offset + 22) !== 0;
-    const lastProcessedInputSeq = view.getUint32(offset + 24, true);
-
-    players.push({
-      playerId,
-      position: { x: posX, y: posY },
-      velocity: { x: velX, y: velY },
-      hp,
-      alive,
-      lastProcessedInputSeq,
-    });
-
-    offset += BINARY_PLAYER_RECORD_SIZE;
-  }
-
-  return {
-    seq,
-    snapshot: {
-      serverTick,
-      serverTimeMs,
-      players,
-    },
-  };
+function toNumber(value: bigint): number {
+  return Number(value);
 }
 
 export class RealtimeClient {
@@ -156,7 +82,7 @@ export class RealtimeClient {
     this.ws.binaryType = "arraybuffer";
 
     this.ws.onopen = () => {
-      this.send("C2S_HELLO", { roomToken, clientVersion: "0.3.0" });
+      this.sendHello(roomToken);
     };
 
     this.ws.onmessage = (event: MessageEvent<string | ArrayBuffer | Blob>) => {
@@ -165,11 +91,11 @@ export class RealtimeClient {
   }
 
   sendInput(input: InputFrame): void {
-    this.send("C2S_INPUT", input);
+    this.sendEnvelope("C2S_INPUT", input);
   }
 
   sendPing(): void {
-    this.send("C2S_PING", {});
+    this.sendEnvelope("C2S_PING", {});
   }
 
   disconnect(): void {
@@ -177,61 +103,176 @@ export class RealtimeClient {
     this.ws = null;
   }
 
-  private send(type: string, data: unknown): void {
+  private sendHello(roomToken: string): void {
+    this.sendEnvelope("C2S_HELLO", {
+      roomToken,
+      clientVersion: "0.4.0",
+    });
+  }
+
+  private sendEnvelope(
+    type: "C2S_HELLO" | "C2S_INPUT" | "C2S_PING",
+    payload: unknown,
+  ): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       return;
     }
 
     const meta = this.sequenceTracker.nextOutgoingMeta();
-    this.ws.send(
-      JSON.stringify({
-        seq: meta.seq,
-        ack: meta.ack,
-        ackBits: meta.ackBits,
-        t: type,
-        d: data,
-      }),
+    const builder = new flatbuffers.Builder(256);
+
+    let payloadType = MessagePayload.NONE;
+    let payloadOffset: flatbuffers.Offset = 0;
+
+    if (type === "C2S_HELLO") {
+      const hello = payload as { roomToken: string; clientVersion: string };
+      const roomTokenOffset = builder.createString(hello.roomToken);
+      const clientVersionOffset = builder.createString(hello.clientVersion);
+      payloadOffset = HelloPayload.createHelloPayload(
+        builder,
+        roomTokenOffset,
+        clientVersionOffset,
+      );
+      payloadType = MessagePayload.HelloPayload;
+    } else if (type === "C2S_INPUT") {
+      const input = payload as InputFrame;
+      payloadOffset = InputPayload.createInputPayload(
+        builder,
+        input.inputSeq,
+        input.moveX,
+        input.moveY,
+        input.fire,
+        input.aimRadian,
+      );
+      payloadType = MessagePayload.InputPayload;
+    } else if (type === "C2S_PING") {
+      payloadOffset = PingPayload.createPingPayload(builder);
+      payloadType = MessagePayload.PingPayload;
+    }
+
+    const envelope = Envelope.createEnvelope(
+      builder,
+      meta.seq,
+      meta.ack,
+      meta.ackBits,
+      payloadType,
+      payloadOffset,
     );
+    Envelope.finishEnvelopeBuffer(builder, envelope);
+
+    this.ws.send(builder.asUint8Array());
   }
 
   private async handleIncoming(data: string | ArrayBuffer | Blob): Promise<void> {
-    if (typeof data === "string") {
-      this.handleJsonEnvelope(JSON.parse(data) as JsonEnvelope);
-      return;
-    }
-
     if (data instanceof ArrayBuffer) {
       this.handleBinaryEnvelope(data);
       return;
     }
 
     if (data instanceof Blob) {
-      const buffer = await data.arrayBuffer();
-      this.handleBinaryEnvelope(buffer);
-    }
-  }
-
-  private handleJsonEnvelope(envelope: JsonEnvelope): void {
-    if (typeof envelope.seq === "number") {
-      this.sequenceTracker.noteRemote(envelope.seq);
-    }
-
-    if (envelope.t === "S2C_SNAPSHOT_BASE") {
-      this.options.onSnapshot?.(envelope.d as WorldSnapshot);
+      const arrayBuffer = await data.arrayBuffer();
+      this.handleBinaryEnvelope(arrayBuffer);
       return;
     }
 
-    this.options.onEvent?.(envelope.t, envelope.d);
+    // 서버는 이제 binary 전용이지만, 예외적으로 text가 오면 이벤트로 전달.
+    this.options.onEvent?.("text.unexpected", data);
   }
 
   private handleBinaryEnvelope(buffer: ArrayBuffer): void {
-    const decoded = decodeBinarySnapshotDelta(buffer);
-    if (!decoded) {
-      this.options.onEvent?.("binary.unknown", { byteLength: buffer.byteLength });
+    const byteBuffer = new flatbuffers.ByteBuffer(new Uint8Array(buffer));
+    if (!Envelope.bufferHasIdentifier(byteBuffer)) {
+      this.options.onEvent?.("binary.invalid_identifier", {
+        byteLength: buffer.byteLength,
+      });
       return;
     }
 
-    this.sequenceTracker.noteRemote(decoded.seq);
-    this.options.onSnapshot?.(decoded.snapshot);
+    const envelope = Envelope.getRootAsEnvelope(byteBuffer);
+    this.sequenceTracker.noteRemote(envelope.seq());
+
+    switch (envelope.payloadType()) {
+      case MessagePayload.WelcomePayload: {
+        const welcome = envelope.payload(new WelcomePayload()) as WelcomePayload | null;
+        if (!welcome) {
+          return;
+        }
+
+        this.options.onEvent?.("S2C_WELCOME", {
+          playerId: welcome.playerId(),
+          serverTickRate: welcome.serverTickRate(),
+          serverTick: welcome.serverTick(),
+        });
+        return;
+      }
+
+      case MessagePayload.SnapshotPayload: {
+        const snapshotPayload = envelope.payload(new SnapshotPayload()) as
+          | SnapshotPayload
+          | null;
+        if (!snapshotPayload) {
+          return;
+        }
+
+        const players: PlayerSnapshot[] = [];
+        for (let i = 0; i < snapshotPayload.playersLength(); i += 1) {
+          const player = snapshotPayload.players(i);
+          if (!player) {
+            continue;
+          }
+
+          const position = player.position();
+          const velocity = player.velocity();
+
+          players.push({
+            playerId: player.playerId(),
+            position: {
+              x: position?.x() ?? 0,
+              y: position?.y() ?? 0,
+            },
+            velocity: {
+              x: velocity?.x() ?? 0,
+              y: velocity?.y() ?? 0,
+            },
+            hp: player.hp(),
+            alive: player.alive(),
+            lastProcessedInputSeq: player.lastProcessedInputSeq(),
+          });
+        }
+
+        const snapshot: WorldSnapshot = {
+          serverTick: snapshotPayload.serverTick(),
+          serverTimeMs: toNumber(snapshotPayload.serverTimeMs()),
+          players,
+        };
+
+        this.options.onSnapshot?.(snapshot);
+        this.options.onEvent?.(
+          snapshotPayload.kind() === SnapshotKind.Delta
+            ? "S2C_SNAPSHOT_DELTA"
+            : "S2C_SNAPSHOT_BASE",
+          { players: players.length },
+        );
+        return;
+      }
+
+      case MessagePayload.EventPayload: {
+        const eventPayload = envelope.payload(new EventPayload()) as EventPayload | null;
+        if (!eventPayload) {
+          return;
+        }
+
+        this.options.onEvent?.(eventPayload.name() ?? "S2C_EVENT", {
+          message: eventPayload.message() ?? "",
+        });
+        return;
+      }
+
+      default:
+        this.options.onEvent?.("binary.unknown_payload", {
+          payloadType: envelope.payloadType(),
+        });
+        return;
+    }
   }
 }

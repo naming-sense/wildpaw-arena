@@ -6,17 +6,12 @@
 #include <string>
 #include <string_view>
 
+#include "room/envelope_meta.hpp"
 #include "room/input_buffer.hpp"
 #include "room/room_simulation.hpp"
 #include "room/snapshot_builder.hpp"
 
 namespace wildpaw::room::wire {
-
-struct EnvelopeMeta {
-  std::uint32_t seq{0};
-  std::uint32_t ack{0};
-  std::uint32_t ackBits{0};
-};
 
 std::optional<std::string> extractEnvelopeType(std::string_view raw);
 

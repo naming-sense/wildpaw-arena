@@ -1,0 +1,12 @@
+{
+  "name": "wildpaw-web-netcode",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "flatbuffers": "2.0.7"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

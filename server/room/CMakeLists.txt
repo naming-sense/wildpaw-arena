@@ -7,12 +7,14 @@ add_executable(wildpaw-room
   src/interest_manager.cpp
   src/wire_json.cpp
   src/wire_binary.cpp
+  src/wire_flatbuffers.cpp
 )
 
 target_include_directories(wildpaw-room
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/../shared
+    ${CMAKE_SOURCE_DIR}/../shared/protocol/generated/cpp
 )
 
 find_package(Boost REQUIRED COMPONENTS system)

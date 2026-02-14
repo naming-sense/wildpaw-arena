@@ -2,9 +2,9 @@
 
 ## 구성
 - `room/`: 실시간 authoritative 룸 서버
-  - C2S JSON 처리 (`HELLO/INPUT/PING`)
-  - 30Hz tick
-  - S2C base snapshot(JSON) + delta snapshot(binary)
+  - WebSocket **binary-only** C2S/S2C
+  - FlatBuffers Envelope decode/encode
+  - 30Hz tick + 관심영역 기반 snapshot 전송
 - `gateway/`: 인증/라우팅 계층 (TODO)
 - `matchmaker/`: 매칭 계층 (TODO)
 
@@ -21,41 +21,21 @@ cmake --build build -j
 ./build/room/wildpaw-room 7010    # 포트 지정
 ```
 
-## 전송 포맷
+## 전송 프로토콜
+- 스키마: `shared/protocol/fbs/wildpaw_protocol.fbs`
+- Envelope(`WPAR`) 필드:
+  - `seq`, `ack`, `ack_bits`, `payload(union)`
 
-### 1) JSON envelope (WebSocket text)
-- 사용: `C2S_*`, `S2C_WELCOME`, `S2C_SNAPSHOT_BASE`, `S2C_EVENT`
-- 공통 메타:
-  - `seq`: 발신 시퀀스
-  - `ack`: 수신한 상대의 최신 seq
-  - `ackBits`: `ack-1 ... ack-32` 수신 비트맵
+### C2S payload
+- `HelloPayload`
+- `InputPayload`
+- `PingPayload`
 
-예시 (C2S):
-```json
-{"seq":1,"ack":0,"ackBits":0,"t":"C2S_HELLO","d":{"roomToken":"...","clientVersion":"0.3.0"}}
-{"seq":2,"ack":1,"ackBits":0,"t":"C2S_INPUT","d":{"inputSeq":1,"moveX":1,"moveY":0,"fire":false,"aimRadian":0.0}}
-```
+### S2C payload
+- `WelcomePayload`
+- `SnapshotPayload` (`kind=Base|Delta`)
+- `EventPayload`
 
-### 2) Binary delta frame (WebSocket binary)
-- 사용: `S2C_SNAPSHOT_DELTA`
-- 헤더(36 bytes, little-endian):
-  - `u32 magic` = `0x57445031` ("WDP1")
-  - `u16 version` = `1`
-  - `u16 messageType` = `1` (SnapshotDelta)
-  - `u32 seq`
-  - `u32 ack`
-  - `u32 ackBits`
-  - `u32 serverTick`
-  - `u64 serverTimeMs`
-  - `u16 playerCount`
-  - `u16 reserved`
-- 플레이어 레코드(28 bytes):
-  - `u32 playerId`
-  - `f32 posX, posY`
-  - `f32 velX, velY`
-  - `u16 hp`
-  - `u8 alive`
-  - `u8 reserved`
-  - `u32 lastProcessedInputSeq`
-
-> 현재는 **하이브리드(JSON + binary delta)** 단계이며, 이후 FlatBuffers full-binary로 확장 예정.
+## 참고
+현재는 FlatBuffers full-binary로 통신하며,
+이전 JSON 경로(`wire_json.*`)는 마이그레이션 참고용으로 남아 있습니다.

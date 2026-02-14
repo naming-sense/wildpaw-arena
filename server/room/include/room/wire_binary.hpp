@@ -4,8 +4,8 @@
 #include <span>
 #include <vector>
 
+#include "room/envelope_meta.hpp"
 #include "room/snapshot_builder.hpp"
-#include "room/wire_json.hpp"
 
 namespace wildpaw::room::wire {
 

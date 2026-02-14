@@ -1,12 +1,39 @@
 # shared/protocol
 
-서버/클라이언트가 공통으로 참조할 프로토콜 정의 위치입니다.
+서버/클라이언트 공용 프로토콜 정의입니다.
 
-## 현재 포함
-- `message_types.hpp`: MVP 메시지 타입 enum
-- `packet_header.hpp`: 공통 패킷 헤더(ack/ackBits 포함)
+## 구조
+- `fbs/wildpaw_protocol.fbs`
+  - FlatBuffers 스키마(Envelope + payload union)
+- `generated/cpp/wildpaw_protocol_generated.h`
+  - C++ 코드젠 결과물
+- `message_types.hpp`, `packet_header.hpp`
+  - 초기 실험용 헤더(레거시)
 
-## 다음 단계
-1. FlatBuffers 스키마(`*.fbs`)로 페이로드 타입 정의
-2. TS 코드젠 파이프라인 추가
-3. `S2C_SNAPSHOT_DELTA` 필드 bitpack 규격 확정
+## 코드 생성
+레포 루트 기준:
+
+```bash
+./scripts/generate_protocol.sh
+```
+
+(직접 실행 시)
+
+```bash
+flatc --cpp --scoped-enums -o shared/protocol/generated/cpp shared/protocol/fbs/wildpaw_protocol.fbs
+flatc --ts -o client/web/src/netcode/gen shared/protocol/fbs/wildpaw_protocol.fbs
+```
+
+## FlatBuffers Envelope 핵심 필드
+- `seq:uint`
+- `ack:uint`
+- `ack_bits:uint`
+- `payload:MessagePayload (union)`
+
+`MessagePayload`에는 현재 아래 타입이 포함됩니다.
+- `HelloPayload`
+- `InputPayload`
+- `PingPayload`
+- `WelcomePayload`
+- `SnapshotPayload`
+- `EventPayload`

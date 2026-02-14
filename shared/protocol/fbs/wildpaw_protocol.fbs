@@ -1,0 +1,72 @@
+namespace wildpaw.protocol;
+
+enum SnapshotKind : ubyte {
+  Base = 0,
+  Delta = 1,
+}
+
+table Vec2 {
+  x:float;
+  y:float;
+}
+
+table PlayerState {
+  player_id:uint;
+  position:Vec2;
+  velocity:Vec2;
+  hp:ushort = 100;
+  alive:bool = true;
+  last_processed_input_seq:uint;
+}
+
+table HelloPayload {
+  room_token:string;
+  client_version:string;
+}
+
+table InputPayload {
+  input_seq:uint;
+  move_x:byte;
+  move_y:byte;
+  fire:bool;
+  aim_radian:float;
+}
+
+table PingPayload {}
+
+table WelcomePayload {
+  player_id:uint;
+  server_tick_rate:uint;
+  server_tick:uint;
+}
+
+table SnapshotPayload {
+  kind:SnapshotKind = Base;
+  server_tick:uint;
+  server_time_ms:ulong;
+  players:[PlayerState];
+}
+
+table EventPayload {
+  name:string;
+  message:string;
+}
+
+union MessagePayload {
+  HelloPayload,
+  InputPayload,
+  PingPayload,
+  WelcomePayload,
+  SnapshotPayload,
+  EventPayload,
+}
+
+table Envelope {
+  seq:uint;
+  ack:uint;
+  ack_bits:uint;
+  payload:MessagePayload;
+}
+
+root_type Envelope;
+file_identifier "WPAR";
