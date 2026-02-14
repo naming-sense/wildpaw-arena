@@ -1,50 +1,88 @@
 #include "room/room_session.hpp"
 
 #include <algorithm>
-#include <sstream>
 
 namespace wildpaw::room {
 
 RoomSession::RoomSession(std::uint32_t playerId) : playerId_(playerId) {}
 
-void RoomSession::onClientPacket(std::uint32_t sequence) {
-  markReceived(sequence);
+void RoomSession::onClientPacket(std::uint32_t sequence,
+                                 std::uint32_t clientAck,
+                                 std::uint32_t clientAckBits) {
+  if (sequence != 0) {
+    markReceivedClientSequence(sequence);
 
-  if (sequence > ackState_.remoteSeq) {
-    ackState_.remoteSeq = sequence;
-    ackState_.ack = sequence;
+    if (sequence > outboundAckState_.remoteSeq) {
+      outboundAckState_.remoteSeq = sequence;
+    }
+
+    if (sequence > outboundAckState_.ack) {
+      outboundAckState_.ack = sequence;
+      recomputeOutboundAckBits();
+    }
   }
+
+  lastClientAck_ = clientAck;
+  lastClientAckBits_ = clientAckBits;
 }
 
-bool RoomSession::hasReceived(std::uint32_t sequence) const {
-  return std::find(receiveWindow_.begin(), receiveWindow_.end(), sequence) != receiveWindow_.end();
+std::uint32_t RoomSession::nextServerSequence() {
+  return ++serverSequence_;
 }
 
-std::string RoomSession::encodeReliableEnvelope(
-    std::span<const std::byte> payload,
-    std::uint32_t serverTick) const {
-  std::ostringstream oss;
-  oss << "player=" << playerId_
-      << " tick=" << serverTick
-      << " ack=" << ackState_.ack
-      << " payloadBytes=" << payload.size();
-  return oss.str();
+bool RoomSession::wasServerPacketAcked(std::uint32_t serverSequence) const {
+  if (serverSequence == 0) {
+    return false;
+  }
+
+  if (serverSequence == lastClientAck_) {
+    return true;
+  }
+
+  if (serverSequence > lastClientAck_) {
+    return false;
+  }
+
+  const std::uint32_t diff = lastClientAck_ - serverSequence - 1;
+  if (diff >= 32) {
+    return false;
+  }
+
+  return ((lastClientAckBits_ >> diff) & 1u) != 0;
 }
 
-void RoomSession::markReceived(std::uint32_t sequence) {
-  if (hasReceived(sequence)) {
+bool RoomSession::hasReceivedClientSequence(std::uint32_t sequence) const {
+  return std::find(receivedClientSeqWindow_.begin(), receivedClientSeqWindow_.end(),
+                   sequence) != receivedClientSeqWindow_.end();
+}
+
+void RoomSession::markReceivedClientSequence(std::uint32_t sequence) {
+  if (hasReceivedClientSequence(sequence)) {
     return;
   }
 
-  receiveWindow_.push_back(sequence);
-  while (receiveWindow_.size() > 64) {
-    receiveWindow_.pop_front();
+  receivedClientSeqWindow_.push_back(sequence);
+  while (receivedClientSeqWindow_.size() > 128) {
+    receivedClientSeqWindow_.pop_front();
+  }
+}
+
+void RoomSession::recomputeOutboundAckBits() {
+  outboundAckState_.ackBits = 0;
+  const std::uint32_t ack = outboundAckState_.ack;
+
+  if (ack == 0) {
+    return;
   }
 
-  if (ackState_.ack >= sequence) {
-    const std::uint32_t diff = ackState_.ack - sequence;
+  for (const auto sequence : receivedClientSeqWindow_) {
+    if (sequence >= ack) {
+      continue;
+    }
+
+    const std::uint32_t diff = ack - sequence - 1;
     if (diff < 32) {
-      ackState_.ackBits |= (1u << diff);
+      outboundAckState_.ackBits |= (1u << diff);
     }
   }
 }

@@ -7,6 +7,8 @@ Three.js 클라이언트에 붙일 netcode 모듈 스캐폴드입니다.
 - `prediction.ts`: 로컬 예측/복구
 - `interpolation.ts`: 원격 플레이어 보간 버퍼
 - `netClient.ts`: WebSocket 기반 실시간 클라이언트 래퍼
+  - `seq/ack/ackBits` 메타 자동 부여
+  - 서버 수신 패킷의 `seq`를 추적해 다음 C2S 메시지에 ack 반영
 
 ## 통합 순서 (M1)
 1. 게임 입력 시스템에서 `InputFrame` 생성

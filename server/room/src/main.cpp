@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "room/interest_manager.hpp"
+#include "room/room_session.hpp"
 #include "room/room_simulation.hpp"
 #include "room/snapshot_builder.hpp"
 #include "room/wire_json.hpp"
@@ -67,10 +68,23 @@ class RoomServer;
 class WsSession : public std::enable_shared_from_this<WsSession> {
  public:
   WsSession(tcp::socket&& socket, RoomServer& server, std::uint32_t playerId)
-      : ws_(std::move(socket)), server_(server), playerId_(playerId) {}
+      : ws_(std::move(socket)),
+        server_(server),
+        playerId_(playerId),
+        reliability_(playerId) {}
 
   void start();
   void send(std::string message);
+
+  void noteClientEnvelope(const wildpaw::room::wire::EnvelopeMeta& meta) {
+    reliability_.onClientPacket(meta.seq, meta.ack, meta.ackBits);
+  }
+
+  [[nodiscard]] wildpaw::room::wire::EnvelopeMeta nextEnvelopeMeta() {
+    const std::uint32_t seq = reliability_.nextServerSequence();
+    const auto& ackState = reliability_.outboundAckState();
+    return {.seq = seq, .ack = ackState.ack, .ackBits = ackState.ackBits};
+  }
 
   [[nodiscard]] std::uint32_t playerId() const { return playerId_; }
 
@@ -85,6 +99,8 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
 
   RoomServer& server_;
   std::uint32_t playerId_{0};
+  wildpaw::room::RoomSession reliability_;
+  bool closed_{false};
 };
 
 class RoomServer {
@@ -132,47 +148,68 @@ class RoomServer {
     simulation_.addPlayer(playerId);
 
     session->send(wildpaw::room::wire::encodeWelcome(
-        playerId, simulation_.tickRate(), simulation_.currentTick()));
+        playerId, simulation_.tickRate(), simulation_.currentTick(),
+        session->nextEnvelopeMeta()));
 
     const auto base = simulation_.snapshot();
-    session->send(wildpaw::room::wire::encodeSnapshotBase(base, unixTimeMs()));
+    session->send(wildpaw::room::wire::encodeSnapshotBase(
+        base, unixTimeMs(), session->nextEnvelopeMeta()));
 
     std::cout << "[room] player connected: " << playerId
               << " activePlayers=" << sessions_.size() << '\n';
   }
 
   void onSessionMessage(std::uint32_t playerId, std::string_view raw) {
-    const auto envelopeType = wildpaw::room::wire::extractEnvelopeType(raw);
-    if (!envelopeType.has_value()) {
-      return;
-    }
-
-    if (*envelopeType == "C2S_INPUT") {
-      const auto inputFrame = wildpaw::room::wire::decodeInputEnvelope(raw);
-      if (inputFrame.has_value()) {
-        simulation_.pushInput(playerId, *inputFrame);
-      }
-      return;
-    }
-
     auto session = getSession(playerId);
     if (!session) {
       return;
     }
 
+    const auto envelopeType = wildpaw::room::wire::extractEnvelopeType(raw);
+    if (!envelopeType.has_value()) {
+      session->send(wildpaw::room::wire::encodeEvent(
+          "warn", "invalid-envelope", session->nextEnvelopeMeta()));
+      return;
+    }
+
+    const auto envelopeMeta = wildpaw::room::wire::decodeEnvelopeMeta(raw);
+    if (envelopeMeta.has_value()) {
+      session->noteClientEnvelope(*envelopeMeta);
+    }
+
+    if (*envelopeType == "C2S_INPUT") {
+      const auto inputFrame = wildpaw::room::wire::decodeInputEnvelope(raw);
+      if (!inputFrame.has_value()) {
+        session->send(wildpaw::room::wire::encodeEvent(
+            "warn", "invalid-input-payload", session->nextEnvelopeMeta()));
+        return;
+      }
+
+      // 구형 클라이언트(메타 없는 경우) 호환: seq를 inputSeq로 대체.
+      if (!envelopeMeta.has_value()) {
+        session->noteClientEnvelope(
+            {.seq = inputFrame->inputSeq, .ack = 0, .ackBits = 0});
+      }
+
+      simulation_.pushInput(playerId, *inputFrame);
+      return;
+    }
+
     if (*envelopeType == "C2S_HELLO") {
       session->send(wildpaw::room::wire::encodeWelcome(
-          playerId, simulation_.tickRate(), simulation_.currentTick()));
+          playerId, simulation_.tickRate(), simulation_.currentTick(),
+          session->nextEnvelopeMeta()));
       return;
     }
 
     if (*envelopeType == "C2S_PING") {
-      session->send(wildpaw::room::wire::encodeEvent("pong", "ok"));
+      session->send(wildpaw::room::wire::encodeEvent(
+          "pong", "ok", session->nextEnvelopeMeta()));
       return;
     }
 
-    session->send(
-        wildpaw::room::wire::encodeEvent("warn", "unsupported-message-type"));
+    session->send(wildpaw::room::wire::encodeEvent(
+        "warn", "unsupported-message-type", session->nextEnvelopeMeta()));
   }
 
   void onSessionClosed(std::uint32_t playerId) {
@@ -237,7 +274,8 @@ class RoomServer {
           }
 
           session->send(wildpaw::room::wire::encodeSnapshotDelta(
-              deltaSnapshot, serverTimeMs, visibleChanged));
+              deltaSnapshot, serverTimeMs, visibleChanged,
+              session->nextEnvelopeMeta()));
         }
       }
 
@@ -271,7 +309,7 @@ void WsSession::start() {
       websocket::stream_base::timeout::suggested(beast::role_type::server));
   ws_.set_option(websocket::stream_base::decorator(
       [](websocket::response_type& response) {
-        response.set(beast::http::field::server, "wildpaw-room/0.2");
+        response.set(beast::http::field::server, "wildpaw-room/0.3");
       }));
   ws_.text(true);
 
@@ -333,6 +371,11 @@ void WsSession::doWrite() {
 }
 
 void WsSession::onClosed(const beast::error_code& ec) {
+  if (closed_) {
+    return;
+  }
+  closed_ = true;
+
   if (ec != websocket::error::closed) {
     std::cerr << "[room] session(" << playerId_ << ") closed: " << ec.message()
               << '\n';

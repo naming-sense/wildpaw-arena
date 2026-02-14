@@ -1,17 +1,13 @@
 #include "room/wire_json.hpp"
 
 #include <algorithm>
-#include <array>
 #include <charconv>
-#include <cmath>
 #include <cstddef>
 #include <cstdlib>
-#include <limits>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace wildpaw::room::wire {
 namespace {
@@ -124,16 +120,25 @@ std::string encodePlayers(std::span<const PlayerState> players) {
 
     oss << "{"
         << "\"playerId\":" << player.playerId << ','
-        << "\"position\":{\"x\":" << player.position.x << ",\"y\":" << player.position.y
-        << "},"
-        << "\"velocity\":{\"x\":" << player.velocity.x << ",\"y\":" << player.velocity.y
-        << "},"
+        << "\"position\":{\"x\":" << player.position.x << ",\"y\":"
+        << player.position.y << "},"
+        << "\"velocity\":{\"x\":" << player.velocity.x << ",\"y\":"
+        << player.velocity.y << "},"
         << "\"hp\":" << player.hp << ','
         << "\"alive\":" << boolToJson(player.alive) << ','
         << "\"lastProcessedInputSeq\":" << player.lastProcessedInputSeq << "}";
   }
 
   oss << ']';
+  return oss.str();
+}
+
+std::string envelopePrefix(std::string_view type, const EnvelopeMeta& meta) {
+  std::ostringstream oss;
+  oss << "{\"seq\":" << meta.seq << ','
+      << "\"ack\":" << meta.ack << ','
+      << "\"ackBits\":" << meta.ackBits << ','
+      << "\"t\":\"" << type << "\",\"d\":{";
   return oss.str();
 }
 
@@ -145,6 +150,39 @@ std::optional<std::string> extractEnvelopeType(std::string_view raw) {
     return std::nullopt;
   }
   return std::string{*maybeType};
+}
+
+std::optional<EnvelopeMeta> decodeEnvelopeMeta(std::string_view raw) {
+  EnvelopeMeta meta;
+
+  const auto seqRaw = findFieldValue(raw, "seq");
+  if (!seqRaw.has_value()) {
+    return std::nullopt;
+  }
+
+  const auto seq = parseUint32(*seqRaw);
+  if (!seq.has_value()) {
+    return std::nullopt;
+  }
+
+  meta.seq = *seq;
+
+  const auto ackRaw = findFieldValue(raw, "ack");
+  const auto ackBitsRaw = findFieldValue(raw, "ackBits");
+
+  if (ackRaw.has_value()) {
+    if (const auto ack = parseUint32(*ackRaw); ack.has_value()) {
+      meta.ack = *ack;
+    }
+  }
+
+  if (ackBitsRaw.has_value()) {
+    if (const auto ackBits = parseUint32(*ackBitsRaw); ackBits.has_value()) {
+      meta.ackBits = *ackBits;
+    }
+  }
+
+  return meta;
 }
 
 std::optional<InputFrame> decodeInputEnvelope(std::string_view raw) {
@@ -186,9 +224,10 @@ std::optional<InputFrame> decodeInputEnvelope(std::string_view raw) {
 
 std::string encodeWelcome(std::uint32_t playerId,
                           std::uint32_t tickRate,
-                          std::uint32_t serverTick) {
+                          std::uint32_t serverTick,
+                          const EnvelopeMeta& meta) {
   std::ostringstream oss;
-  oss << "{\"t\":\"S2C_WELCOME\",\"d\":{"
+  oss << envelopePrefix("S2C_WELCOME", meta)
       << "\"playerId\":" << playerId << ','
       << "\"serverTickRate\":" << tickRate << ','
       << "\"serverTick\":" << serverTick << "}}\n";
@@ -196,9 +235,10 @@ std::string encodeWelcome(std::uint32_t playerId,
 }
 
 std::string encodeSnapshotBase(const WorldSnapshot& snapshot,
-                               std::uint64_t serverTimeMs) {
+                               std::uint64_t serverTimeMs,
+                               const EnvelopeMeta& meta) {
   std::ostringstream oss;
-  oss << "{\"t\":\"S2C_SNAPSHOT_BASE\",\"d\":{"
+  oss << envelopePrefix("S2C_SNAPSHOT_BASE", meta)
       << "\"serverTick\":" << snapshot.serverTick << ','
       << "\"serverTimeMs\":" << serverTimeMs << ','
       << "\"players\":" << encodePlayers(snapshot.players)
@@ -208,9 +248,10 @@ std::string encodeSnapshotBase(const WorldSnapshot& snapshot,
 
 std::string encodeSnapshotDelta(const SnapshotDelta& delta,
                                 std::uint64_t serverTimeMs,
-                                std::span<const PlayerState> visiblePlayers) {
+                                std::span<const PlayerState> visiblePlayers,
+                                const EnvelopeMeta& meta) {
   std::ostringstream oss;
-  oss << "{\"t\":\"S2C_SNAPSHOT_DELTA\",\"d\":{"
+  oss << envelopePrefix("S2C_SNAPSHOT_DELTA", meta)
       << "\"serverTick\":" << delta.serverTick << ','
       << "\"serverTimeMs\":" << serverTimeMs << ','
       << "\"players\":" << encodePlayers(visiblePlayers)
@@ -218,9 +259,11 @@ std::string encodeSnapshotDelta(const SnapshotDelta& delta,
   return oss.str();
 }
 
-std::string encodeEvent(std::string_view eventName, std::string_view message) {
+std::string encodeEvent(std::string_view eventName,
+                        std::string_view message,
+                        const EnvelopeMeta& meta) {
   std::ostringstream oss;
-  oss << "{\"t\":\"S2C_EVENT\",\"d\":{"
+  oss << envelopePrefix("S2C_EVENT", meta)
       << "\"name\":\"" << eventName << "\",";
 
   if (!message.empty()) {
