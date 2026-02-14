@@ -1,0 +1,10 @@
+# Build outputs
+build/
+out/
+
+# JS/TS
+node_modules/
+dist/
+
+# OS
+.DS_Store
