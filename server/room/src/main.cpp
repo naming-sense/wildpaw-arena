@@ -80,11 +80,19 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
 
   void start();
 
+  enum class ReliableClass {
+    None = 0,
+    Standard,
+    Critical,
+  };
+
   void sendBinary(std::vector<std::uint8_t> payload);
   void sendReliableBinary(std::uint32_t sequence,
-                          std::vector<std::uint8_t> payload);
+                          std::vector<std::uint8_t> payload,
+                          ReliableClass reliableClass = ReliableClass::Standard);
 
   void noteClientEnvelope(const wildpaw::room::wire::EnvelopeMeta& meta);
+  void pumpRetransmit();
 
   [[nodiscard]] wildpaw::room::wire::EnvelopeMeta nextEnvelopeMeta() {
     std::lock_guard<std::mutex> lock(reliabilityMutex_);
@@ -107,16 +115,37 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
   [[nodiscard]] std::uint32_t playerId() const { return playerId_; }
 
  private:
+  struct ReliablePolicy {
+    std::chrono::milliseconds timeout{120};
+    std::uint8_t maxRetries{3};
+  };
+
   struct ReliablePacket {
     std::uint32_t sequence{0};
     std::vector<std::uint8_t> payload;
     std::chrono::steady_clock::time_point lastSent{};
     std::uint8_t retries{0};
+    std::uint8_t maxRetries{3};
+    std::chrono::milliseconds timeout{120};
+    ReliableClass reliableClass{ReliableClass::Standard};
   };
 
   static constexpr std::size_t kMaxReliableQueue = 256;
-  static constexpr std::uint8_t kMaxRetransmitRetries = 5;
-  static constexpr std::chrono::milliseconds kRetransmitTimeout{120};
+
+  static ReliablePolicy policyFor(ReliableClass reliableClass) {
+    switch (reliableClass) {
+      case ReliableClass::Critical:
+        return ReliablePolicy{.timeout = std::chrono::milliseconds(180),
+                              .maxRetries = 8};
+      case ReliableClass::Standard:
+        return ReliablePolicy{.timeout = std::chrono::milliseconds(120),
+                              .maxRetries = 3};
+      case ReliableClass::None:
+      default:
+        return ReliablePolicy{.timeout = std::chrono::milliseconds(0),
+                              .maxRetries = 0};
+    }
+  }
 
   void doRead();
   void doWrite();
@@ -302,12 +331,14 @@ class RoomServer {
     const auto welcomeMeta = session->nextEnvelopeMeta();
     auto welcomePayload = wildpaw::room::wire::encodeWelcomeEnvelope(
         playerId, simulation_.tickRate(), simulation_.currentTick(), welcomeMeta);
-    session->sendReliableBinary(welcomeMeta.seq, std::move(welcomePayload));
+    session->sendReliableBinary(welcomeMeta.seq, std::move(welcomePayload),
+                                WsSession::ReliableClass::Critical);
 
     const auto baseMeta = session->nextEnvelopeMeta();
     auto basePayload = wildpaw::room::wire::encodeSnapshotEnvelope(
         false, baseSnapshot.serverTick, unixTimeMs(), baseSnapshot.players, baseMeta);
-    session->sendReliableBinary(baseMeta.seq, std::move(basePayload));
+    session->sendReliableBinary(baseMeta.seq, std::move(basePayload),
+                                WsSession::ReliableClass::Critical);
     snapshotBaseSentTotal_.fetch_add(1, std::memory_order_relaxed);
 
     std::cout << "[room] player connected: " << playerId
@@ -323,7 +354,8 @@ class RoomServer {
 
     const auto decoded = wildpaw::room::wire::decodeClientEnvelope(payload);
     if (!decoded.has_value()) {
-      sendReliableEvent(session, "warn", "invalid-envelope");
+      sendEventWithPolicy(session, "warn", "invalid-envelope",
+                          WsSession::ReliableClass::None);
       return;
     }
 
@@ -331,7 +363,8 @@ class RoomServer {
 
     switch (decoded->type) {
       case wildpaw::room::wire::ClientMessageType::Hello:
-        sendReliableEvent(session, "hello.ack", "ok");
+        sendEventWithPolicy(session, "hello.ack", "ok",
+                            WsSession::ReliableClass::Standard);
         return;
 
       case wildpaw::room::wire::ClientMessageType::Input:
@@ -340,11 +373,13 @@ class RoomServer {
         return;
 
       case wildpaw::room::wire::ClientMessageType::Ping:
-        sendReliableEvent(session, "pong", "ok");
+        sendEventWithPolicy(session, "pong", "ok",
+                            WsSession::ReliableClass::None);
         return;
 
       default:
-        sendReliableEvent(session, "warn", "unsupported-message-type");
+        sendEventWithPolicy(session, "warn", "unsupported-message-type",
+                            WsSession::ReliableClass::None);
         return;
     }
   }
@@ -400,13 +435,19 @@ class RoomServer {
     return total;
   }
 
-  void sendReliableEvent(const std::shared_ptr<WsSession>& session,
-                         std::string_view name,
-                         std::string_view message) {
+  void sendEventWithPolicy(const std::shared_ptr<WsSession>& session,
+                           std::string_view name,
+                           std::string_view message,
+                           WsSession::ReliableClass reliableClass) {
     const auto meta = session->nextEnvelopeMeta();
-    auto payload =
-        wildpaw::room::wire::encodeEventEnvelope(name, message, meta);
-    session->sendReliableBinary(meta.seq, std::move(payload));
+    auto payload = wildpaw::room::wire::encodeEventEnvelope(name, message, meta);
+
+    if (reliableClass == WsSession::ReliableClass::None) {
+      session->sendBinary(std::move(payload));
+    } else {
+      session->sendReliableBinary(meta.seq, std::move(payload), reliableClass);
+    }
+
     eventSentTotal_.fetch_add(1, std::memory_order_relaxed);
   }
 
@@ -517,9 +558,10 @@ class RoomServer {
 
     const std::uint64_t serverTimeMs = unixTimeMs();
 
+    auto sessions = snapshotSessions();
+
     if (!deltaSnapshot.changedPlayers.empty()) {
       interestManager_.rebuild(worldSnapshot.players, 8.0f);
-      auto sessions = snapshotSessions();
 
       for (const auto& [playerId, session] : sessions) {
         const auto visiblePlayers = interestManager_.filterFor(playerId, 25.0f);
@@ -536,6 +578,10 @@ class RoomServer {
         session->sendBinary(std::move(payload));
         snapshotDeltaSentTotal_.fetch_add(1, std::memory_order_relaxed);
       }
+    }
+
+    for (const auto& [_, session] : sessions) {
+      session->pumpRetransmit();
     }
 
     const auto tickElapsed =
@@ -598,6 +644,16 @@ class RoomServer {
 };
 
 void WsSession::noteClientEnvelope(const wildpaw::room::wire::EnvelopeMeta& meta) {
+  {
+    std::lock_guard<std::mutex> lock(reliabilityMutex_);
+    reliability_.onClientPacket(meta.seq, meta.ack, meta.ackBits);
+  }
+
+  // 클라이언트 ack를 반영한 직후 재전송 큐를 정리/재전송.
+  pumpRetransmit();
+}
+
+void WsSession::pumpRetransmit() {
   using clock = std::chrono::steady_clock;
 
   std::vector<std::vector<std::uint8_t>> retransmitPayloads;
@@ -605,8 +661,6 @@ void WsSession::noteClientEnvelope(const wildpaw::room::wire::EnvelopeMeta& meta
 
   {
     std::scoped_lock lock(reliabilityMutex_, reliableQueueMutex_);
-
-    reliability_.onClientPacket(meta.seq, meta.ack, meta.ackBits);
 
     const auto now = clock::now();
     auto it = reliableQueue_.begin();
@@ -617,8 +671,13 @@ void WsSession::noteClientEnvelope(const wildpaw::room::wire::EnvelopeMeta& meta
         continue;
       }
 
-      if (now - it->lastSent >= kRetransmitTimeout) {
-        if (it->retries >= kMaxRetransmitRetries) {
+      if (it->timeout.count() <= 0) {
+        it = reliableQueue_.erase(it);
+        continue;
+      }
+
+      if (now - it->lastSent >= it->timeout) {
+        if (it->retries >= it->maxRetries) {
           it = reliableQueue_.erase(it);
           ++dropped;
           continue;
@@ -679,7 +738,7 @@ void WsSession::doRead() {
       const auto meta = self->nextEnvelopeMeta();
       auto eventPayload = wildpaw::room::wire::encodeEventEnvelope(
           "warn", "binary-c2s-required", meta);
-      self->sendReliableBinary(meta.seq, std::move(eventPayload));
+      self->sendBinary(std::move(eventPayload));
 
       self->doRead();
       return;
@@ -710,8 +769,16 @@ void WsSession::sendBinary(std::vector<std::uint8_t> payload) {
 }
 
 void WsSession::sendReliableBinary(std::uint32_t sequence,
-                                   std::vector<std::uint8_t> payload) {
+                                   std::vector<std::uint8_t> payload,
+                                   ReliableClass reliableClass) {
   using clock = std::chrono::steady_clock;
+
+  if (reliableClass == ReliableClass::None) {
+    sendBinary(std::move(payload));
+    return;
+  }
+
+  const auto policy = policyFor(reliableClass);
 
   bool dropped = false;
   {
@@ -727,6 +794,9 @@ void WsSession::sendReliableBinary(std::uint32_t sequence,
         .payload = payload,
         .lastSent = clock::now(),
         .retries = 0,
+        .maxRetries = policy.maxRetries,
+        .timeout = policy.timeout,
+        .reliableClass = reliableClass,
     });
   }
 

@@ -8,6 +8,7 @@
   - 전용 tick thread(고정주기) + `pendingInputs` 워커큐 drain
   - 세션별 `strand + write_queue`로 송신 순서 보장
   - ack 기반 reliable retransmit queue (유실 복구)
+  - 메시지 타입별 정책(Critical/Standard/BestEffort)
   - Prometheus `/metrics` 노출
   - grid 기반 spatial interest filtering
 - `gateway/`: 인증/라우팅 계층 (TODO)
