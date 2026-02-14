@@ -4,7 +4,9 @@
 - `room/`: 실시간 authoritative 룸 서버
   - WebSocket **binary-only** C2S/S2C
   - FlatBuffers Envelope decode/encode
-  - 30Hz tick + 관심영역 기반 snapshot 전송
+  - `io_context` 멀티스레드 + `work_guard`
+  - 전용 tick thread(고정주기) + `pendingInputs` 워커큐 drain
+  - 세션별 `strand + write_queue`로 송신 순서 보장
 - `gateway/`: 인증/라우팅 계층 (TODO)
 - `matchmaker/`: 매칭 계층 (TODO)
 
@@ -17,9 +19,16 @@ cmake --build build -j
 
 ## 실행
 ```bash
-./build/room/wildpaw-room         # 기본 7001 포트
-./build/room/wildpaw-room 7010    # 포트 지정
+./build/room/wildpaw-room [port] [io_threads] [tick_rate]
+
+# 예시
+./build/room/wildpaw-room 7001 4 30
 ```
+
+인자:
+- `port` (기본: `7001`)
+- `io_threads` (기본: `max(2, hw_concurrency)`)
+- `tick_rate` (기본: `30`)
 
 ## 전송 프로토콜
 - 스키마: `shared/protocol/fbs/wildpaw_protocol.fbs`
@@ -36,6 +45,18 @@ cmake --build build -j
 - `SnapshotPayload` (`kind=Base|Delta`)
 - `EventPayload`
 
+## 코드젠
+```bash
+./scripts/generate_protocol.sh
+```
+
+## 로컬 부하 벤치
+```bash
+cd client/web
+npm install
+npx tsx ./scripts/bench-room.ts --url ws://127.0.0.1:7001 --clients 150 --duration-ms 8000 --input-interval-ms 50
+```
+
 ## 참고
-현재는 FlatBuffers full-binary로 통신하며,
-이전 JSON 경로(`wire_json.*`)는 마이그레이션 참고용으로 남아 있습니다.
+`wire_json.*` / `wire_binary.*`는 마이그레이션/비교용 레거시 경로입니다.
+실제 메인 경로는 `wire_flatbuffers.*`입니다.

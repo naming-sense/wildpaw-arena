@@ -3,14 +3,17 @@
 #include <boost/beast/websocket.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <deque>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -72,14 +75,16 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
         reliability_(playerId) {}
 
   void start();
-
   void sendBinary(std::vector<std::uint8_t> payload);
 
   void noteClientEnvelope(const wildpaw::room::wire::EnvelopeMeta& meta) {
+    std::lock_guard<std::mutex> lock(reliabilityMutex_);
     reliability_.onClientPacket(meta.seq, meta.ack, meta.ackBits);
   }
 
   [[nodiscard]] wildpaw::room::wire::EnvelopeMeta nextEnvelopeMeta() {
+    std::lock_guard<std::mutex> lock(reliabilityMutex_);
+
     const std::uint32_t seq = reliability_.nextServerSequence();
     const auto& ackState = reliability_.outboundAckState();
 
@@ -104,6 +109,8 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
   RoomServer& server_;
   std::uint32_t playerId_{0};
   wildpaw::room::RoomSession reliability_;
+  std::mutex reliabilityMutex_;
+
   bool closed_{false};
 };
 
@@ -115,7 +122,6 @@ class RoomServer {
       : io_(io),
         acceptor_(net::make_strand(io)),
         simulation_(tickRate),
-        tickTimer_(io),
         tickIntervalMs_(std::max<int>(1, 1000 / static_cast<int>(tickRate))) {
     beast::error_code ec;
 
@@ -140,27 +146,59 @@ class RoomServer {
     }
   }
 
+  ~RoomServer() { stop(); }
+
   void start() {
+    if (running_.exchange(true)) {
+      return;
+    }
+
     doAccept();
-    scheduleTick();
+    startTickThread();
+  }
+
+  void stop() {
+    if (!running_.exchange(false)) {
+      return;
+    }
+
+    net::dispatch(acceptor_.get_executor(), [this]() {
+      beast::error_code ec;
+      acceptor_.cancel(ec);
+      acceptor_.close(ec);
+    });
+
+    if (tickThread_.joinable()) {
+      tickThread_.request_stop();
+      tickThread_.join();
+    }
   }
 
   void onSessionReady(const std::shared_ptr<WsSession>& session) {
     const std::uint32_t playerId = session->playerId();
 
-    sessions_[playerId] = session;
-    simulation_.addPlayer(playerId);
+    {
+      std::lock_guard<std::mutex> lock(sessionsMutex_);
+      sessions_[playerId] = session;
+    }
+
+    wildpaw::room::WorldSnapshot baseSnapshot;
+    {
+      std::lock_guard<std::mutex> lock(simulationMutex_);
+      simulation_.addPlayer(playerId);
+      baseSnapshot = simulation_.snapshot();
+    }
 
     session->sendBinary(wildpaw::room::wire::encodeWelcomeEnvelope(
         playerId, simulation_.tickRate(), simulation_.currentTick(),
         session->nextEnvelopeMeta()));
 
-    const auto base = simulation_.snapshot();
     session->sendBinary(wildpaw::room::wire::encodeSnapshotEnvelope(
-        false, base.serverTick, unixTimeMs(), base.players, session->nextEnvelopeMeta()));
+        false, baseSnapshot.serverTick, unixTimeMs(), baseSnapshot.players,
+        session->nextEnvelopeMeta()));
 
     std::cout << "[room] player connected: " << playerId
-              << " activePlayers=" << sessions_.size() << '\n';
+              << " activePlayers=" << activeSessionCount() << '\n';
   }
 
   void onSessionBinaryMessage(std::uint32_t playerId,
@@ -187,7 +225,7 @@ class RoomServer {
         return;
 
       case wildpaw::room::wire::ClientMessageType::Input:
-        simulation_.pushInput(playerId, decoded->input);
+        enqueueInput(playerId, decoded->input);
         return;
 
       case wildpaw::room::wire::ClientMessageType::Ping:
@@ -203,20 +241,33 @@ class RoomServer {
   }
 
   void onSessionClosed(std::uint32_t playerId) {
-    auto found = sessions_.find(playerId);
-    if (found == sessions_.end()) {
-      return;
+    {
+      std::lock_guard<std::mutex> lock(sessionsMutex_);
+      auto found = sessions_.find(playerId);
+      if (found != sessions_.end()) {
+        sessions_.erase(found);
+      }
     }
 
-    sessions_.erase(found);
-    simulation_.removePlayer(playerId);
+    {
+      std::lock_guard<std::mutex> lock(simulationMutex_);
+      simulation_.removePlayer(playerId);
+    }
 
     std::cout << "[room] player disconnected: " << playerId
-              << " activePlayers=" << sessions_.size() << '\n';
+              << " activePlayers=" << activeSessionCount() << '\n';
   }
 
  private:
+  struct PendingInput {
+    std::uint32_t playerId{0};
+    wildpaw::room::InputFrame input{};
+  };
+
+  static constexpr std::size_t kMaxPendingInputFrames = 100000;
+
   std::shared_ptr<WsSession> getSession(std::uint32_t playerId) {
+    std::lock_guard<std::mutex> lock(sessionsMutex_);
     auto found = sessions_.find(playerId);
     if (found == sessions_.end()) {
       return nullptr;
@@ -224,12 +275,55 @@ class RoomServer {
     return found->second;
   }
 
+  [[nodiscard]] std::size_t activeSessionCount() {
+    std::lock_guard<std::mutex> lock(sessionsMutex_);
+    return sessions_.size();
+  }
+
+  void enqueueInput(std::uint32_t playerId, const wildpaw::room::InputFrame& input) {
+    std::lock_guard<std::mutex> lock(pendingInputMutex_);
+
+    if (pendingInputs_.size() >= kMaxPendingInputFrames) {
+      pendingInputs_.pop_front();
+      ++droppedInputFrames_;
+    }
+
+    pendingInputs_.push_back(PendingInput{.playerId = playerId, .input = input});
+  }
+
+  std::deque<PendingInput> drainPendingInputs() {
+    std::deque<PendingInput> drained;
+
+    std::lock_guard<std::mutex> lock(pendingInputMutex_);
+    drained.swap(pendingInputs_);
+
+    return drained;
+  }
+
+  std::vector<std::pair<std::uint32_t, std::shared_ptr<WsSession>>> snapshotSessions() {
+    std::vector<std::pair<std::uint32_t, std::shared_ptr<WsSession>>> copy;
+
+    std::lock_guard<std::mutex> lock(sessionsMutex_);
+    copy.reserve(sessions_.size());
+    for (const auto& [playerId, session] : sessions_) {
+      copy.emplace_back(playerId, session);
+    }
+
+    return copy;
+  }
+
   void doAccept() {
+    if (!running_.load()) {
+      return;
+    }
+
     acceptor_.async_accept(net::make_strand(io_),
                            [this](beast::error_code ec, tcp::socket socket) {
                              if (ec) {
-                               std::cerr << "[room] accept failed: " << ec.message()
-                                         << '\n';
+                               if (ec != net::error::operation_aborted) {
+                                 std::cerr << "[room] accept failed: " << ec.message()
+                                           << '\n';
+                               }
                              } else {
                                const std::uint32_t playerId = nextPlayerId_++;
                                auto session = std::make_shared<WsSession>(
@@ -237,47 +331,70 @@ class RoomServer {
                                session->start();
                              }
 
-                             doAccept();
+                             if (running_.load()) {
+                               doAccept();
+                             }
                            });
   }
 
-  void scheduleTick() {
-    tickTimer_.expires_after(std::chrono::milliseconds(tickIntervalMs_));
-    tickTimer_.async_wait([this](const beast::error_code& ec) {
-      if (ec) {
-        return;
+  void startTickThread() {
+    tickThread_ = std::jthread([this](std::stop_token stopToken) {
+      using clock = std::chrono::steady_clock;
+      auto next = clock::now();
+
+      while (running_.load() && !stopToken.stop_requested()) {
+        next += std::chrono::milliseconds(tickIntervalMs_);
+        tickOnce();
+        std::this_thread::sleep_until(next);
       }
-
-      const auto worldSnapshot = simulation_.tick();
-      const auto deltaSnapshot = snapshotBuilder_.buildDelta(worldSnapshot);
-      const std::uint64_t serverTimeMs = unixTimeMs();
-
-      if (!deltaSnapshot.changedPlayers.empty()) {
-        for (const auto& [playerId, session] : sessions_) {
-          const auto visiblePlayers =
-              interestManager_.filterFor(playerId, worldSnapshot.players, 25.0f);
-          const auto visibleChanged =
-              selectVisibleChangedPlayers(deltaSnapshot, visiblePlayers);
-
-          if (visibleChanged.empty()) {
-            continue;
-          }
-
-          session->sendBinary(wildpaw::room::wire::encodeSnapshotEnvelope(
-              true, deltaSnapshot.serverTick, serverTimeMs, visibleChanged,
-              session->nextEnvelopeMeta()));
-        }
-      }
-
-      if (worldSnapshot.serverTick % simulation_.tickRate() == 0) {
-        std::cout << "[room] tick=" << worldSnapshot.serverTick
-                  << " activePlayers=" << worldSnapshot.players.size()
-                  << " changedPlayers=" << deltaSnapshot.changedPlayers.size()
-                  << '\n';
-      }
-
-      scheduleTick();
     });
+  }
+
+  void tickOnce() {
+    const auto drainedInputs = drainPendingInputs();
+
+    wildpaw::room::WorldSnapshot worldSnapshot;
+    wildpaw::room::SnapshotDelta deltaSnapshot;
+
+    {
+      std::lock_guard<std::mutex> lock(simulationMutex_);
+
+      for (const auto& pending : drainedInputs) {
+        simulation_.pushInput(pending.playerId, pending.input);
+      }
+
+      worldSnapshot = simulation_.tick();
+      deltaSnapshot = snapshotBuilder_.buildDelta(worldSnapshot);
+    }
+
+    const std::uint64_t serverTimeMs = unixTimeMs();
+
+    if (!deltaSnapshot.changedPlayers.empty()) {
+      auto sessions = snapshotSessions();
+
+      for (const auto& [playerId, session] : sessions) {
+        const auto visiblePlayers =
+            interestManager_.filterFor(playerId, worldSnapshot.players, 25.0f);
+        const auto visibleChanged =
+            selectVisibleChangedPlayers(deltaSnapshot, visiblePlayers);
+
+        if (visibleChanged.empty()) {
+          continue;
+        }
+
+        session->sendBinary(wildpaw::room::wire::encodeSnapshotEnvelope(
+            true, deltaSnapshot.serverTick, serverTimeMs, visibleChanged,
+            session->nextEnvelopeMeta()));
+      }
+    }
+
+    if (worldSnapshot.serverTick % simulation_.tickRate() == 0) {
+      std::cout << "[room] tick=" << worldSnapshot.serverTick
+                << " activePlayers=" << worldSnapshot.players.size()
+                << " changedPlayers=" << deltaSnapshot.changedPlayers.size()
+                << " drainedInputs=" << drainedInputs.size()
+                << " droppedInputs=" << droppedInputFrames_.load() << '\n';
+    }
   }
 
   net::io_context& io_;
@@ -287,10 +404,20 @@ class RoomServer {
   wildpaw::room::SnapshotBuilder snapshotBuilder_;
   wildpaw::room::InterestManager interestManager_;
 
-  net::steady_timer tickTimer_;
   int tickIntervalMs_{33};
 
+  std::atomic<bool> running_{false};
+  std::jthread tickThread_;
+
+  std::mutex sessionsMutex_;
   std::unordered_map<std::uint32_t, std::shared_ptr<WsSession>> sessions_;
+
+  std::mutex simulationMutex_;
+
+  std::mutex pendingInputMutex_;
+  std::deque<PendingInput> pendingInputs_;
+  std::atomic<std::uint64_t> droppedInputFrames_{0};
+
   std::uint32_t nextPlayerId_{1001};
 };
 
@@ -299,7 +426,7 @@ void WsSession::start() {
       websocket::stream_base::timeout::suggested(beast::role_type::server));
   ws_.set_option(websocket::stream_base::decorator(
       [](websocket::response_type& response) {
-        response.set(beast::http::field::server, "wildpaw-room/0.5");
+        response.set(beast::http::field::server, "wildpaw-room/0.6");
       }));
 
   auto self = shared_from_this();
@@ -382,6 +509,7 @@ void WsSession::onClosed(const beast::error_code& ec) {
     std::cerr << "[room] session(" << playerId_ << ") closed: " << ec.message()
               << '\n';
   }
+
   server_.onSessionClosed(playerId_);
 }
 
@@ -390,19 +518,41 @@ int main(int argc, char* argv[]) {
     const std::uint16_t port =
         argc > 1 ? static_cast<std::uint16_t>(std::stoi(argv[1])) : 7001;
 
+    const std::size_t ioThreads =
+        argc > 2 ? std::max<std::size_t>(1, static_cast<std::size_t>(std::stoul(argv[2])))
+                 : std::max<std::size_t>(2, std::thread::hardware_concurrency());
+
+    const std::uint16_t tickRate =
+        argc > 3 ? static_cast<std::uint16_t>(std::max(1, std::stoi(argv[3]))) : 30;
+
     net::io_context io;
+    auto workGuard = net::make_work_guard(io);
+
     net::signal_set signals(io, SIGINT, SIGTERM);
 
-    RoomServer server(io, tcp::endpoint(tcp::v4(), port), 30);
+    RoomServer server(io, tcp::endpoint(tcp::v4(), port), tickRate);
     server.start();
 
     signals.async_wait([&](const beast::error_code&, int signalNumber) {
       std::cout << "[room] received signal " << signalNumber << ", shutting down\n";
+      server.stop();
+      workGuard.reset();
       io.stop();
     });
 
-    std::cout << "[room] websocket server listening on 0.0.0.0:" << port << '\n';
-    io.run();
+    std::vector<std::thread> threads;
+    threads.reserve(ioThreads);
+
+    for (std::size_t i = 0; i < ioThreads; ++i) {
+      threads.emplace_back([&io]() { io.run(); });
+    }
+
+    std::cout << "[room] websocket server listening on 0.0.0.0:" << port
+              << " ioThreads=" << ioThreads << " tickRate=" << tickRate << '\n';
+
+    for (auto& thread : threads) {
+      thread.join();
+    }
   } catch (const std::exception& exception) {
     std::cerr << "[room] fatal: " << exception.what() << '\n';
     return 1;
