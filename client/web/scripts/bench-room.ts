@@ -13,6 +13,56 @@ type Config = {
   inputIntervalMs: number;
 };
 
+class SequenceTracker {
+  private nextLocalSeq = 1;
+  private highestRemoteSeq = 0;
+  private readonly remoteWindow: number[] = [];
+
+  nextOutgoingMeta(): { seq: number; ack: number; ackBits: number } {
+    return {
+      seq: this.nextLocalSeq++,
+      ack: this.highestRemoteSeq,
+      ackBits: this.buildAckBits(),
+    };
+  }
+
+  noteRemote(seq: number): void {
+    if (!Number.isFinite(seq) || seq <= 0) {
+      return;
+    }
+
+    if (!this.remoteWindow.includes(seq)) {
+      this.remoteWindow.push(seq);
+      if (this.remoteWindow.length > 128) {
+        this.remoteWindow.shift();
+      }
+    }
+
+    if (seq > this.highestRemoteSeq) {
+      this.highestRemoteSeq = seq;
+    }
+  }
+
+  private buildAckBits(): number {
+    if (this.highestRemoteSeq === 0) {
+      return 0;
+    }
+
+    let ackBits = 0;
+    for (const seq of this.remoteWindow) {
+      if (seq >= this.highestRemoteSeq) {
+        continue;
+      }
+      const diff = this.highestRemoteSeq - seq - 1;
+      if (diff >= 0 && diff < 32) {
+        ackBits |= 1 << diff;
+      }
+    }
+
+    return ackBits >>> 0;
+  }
+}
+
 function parseArgs(): Config {
   const args = process.argv.slice(2);
 
@@ -32,16 +82,16 @@ function parseArgs(): Config {
   };
 }
 
-function buildHelloFrame(seq: number): Uint8Array {
+function buildHelloFrame(meta: { seq: number; ack: number; ackBits: number }): Uint8Array {
   const builder = new flatbuffers.Builder(128);
   const roomToken = builder.createString("bench");
-  const clientVersion = builder.createString("bench-0.1");
+  const clientVersion = builder.createString("bench-0.2");
   const payload = HelloPayload.createHelloPayload(builder, roomToken, clientVersion);
   const envelope = Envelope.createEnvelope(
     builder,
-    seq,
-    0,
-    0,
+    meta.seq,
+    meta.ack,
+    meta.ackBits,
     MessagePayload.HelloPayload,
     payload,
   );
@@ -49,14 +99,17 @@ function buildHelloFrame(seq: number): Uint8Array {
   return builder.asUint8Array();
 }
 
-function buildInputFrame(seq: number, inputSeq: number): Uint8Array {
+function buildInputFrame(
+  meta: { seq: number; ack: number; ackBits: number },
+  inputSeq: number,
+): Uint8Array {
   const builder = new flatbuffers.Builder(96);
   const payload = InputPayload.createInputPayload(builder, inputSeq, 1, 0, false, 0);
   const envelope = Envelope.createEnvelope(
     builder,
-    seq,
-    0,
-    0,
+    meta.seq,
+    meta.ack,
+    meta.ackBits,
     MessagePayload.InputPayload,
     payload,
   );
@@ -81,16 +134,16 @@ async function run(): Promise<void> {
     ws.binaryType = "arraybuffer";
     sockets.push(ws);
 
-    let seq = 1;
+    const sequenceTracker = new SequenceTracker();
     let inputSeq = 1;
 
     ws.onopen = () => {
       opened += 1;
-      ws.send(buildHelloFrame(seq++));
+      ws.send(buildHelloFrame(sequenceTracker.nextOutgoingMeta()));
 
       const timer = setInterval(() => {
         if (ws.readyState === ws.OPEN) {
-          ws.send(buildInputFrame(seq++, inputSeq++));
+          ws.send(buildInputFrame(sequenceTracker.nextOutgoingMeta(), inputSeq++));
         }
       }, config.inputIntervalMs);
       timers.push(timer);
@@ -107,6 +160,8 @@ async function run(): Promise<void> {
       }
 
       const envelope = Envelope.getRootAsEnvelope(bb);
+      sequenceTracker.noteRemote(envelope.seq());
+
       recvTotal += 1;
       if (envelope.payloadType() === MessagePayload.SnapshotPayload) {
         const snapshot = envelope.payload(new SnapshotPayload());

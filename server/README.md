@@ -7,6 +7,9 @@
   - `io_context` 멀티스레드 + `work_guard`
   - 전용 tick thread(고정주기) + `pendingInputs` 워커큐 drain
   - 세션별 `strand + write_queue`로 송신 순서 보장
+  - ack 기반 reliable retransmit queue (유실 복구)
+  - Prometheus `/metrics` 노출
+  - grid 기반 spatial interest filtering
 - `gateway/`: 인증/라우팅 계층 (TODO)
 - `matchmaker/`: 매칭 계층 (TODO)
 
@@ -19,16 +22,17 @@ cmake --build build -j
 
 ## 실행
 ```bash
-./build/room/wildpaw-room [port] [io_threads] [tick_rate]
+./build/room/wildpaw-room [port] [io_threads] [tick_rate] [metrics_port]
 
 # 예시
-./build/room/wildpaw-room 7001 4 30
+./build/room/wildpaw-room 7001 4 30 9100
 ```
 
 인자:
 - `port` (기본: `7001`)
 - `io_threads` (기본: `max(2, hw_concurrency)`)
 - `tick_rate` (기본: `30`)
+- `metrics_port` (기본: `9100`)
 
 ## 전송 프로토콜
 - 스키마: `shared/protocol/fbs/wildpaw_protocol.fbs`
@@ -49,6 +53,18 @@ cmake --build build -j
 ```bash
 ./scripts/generate_protocol.sh
 ```
+
+## Prometheus 지표
+```bash
+curl -s http://127.0.0.1:9100/metrics
+```
+
+주요 지표:
+- `wildpaw_room_pending_input_queue_depth`
+- `wildpaw_room_tick_overrun_total`
+- `wildpaw_room_retransmit_sent_total`
+- `wildpaw_room_retransmit_dropped_total`
+- `wildpaw_room_reliable_inflight_packets`
 
 ## 로컬 부하 벤치
 ```bash

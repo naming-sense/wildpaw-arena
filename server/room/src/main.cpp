@@ -1,5 +1,6 @@
 #include <boost/asio.hpp>
 #include <boost/beast.hpp>
+#include <boost/beast/http.hpp>
 #include <boost/beast/websocket.hpp>
 
 #include <algorithm>
@@ -8,10 +9,12 @@
 #include <csignal>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <span>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -27,6 +30,7 @@
 
 namespace beast = boost::beast;
 namespace websocket = beast::websocket;
+namespace http = beast::http;
 namespace net = boost::asio;
 using tcp = net::ip::tcp;
 
@@ -75,12 +79,12 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
         reliability_(playerId) {}
 
   void start();
-  void sendBinary(std::vector<std::uint8_t> payload);
 
-  void noteClientEnvelope(const wildpaw::room::wire::EnvelopeMeta& meta) {
-    std::lock_guard<std::mutex> lock(reliabilityMutex_);
-    reliability_.onClientPacket(meta.seq, meta.ack, meta.ackBits);
-  }
+  void sendBinary(std::vector<std::uint8_t> payload);
+  void sendReliableBinary(std::uint32_t sequence,
+                          std::vector<std::uint8_t> payload);
+
+  void noteClientEnvelope(const wildpaw::room::wire::EnvelopeMeta& meta);
 
   [[nodiscard]] wildpaw::room::wire::EnvelopeMeta nextEnvelopeMeta() {
     std::lock_guard<std::mutex> lock(reliabilityMutex_);
@@ -88,16 +92,32 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
     const std::uint32_t seq = reliability_.nextServerSequence();
     const auto& ackState = reliability_.outboundAckState();
 
-    wildpaw::room::wire::EnvelopeMeta meta;
-    meta.seq = seq;
-    meta.ack = ackState.ack;
-    meta.ackBits = ackState.ackBits;
-    return meta;
+    wildpaw::room::wire::EnvelopeMeta envelopeMeta;
+    envelopeMeta.seq = seq;
+    envelopeMeta.ack = ackState.ack;
+    envelopeMeta.ackBits = ackState.ackBits;
+    return envelopeMeta;
+  }
+
+  [[nodiscard]] std::size_t reliableInFlightCount() const {
+    std::lock_guard<std::mutex> lock(reliableQueueMutex_);
+    return reliableQueue_.size();
   }
 
   [[nodiscard]] std::uint32_t playerId() const { return playerId_; }
 
  private:
+  struct ReliablePacket {
+    std::uint32_t sequence{0};
+    std::vector<std::uint8_t> payload;
+    std::chrono::steady_clock::time_point lastSent{};
+    std::uint8_t retries{0};
+  };
+
+  static constexpr std::size_t kMaxReliableQueue = 256;
+  static constexpr std::uint8_t kMaxRetransmitRetries = 5;
+  static constexpr std::chrono::milliseconds kRetransmitTimeout{120};
+
   void doRead();
   void doWrite();
   void onClosed(const beast::error_code& ec);
@@ -108,8 +128,12 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
 
   RoomServer& server_;
   std::uint32_t playerId_{0};
+
+  mutable std::mutex reliabilityMutex_;
   wildpaw::room::RoomSession reliability_;
-  std::mutex reliabilityMutex_;
+
+  mutable std::mutex reliableQueueMutex_;
+  std::deque<ReliablePacket> reliableQueue_;
 
   bool closed_{false};
 };
@@ -174,6 +198,92 @@ class RoomServer {
     }
   }
 
+  void addRetransmitSent(std::size_t count) {
+    retransmitSentTotal_.fetch_add(count, std::memory_order_relaxed);
+  }
+
+  void addRetransmitDropped(std::size_t count) {
+    retransmitDroppedTotal_.fetch_add(count, std::memory_order_relaxed);
+  }
+
+  std::string renderPrometheusMetrics() {
+    std::ostringstream out;
+
+    const auto activeSessions = activeSessionCount();
+    const auto pendingDepth = pendingInputDepth();
+    const auto reliableInFlight = reliableInFlightTotal();
+
+    out << "# HELP wildpaw_room_active_sessions Active websocket sessions\n";
+    out << "# TYPE wildpaw_room_active_sessions gauge\n";
+    out << "wildpaw_room_active_sessions " << activeSessions << "\n";
+
+    out << "# HELP wildpaw_room_pending_input_queue_depth Pending input queue depth\n";
+    out << "# TYPE wildpaw_room_pending_input_queue_depth gauge\n";
+    out << "wildpaw_room_pending_input_queue_depth " << pendingDepth << "\n";
+
+    out << "# HELP wildpaw_room_pending_input_queue_peak Peak pending input queue depth\n";
+    out << "# TYPE wildpaw_room_pending_input_queue_peak gauge\n";
+    out << "wildpaw_room_pending_input_queue_peak "
+        << pendingInputQueuePeak_.load(std::memory_order_relaxed) << "\n";
+
+    out << "# HELP wildpaw_room_dropped_input_frames_total Dropped input frames\n";
+    out << "# TYPE wildpaw_room_dropped_input_frames_total counter\n";
+    out << "wildpaw_room_dropped_input_frames_total "
+        << droppedInputFrames_.load(std::memory_order_relaxed) << "\n";
+
+    out << "# HELP wildpaw_room_input_frames_total Input frames accepted\n";
+    out << "# TYPE wildpaw_room_input_frames_total counter\n";
+    out << "wildpaw_room_input_frames_total "
+        << inputFramesTotal_.load(std::memory_order_relaxed) << "\n";
+
+    out << "# HELP wildpaw_room_tick_total Tick count\n";
+    out << "# TYPE wildpaw_room_tick_total counter\n";
+    out << "wildpaw_room_tick_total "
+        << tickTotal_.load(std::memory_order_relaxed) << "\n";
+
+    out << "# HELP wildpaw_room_tick_overrun_total Tick overrun count\n";
+    out << "# TYPE wildpaw_room_tick_overrun_total counter\n";
+    out << "wildpaw_room_tick_overrun_total "
+        << tickOverrunTotal_.load(std::memory_order_relaxed) << "\n";
+
+    out << "# HELP wildpaw_room_tick_last_duration_ms Last tick duration in ms\n";
+    out << "# TYPE wildpaw_room_tick_last_duration_ms gauge\n";
+    out << "wildpaw_room_tick_last_duration_ms "
+        << (lastTickDurationMicros_.load(std::memory_order_relaxed) / 1000.0)
+        << "\n";
+
+    out << "# HELP wildpaw_room_snapshot_base_sent_total Base snapshots sent\n";
+    out << "# TYPE wildpaw_room_snapshot_base_sent_total counter\n";
+    out << "wildpaw_room_snapshot_base_sent_total "
+        << snapshotBaseSentTotal_.load(std::memory_order_relaxed) << "\n";
+
+    out << "# HELP wildpaw_room_snapshot_delta_sent_total Delta snapshots sent\n";
+    out << "# TYPE wildpaw_room_snapshot_delta_sent_total counter\n";
+    out << "wildpaw_room_snapshot_delta_sent_total "
+        << snapshotDeltaSentTotal_.load(std::memory_order_relaxed) << "\n";
+
+    out << "# HELP wildpaw_room_event_sent_total Event payloads sent\n";
+    out << "# TYPE wildpaw_room_event_sent_total counter\n";
+    out << "wildpaw_room_event_sent_total "
+        << eventSentTotal_.load(std::memory_order_relaxed) << "\n";
+
+    out << "# HELP wildpaw_room_reliable_inflight_packets Reliable in-flight packets\n";
+    out << "# TYPE wildpaw_room_reliable_inflight_packets gauge\n";
+    out << "wildpaw_room_reliable_inflight_packets " << reliableInFlight << "\n";
+
+    out << "# HELP wildpaw_room_retransmit_sent_total Retransmitted packets\n";
+    out << "# TYPE wildpaw_room_retransmit_sent_total counter\n";
+    out << "wildpaw_room_retransmit_sent_total "
+        << retransmitSentTotal_.load(std::memory_order_relaxed) << "\n";
+
+    out << "# HELP wildpaw_room_retransmit_dropped_total Retransmit-dropped packets\n";
+    out << "# TYPE wildpaw_room_retransmit_dropped_total counter\n";
+    out << "wildpaw_room_retransmit_dropped_total "
+        << retransmitDroppedTotal_.load(std::memory_order_relaxed) << "\n";
+
+    return out.str();
+  }
+
   void onSessionReady(const std::shared_ptr<WsSession>& session) {
     const std::uint32_t playerId = session->playerId();
 
@@ -189,13 +299,16 @@ class RoomServer {
       baseSnapshot = simulation_.snapshot();
     }
 
-    session->sendBinary(wildpaw::room::wire::encodeWelcomeEnvelope(
-        playerId, simulation_.tickRate(), simulation_.currentTick(),
-        session->nextEnvelopeMeta()));
+    const auto welcomeMeta = session->nextEnvelopeMeta();
+    auto welcomePayload = wildpaw::room::wire::encodeWelcomeEnvelope(
+        playerId, simulation_.tickRate(), simulation_.currentTick(), welcomeMeta);
+    session->sendReliableBinary(welcomeMeta.seq, std::move(welcomePayload));
 
-    session->sendBinary(wildpaw::room::wire::encodeSnapshotEnvelope(
-        false, baseSnapshot.serverTick, unixTimeMs(), baseSnapshot.players,
-        session->nextEnvelopeMeta()));
+    const auto baseMeta = session->nextEnvelopeMeta();
+    auto basePayload = wildpaw::room::wire::encodeSnapshotEnvelope(
+        false, baseSnapshot.serverTick, unixTimeMs(), baseSnapshot.players, baseMeta);
+    session->sendReliableBinary(baseMeta.seq, std::move(basePayload));
+    snapshotBaseSentTotal_.fetch_add(1, std::memory_order_relaxed);
 
     std::cout << "[room] player connected: " << playerId
               << " activePlayers=" << activeSessionCount() << '\n';
@@ -210,8 +323,7 @@ class RoomServer {
 
     const auto decoded = wildpaw::room::wire::decodeClientEnvelope(payload);
     if (!decoded.has_value()) {
-      session->sendBinary(wildpaw::room::wire::encodeEventEnvelope(
-          "warn", "invalid-envelope", session->nextEnvelopeMeta()));
+      sendReliableEvent(session, "warn", "invalid-envelope");
       return;
     }
 
@@ -219,23 +331,20 @@ class RoomServer {
 
     switch (decoded->type) {
       case wildpaw::room::wire::ClientMessageType::Hello:
-        session->sendBinary(wildpaw::room::wire::encodeWelcomeEnvelope(
-            playerId, simulation_.tickRate(), simulation_.currentTick(),
-            session->nextEnvelopeMeta()));
+        sendReliableEvent(session, "hello.ack", "ok");
         return;
 
       case wildpaw::room::wire::ClientMessageType::Input:
         enqueueInput(playerId, decoded->input);
+        inputFramesTotal_.fetch_add(1, std::memory_order_relaxed);
         return;
 
       case wildpaw::room::wire::ClientMessageType::Ping:
-        session->sendBinary(wildpaw::room::wire::encodeEventEnvelope(
-            "pong", "ok", session->nextEnvelopeMeta()));
+        sendReliableEvent(session, "pong", "ok");
         return;
 
       default:
-        session->sendBinary(wildpaw::room::wire::encodeEventEnvelope(
-            "warn", "unsupported-message-type", session->nextEnvelopeMeta()));
+        sendReliableEvent(session, "warn", "unsupported-message-type");
         return;
     }
   }
@@ -243,10 +352,7 @@ class RoomServer {
   void onSessionClosed(std::uint32_t playerId) {
     {
       std::lock_guard<std::mutex> lock(sessionsMutex_);
-      auto found = sessions_.find(playerId);
-      if (found != sessions_.end()) {
-        sessions_.erase(found);
-      }
+      sessions_.erase(playerId);
     }
 
     {
@@ -268,7 +374,7 @@ class RoomServer {
 
   std::shared_ptr<WsSession> getSession(std::uint32_t playerId) {
     std::lock_guard<std::mutex> lock(sessionsMutex_);
-    auto found = sessions_.find(playerId);
+    const auto found = sessions_.find(playerId);
     if (found == sessions_.end()) {
       return nullptr;
     }
@@ -280,15 +386,51 @@ class RoomServer {
     return sessions_.size();
   }
 
-  void enqueueInput(std::uint32_t playerId, const wildpaw::room::InputFrame& input) {
+  [[nodiscard]] std::size_t pendingInputDepth() {
     std::lock_guard<std::mutex> lock(pendingInputMutex_);
+    return pendingInputs_.size();
+  }
 
-    if (pendingInputs_.size() >= kMaxPendingInputFrames) {
-      pendingInputs_.pop_front();
-      ++droppedInputFrames_;
+  [[nodiscard]] std::size_t reliableInFlightTotal() {
+    std::size_t total = 0;
+    std::lock_guard<std::mutex> lock(sessionsMutex_);
+    for (const auto& [_, session] : sessions_) {
+      total += session->reliableInFlightCount();
+    }
+    return total;
+  }
+
+  void sendReliableEvent(const std::shared_ptr<WsSession>& session,
+                         std::string_view name,
+                         std::string_view message) {
+    const auto meta = session->nextEnvelopeMeta();
+    auto payload =
+        wildpaw::room::wire::encodeEventEnvelope(name, message, meta);
+    session->sendReliableBinary(meta.seq, std::move(payload));
+    eventSentTotal_.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  void enqueueInput(std::uint32_t playerId, const wildpaw::room::InputFrame& input) {
+    std::size_t currentSize = 0;
+
+    {
+      std::lock_guard<std::mutex> lock(pendingInputMutex_);
+
+      if (pendingInputs_.size() >= kMaxPendingInputFrames) {
+        pendingInputs_.pop_front();
+        droppedInputFrames_.fetch_add(1, std::memory_order_relaxed);
+      }
+
+      pendingInputs_.push_back(PendingInput{.playerId = playerId, .input = input});
+      currentSize = pendingInputs_.size();
     }
 
-    pendingInputs_.push_back(PendingInput{.playerId = playerId, .input = input});
+    auto previousPeak = pendingInputQueuePeak_.load(std::memory_order_relaxed);
+    while (currentSize > previousPeak &&
+           !pendingInputQueuePeak_.compare_exchange_weak(
+               previousPeak, currentSize, std::memory_order_relaxed,
+               std::memory_order_relaxed)) {
+    }
   }
 
   std::deque<PendingInput> drainPendingInputs() {
@@ -313,7 +455,7 @@ class RoomServer {
   }
 
   void doAccept() {
-    if (!running_.load()) {
+    if (!running_.load(std::memory_order_relaxed)) {
       return;
     }
 
@@ -331,7 +473,7 @@ class RoomServer {
                                session->start();
                              }
 
-                             if (running_.load()) {
+                             if (running_.load(std::memory_order_relaxed)) {
                                doAccept();
                              }
                            });
@@ -342,7 +484,8 @@ class RoomServer {
       using clock = std::chrono::steady_clock;
       auto next = clock::now();
 
-      while (running_.load() && !stopToken.stop_requested()) {
+      while (running_.load(std::memory_order_relaxed) &&
+             !stopToken.stop_requested()) {
         next += std::chrono::milliseconds(tickIntervalMs_);
         tickOnce();
         std::this_thread::sleep_until(next);
@@ -351,6 +494,9 @@ class RoomServer {
   }
 
   void tickOnce() {
+    using clock = std::chrono::steady_clock;
+    const auto tickStart = clock::now();
+
     const auto drainedInputs = drainPendingInputs();
 
     wildpaw::room::WorldSnapshot worldSnapshot;
@@ -367,14 +513,16 @@ class RoomServer {
       deltaSnapshot = snapshotBuilder_.buildDelta(worldSnapshot);
     }
 
+    tickTotal_.fetch_add(1, std::memory_order_relaxed);
+
     const std::uint64_t serverTimeMs = unixTimeMs();
 
     if (!deltaSnapshot.changedPlayers.empty()) {
+      interestManager_.rebuild(worldSnapshot.players, 8.0f);
       auto sessions = snapshotSessions();
 
       for (const auto& [playerId, session] : sessions) {
-        const auto visiblePlayers =
-            interestManager_.filterFor(playerId, worldSnapshot.players, 25.0f);
+        const auto visiblePlayers = interestManager_.filterFor(playerId, 25.0f);
         const auto visibleChanged =
             selectVisibleChangedPlayers(deltaSnapshot, visiblePlayers);
 
@@ -382,10 +530,22 @@ class RoomServer {
           continue;
         }
 
-        session->sendBinary(wildpaw::room::wire::encodeSnapshotEnvelope(
-            true, deltaSnapshot.serverTick, serverTimeMs, visibleChanged,
-            session->nextEnvelopeMeta()));
+        const auto meta = session->nextEnvelopeMeta();
+        auto payload = wildpaw::room::wire::encodeSnapshotEnvelope(
+            true, deltaSnapshot.serverTick, serverTimeMs, visibleChanged, meta);
+        session->sendBinary(std::move(payload));
+        snapshotDeltaSentTotal_.fetch_add(1, std::memory_order_relaxed);
       }
+    }
+
+    const auto tickElapsed =
+        std::chrono::duration_cast<std::chrono::microseconds>(clock::now() - tickStart)
+            .count();
+    lastTickDurationMicros_.store(static_cast<std::uint64_t>(tickElapsed),
+                                  std::memory_order_relaxed);
+
+    if (tickElapsed > static_cast<long long>(tickIntervalMs_) * 1000LL) {
+      tickOverrunTotal_.fetch_add(1, std::memory_order_relaxed);
     }
 
     if (worldSnapshot.serverTick % simulation_.tickRate() == 0) {
@@ -393,7 +553,9 @@ class RoomServer {
                 << " activePlayers=" << worldSnapshot.players.size()
                 << " changedPlayers=" << deltaSnapshot.changedPlayers.size()
                 << " drainedInputs=" << drainedInputs.size()
-                << " droppedInputs=" << droppedInputFrames_.load() << '\n';
+                << " droppedInputs="
+                << droppedInputFrames_.load(std::memory_order_relaxed)
+                << " reliableInFlight=" << reliableInFlightTotal() << '\n';
     }
   }
 
@@ -416,17 +578,79 @@ class RoomServer {
 
   std::mutex pendingInputMutex_;
   std::deque<PendingInput> pendingInputs_;
+
   std::atomic<std::uint64_t> droppedInputFrames_{0};
+  std::atomic<std::uint64_t> pendingInputQueuePeak_{0};
+  std::atomic<std::uint64_t> inputFramesTotal_{0};
+
+  std::atomic<std::uint64_t> tickTotal_{0};
+  std::atomic<std::uint64_t> tickOverrunTotal_{0};
+  std::atomic<std::uint64_t> lastTickDurationMicros_{0};
+
+  std::atomic<std::uint64_t> snapshotBaseSentTotal_{0};
+  std::atomic<std::uint64_t> snapshotDeltaSentTotal_{0};
+  std::atomic<std::uint64_t> eventSentTotal_{0};
+
+  std::atomic<std::uint64_t> retransmitSentTotal_{0};
+  std::atomic<std::uint64_t> retransmitDroppedTotal_{0};
 
   std::uint32_t nextPlayerId_{1001};
 };
+
+void WsSession::noteClientEnvelope(const wildpaw::room::wire::EnvelopeMeta& meta) {
+  using clock = std::chrono::steady_clock;
+
+  std::vector<std::vector<std::uint8_t>> retransmitPayloads;
+  std::size_t dropped = 0;
+
+  {
+    std::scoped_lock lock(reliabilityMutex_, reliableQueueMutex_);
+
+    reliability_.onClientPacket(meta.seq, meta.ack, meta.ackBits);
+
+    const auto now = clock::now();
+    auto it = reliableQueue_.begin();
+
+    while (it != reliableQueue_.end()) {
+      if (reliability_.wasServerPacketAcked(it->sequence)) {
+        it = reliableQueue_.erase(it);
+        continue;
+      }
+
+      if (now - it->lastSent >= kRetransmitTimeout) {
+        if (it->retries >= kMaxRetransmitRetries) {
+          it = reliableQueue_.erase(it);
+          ++dropped;
+          continue;
+        }
+
+        it->lastSent = now;
+        ++it->retries;
+        retransmitPayloads.push_back(it->payload);
+      }
+
+      ++it;
+    }
+  }
+
+  if (!retransmitPayloads.empty()) {
+    server_.addRetransmitSent(retransmitPayloads.size());
+    for (auto& payload : retransmitPayloads) {
+      sendBinary(std::move(payload));
+    }
+  }
+
+  if (dropped > 0) {
+    server_.addRetransmitDropped(dropped);
+  }
+}
 
 void WsSession::start() {
   ws_.set_option(
       websocket::stream_base::timeout::suggested(beast::role_type::server));
   ws_.set_option(websocket::stream_base::decorator(
       [](websocket::response_type& response) {
-        response.set(beast::http::field::server, "wildpaw-room/0.6");
+        response.set(beast::http::field::server, "wildpaw-room/0.7");
       }));
 
   auto self = shared_from_this();
@@ -451,8 +675,12 @@ void WsSession::doRead() {
 
     if (self->ws_.got_text()) {
       self->readBuffer_.consume(self->readBuffer_.size());
-      self->sendBinary(wildpaw::room::wire::encodeEventEnvelope(
-          "warn", "binary-c2s-required", self->nextEnvelopeMeta()));
+
+      const auto meta = self->nextEnvelopeMeta();
+      auto eventPayload = wildpaw::room::wire::encodeEventEnvelope(
+          "warn", "binary-c2s-required", meta);
+      self->sendReliableBinary(meta.seq, std::move(eventPayload));
+
       self->doRead();
       return;
     }
@@ -479,6 +707,34 @@ void WsSession::sendBinary(std::vector<std::uint8_t> payload) {
                 self->doWrite();
               }
             });
+}
+
+void WsSession::sendReliableBinary(std::uint32_t sequence,
+                                   std::vector<std::uint8_t> payload) {
+  using clock = std::chrono::steady_clock;
+
+  bool dropped = false;
+  {
+    std::lock_guard<std::mutex> lock(reliableQueueMutex_);
+
+    if (reliableQueue_.size() >= kMaxReliableQueue) {
+      reliableQueue_.pop_front();
+      dropped = true;
+    }
+
+    reliableQueue_.push_back(ReliablePacket{
+        .sequence = sequence,
+        .payload = payload,
+        .lastSent = clock::now(),
+        .retries = 0,
+    });
+  }
+
+  if (dropped) {
+    server_.addRetransmitDropped(1);
+  }
+
+  sendBinary(std::move(payload));
 }
 
 void WsSession::doWrite() {
@@ -513,6 +769,130 @@ void WsSession::onClosed(const beast::error_code& ec) {
   server_.onSessionClosed(playerId_);
 }
 
+class MetricsHttpSession : public std::enable_shared_from_this<MetricsHttpSession> {
+ public:
+  explicit MetricsHttpSession(tcp::socket socket,
+                              std::function<std::string()> renderMetrics)
+      : socket_(std::move(socket)), renderMetrics_(std::move(renderMetrics)) {}
+
+  void start() { doRead(); }
+
+ private:
+  void doRead() {
+    auto self = shared_from_this();
+    http::async_read(socket_, buffer_, request_,
+                     [self](beast::error_code ec, std::size_t) {
+                       if (ec) {
+                         return;
+                       }
+                       self->doWrite();
+                     });
+  }
+
+  void doWrite() {
+    auto response = std::make_shared<http::response<http::string_body>>(
+        http::status::ok, request_.version());
+    response->set(http::field::server, "wildpaw-metrics");
+    response->set(http::field::content_type,
+                  "text/plain; version=0.0.4; charset=utf-8");
+    response->keep_alive(false);
+    response->body() = renderMetrics_();
+    response->prepare_payload();
+
+    auto self = shared_from_this();
+    http::async_write(
+        socket_, *response,
+        [self, response](beast::error_code, std::size_t) {
+          beast::error_code ignored;
+          self->socket_.shutdown(tcp::socket::shutdown_send, ignored);
+        });
+  }
+
+  tcp::socket socket_;
+  beast::flat_buffer buffer_;
+  http::request<http::string_body> request_;
+  std::function<std::string()> renderMetrics_;
+};
+
+class MetricsServer {
+ public:
+  MetricsServer(net::io_context& io,
+                const tcp::endpoint& endpoint,
+                std::function<std::string()> renderMetrics)
+      : io_(io),
+        acceptor_(net::make_strand(io)),
+        renderMetrics_(std::move(renderMetrics)) {
+    beast::error_code ec;
+
+    acceptor_.open(endpoint.protocol(), ec);
+    if (ec) {
+      throw beast::system_error(ec);
+    }
+
+    acceptor_.set_option(net::socket_base::reuse_address(true), ec);
+    if (ec) {
+      throw beast::system_error(ec);
+    }
+
+    acceptor_.bind(endpoint, ec);
+    if (ec) {
+      throw beast::system_error(ec);
+    }
+
+    acceptor_.listen(net::socket_base::max_listen_connections, ec);
+    if (ec) {
+      throw beast::system_error(ec);
+    }
+  }
+
+  void start() {
+    if (running_.exchange(true)) {
+      return;
+    }
+    doAccept();
+  }
+
+  void stop() {
+    if (!running_.exchange(false)) {
+      return;
+    }
+
+    net::dispatch(acceptor_.get_executor(), [this]() {
+      beast::error_code ec;
+      acceptor_.cancel(ec);
+      acceptor_.close(ec);
+    });
+  }
+
+ private:
+  void doAccept() {
+    if (!running_.load(std::memory_order_relaxed)) {
+      return;
+    }
+
+    acceptor_.async_accept(net::make_strand(io_),
+                           [this](beast::error_code ec, tcp::socket socket) {
+                             if (!ec) {
+                               std::make_shared<MetricsHttpSession>(
+                                   std::move(socket), renderMetrics_)
+                                   ->start();
+                             } else if (ec != net::error::operation_aborted) {
+                               std::cerr << "[metrics] accept failed: " << ec.message()
+                                         << '\n';
+                             }
+
+                             if (running_.load(std::memory_order_relaxed)) {
+                               doAccept();
+                             }
+                           });
+  }
+
+  net::io_context& io_;
+  tcp::acceptor acceptor_;
+  std::function<std::string()> renderMetrics_;
+  std::atomic<bool> running_{false};
+};
+
 int main(int argc, char* argv[]) {
   try {
     const std::uint16_t port =
@@ -525,17 +905,25 @@ int main(int argc, char* argv[]) {
     const std::uint16_t tickRate =
         argc > 3 ? static_cast<std::uint16_t>(std::max(1, std::stoi(argv[3]))) : 30;
 
+    const std::uint16_t metricsPort =
+        argc > 4 ? static_cast<std::uint16_t>(std::stoi(argv[4])) : 9100;
+
     net::io_context io;
     auto workGuard = net::make_work_guard(io);
 
+    RoomServer roomServer(io, tcp::endpoint(tcp::v4(), port), tickRate);
+    MetricsServer metricsServer(
+        io, tcp::endpoint(tcp::v4(), metricsPort),
+        [&roomServer]() { return roomServer.renderPrometheusMetrics(); });
+
+    roomServer.start();
+    metricsServer.start();
+
     net::signal_set signals(io, SIGINT, SIGTERM);
-
-    RoomServer server(io, tcp::endpoint(tcp::v4(), port), tickRate);
-    server.start();
-
     signals.async_wait([&](const beast::error_code&, int signalNumber) {
       std::cout << "[room] received signal " << signalNumber << ", shutting down\n";
-      server.stop();
+      roomServer.stop();
+      metricsServer.stop();
       workGuard.reset();
       io.stop();
     });
@@ -548,7 +936,8 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "[room] websocket server listening on 0.0.0.0:" << port
-              << " ioThreads=" << ioThreads << " tickRate=" << tickRate << '\n';
+              << " ioThreads=" << ioThreads << " tickRate=" << tickRate
+              << " metricsPort=" << metricsPort << '\n';
 
     for (auto& thread : threads) {
       thread.join();
