@@ -5,6 +5,7 @@ add_executable(wildpaw-room
   src/room_session.cpp
   src/snapshot_builder.cpp
   src/interest_manager.cpp
+  src/wire_json.cpp
 )
 
 target_include_directories(wildpaw-room
@@ -13,9 +14,10 @@ target_include_directories(wildpaw-room
     ${CMAKE_SOURCE_DIR}/../shared
 )
 
-find_package(asio CONFIG QUIET)
-if(asio_FOUND)
-  target_link_libraries(wildpaw-room PRIVATE asio::asio)
-else()
-  message(WARNING "asio package not found via CMake config. Install standalone Asio or provide include paths manually.")
-endif()
+find_package(Boost REQUIRED COMPONENTS system)
+
+target_link_libraries(wildpaw-room
+  PRIVATE
+    Boost::system
+    pthread
+)

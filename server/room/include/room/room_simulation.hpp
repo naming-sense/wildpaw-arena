@@ -36,6 +36,7 @@ class RoomSimulation {
   void pushInput(std::uint32_t playerId, const InputFrame& frame);
 
   WorldSnapshot tick();
+  [[nodiscard]] WorldSnapshot snapshot() const;
 
   [[nodiscard]] std::uint32_t tickRate() const { return tickRate_; }
   [[nodiscard]] std::uint32_t currentTick() const { return tick_; }

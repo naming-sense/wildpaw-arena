@@ -16,8 +16,13 @@ RoomSimulation::RoomSimulation(std::uint32_t tickRate)
 void RoomSimulation::addPlayer(std::uint32_t playerId) {
   PlayerState state;
   state.playerId = playerId;
-  state.position = {0.0f, 0.0f};
+
+  // 단순 스폰 분산: 초기 중첩을 피하기 위해 원형 배치.
+  const float ringRadius = 3.0f;
+  const float angle = static_cast<float>((players_.size() % 12) * (3.1415926535 / 6.0));
+  state.position = {ringRadius * std::cos(angle), ringRadius * std::sin(angle)};
   state.velocity = {0.0f, 0.0f};
+
   players_[playerId] = state;
 }
 
@@ -37,6 +42,10 @@ WorldSnapshot RoomSimulation::tick() {
   applyMovement();
   processCombat();
 
+  return collectSnapshot();
+}
+
+WorldSnapshot RoomSimulation::snapshot() const {
   return collectSnapshot();
 }
 
