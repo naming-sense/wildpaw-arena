@@ -37,6 +37,18 @@ table PlayerState {
   hp:ushort = 100;
   alive:bool = true;
   last_processed_input_seq:uint;
+
+  ammo:ushort;
+  max_ammo:ushort;
+  is_reloading:bool;
+  reload_remaining_ticks:uint;
+
+  skill_q_cooldown_ticks:uint;
+  skill_e_cooldown_ticks:uint;
+  skill_r_cooldown_ticks:uint;
+
+  casting_skill:SkillSlot = None;
+  cast_remaining_ticks:uint;
 }
 
 table HelloPayload {

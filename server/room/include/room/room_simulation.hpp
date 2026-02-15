@@ -40,6 +40,19 @@ struct PlayerState {
   std::uint16_t hp{100};
   bool alive{true};
   std::uint32_t lastProcessedInputSeq{0};
+
+  // 무기/스킬 상태 (클라 HUD 동기화용)
+  std::uint16_t ammo{0};
+  std::uint16_t maxAmmo{0};
+  bool reloading{false};
+  std::uint32_t reloadRemainingTicks{0};
+
+  std::uint32_t skillQCooldownTicks{0};
+  std::uint32_t skillECooldownTicks{0};
+  std::uint32_t skillRCooldownTicks{0};
+
+  SkillSlot castingSkill{SkillSlot::None};
+  std::uint32_t castRemainingTicks{0};
 };
 
 struct CombatEvent {
@@ -86,6 +99,13 @@ class RoomSimulation {
   [[nodiscard]] std::uint32_t currentTick() const { return tick_; }
 
  private:
+  struct PendingSkillCast {
+    std::uint32_t sourcePlayerId{0};
+    SkillSlot slot{SkillSlot::None};
+    std::uint32_t executeTick{0};
+    float aimRadian{0.0f};
+  };
+
   void collectInputs();
   void applyMovement();
   void processCombat();
@@ -101,6 +121,7 @@ class RoomSimulation {
   std::unordered_map<std::uint32_t, InputFrame> previousFrameInputs_;
   std::unordered_map<std::uint32_t, std::uint32_t> lastFireTick_;
 
+  std::vector<PendingSkillCast> pendingSkillCasts_;
   std::vector<CombatEvent> pendingCombatEvents_;
   std::vector<ProjectileEvent> pendingProjectileEvents_;
 };

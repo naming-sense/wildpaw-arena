@@ -1,6 +1,12 @@
 import * as flatbuffers from "flatbuffers";
 
-import type { InputFrame, PlayerSnapshot, WorldSnapshot } from "./types";
+import type {
+  CombatEventPacket,
+  InputFrame,
+  PlayerSnapshot,
+  ProjectileEventPacket,
+  WorldSnapshot,
+} from "./types";
 import { ActionCommandPayload } from "./gen/wildpaw/protocol/action-command-payload";
 import { CombatEventPayload } from "./gen/wildpaw/protocol/combat-event-payload";
 import { Envelope } from "./gen/wildpaw/protocol/envelope";
@@ -17,6 +23,8 @@ import { WelcomePayload } from "./gen/wildpaw/protocol/welcome-payload";
 export interface RealtimeClientOptions {
   url: string;
   onSnapshot?: (snapshot: WorldSnapshot) => void;
+  onCombatEvent?: (event: CombatEventPacket) => void;
+  onProjectileEvent?: (event: ProjectileEventPacket) => void;
   onEvent?: (eventName: string, payload: unknown) => void;
 }
 
@@ -258,6 +266,17 @@ export class RealtimeClient {
             hp: player.hp(),
             alive: player.alive(),
             lastProcessedInputSeq: player.lastProcessedInputSeq(),
+
+            ammo: player.ammo(),
+            maxAmmo: player.maxAmmo(),
+            reloading: player.isReloading(),
+            reloadRemainingTicks: player.reloadRemainingTicks(),
+
+            skillQCooldownTicks: player.skillQCooldownTicks(),
+            skillECooldownTicks: player.skillECooldownTicks(),
+            skillRCooldownTicks: player.skillRCooldownTicks(),
+            castingSkill: player.castingSkill(),
+            castRemainingTicks: player.castRemainingTicks(),
           });
         }
 
@@ -285,7 +304,7 @@ export class RealtimeClient {
           return;
         }
 
-        this.options.onEvent?.("S2C_COMBAT_EVENT", {
+        const combatEvent: CombatEventPacket = {
           eventType: combatPayload.eventType(),
           sourcePlayerId: combatPayload.sourcePlayerId(),
           targetPlayerId: combatPayload.targetPlayerId(),
@@ -297,7 +316,10 @@ export class RealtimeClient {
             x: combatPayload.x(),
             y: combatPayload.y(),
           },
-        });
+        };
+
+        this.options.onCombatEvent?.(combatEvent);
+        this.options.onEvent?.("S2C_COMBAT_EVENT", combatEvent);
         return;
       }
 
@@ -309,7 +331,7 @@ export class RealtimeClient {
           return;
         }
 
-        this.options.onEvent?.("S2C_PROJECTILE_EVENT", {
+        const projectileEvent: ProjectileEventPacket = {
           projectileId: projectilePayload.projectileId(),
           ownerPlayerId: projectilePayload.ownerPlayerId(),
           targetPlayerId: projectilePayload.targetPlayerId(),
@@ -323,7 +345,10 @@ export class RealtimeClient {
             x: projectilePayload.vx(),
             y: projectilePayload.vy(),
           },
-        });
+        };
+
+        this.options.onProjectileEvent?.(projectileEvent);
+        this.options.onEvent?.("S2C_PROJECTILE_EVENT", projectileEvent);
         return;
       }
 

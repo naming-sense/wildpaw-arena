@@ -40,3 +40,8 @@ flatc --ts -o client/web/src/netcode/gen shared/protocol/fbs/wildpaw_protocol.fb
 - `CombatEventPayload`
 - `ProjectileEventPayload`
 - `EventPayload`
+
+`SnapshotPayload.players[]`의 `PlayerState`에는 이동/체력 외에 아래 전투 상태도 포함됩니다.
+- `ammo`, `max_ammo`, `is_reloading`, `reload_remaining_ticks`
+- `skill_q_cooldown_ticks`, `skill_e_cooldown_ticks`, `skill_r_cooldown_ticks`
+- `casting_skill`, `cast_remaining_ticks`

@@ -4,22 +4,13 @@
 #include <cmath>
 #include <limits>
 
+#include "room/combat_rule_table.hpp"
+
 namespace wildpaw::room {
 
 namespace {
 constexpr float kPlayerSpeedMps = 4.0f;
 constexpr float kWorldBoundary = 50.0f;
-
-constexpr float kShotRange = 12.0f;
-constexpr std::uint16_t kShotDamage = 12;
-constexpr float kProjectileSpeed = 20.0f;
-constexpr std::uint32_t kFireIntervalTicks = 4;  // ~7.5 shots/sec @30Hz
-
-constexpr float kSkillQRange = 14.0f;
-constexpr std::uint16_t kSkillQDamage = 20;
-
-constexpr float kSkillRRadius = 10.0f;
-constexpr std::uint16_t kSkillRDamage = 28;
 
 float distSq(const Vec2& a, const Vec2& b) {
   const float dx = a.x - b.x;
@@ -37,6 +28,8 @@ RoomSimulation::RoomSimulation(std::uint32_t tickRate)
     : tickRate_(tickRate), inputBuffer_(256) {}
 
 void RoomSimulation::addPlayer(std::uint32_t playerId) {
+  const auto& rules = defaultCombatRuleTable();
+
   PlayerState state;
   state.playerId = playerId;
 
@@ -47,6 +40,9 @@ void RoomSimulation::addPlayer(std::uint32_t playerId) {
   state.position = {ringRadius * std::cos(angle), ringRadius * std::sin(angle)};
   state.velocity = {0.0f, 0.0f};
 
+  state.maxAmmo = rules.maxAmmo;
+  state.ammo = rules.maxAmmo;
+
   players_[playerId] = state;
 }
 
@@ -55,6 +51,13 @@ void RoomSimulation::removePlayer(std::uint32_t playerId) {
   frameInputs_.erase(playerId);
   previousFrameInputs_.erase(playerId);
   lastFireTick_.erase(playerId);
+
+  pendingSkillCasts_.erase(
+      std::remove_if(pendingSkillCasts_.begin(), pendingSkillCasts_.end(),
+                     [playerId](const PendingSkillCast& cast) {
+                       return cast.sourcePlayerId == playerId;
+                     }),
+      pendingSkillCasts_.end());
 }
 
 void RoomSimulation::pushInput(std::uint32_t playerId, const InputFrame& frame) {
@@ -127,8 +130,14 @@ void RoomSimulation::applyMovement() {
 }
 
 void RoomSimulation::processCombat() {
+  const auto& rules = defaultCombatRuleTable();
+
   auto findNearestTarget = [&](const PlayerState& source,
                                float rangeMeters) -> PlayerState* {
+    if (rangeMeters <= 0.0f) {
+      return nullptr;
+    }
+
     const float rangeSq = rangeMeters * rangeMeters;
     float best = std::numeric_limits<float>::max();
     PlayerState* bestTarget = nullptr;
@@ -146,6 +155,31 @@ void RoomSimulation::processCombat() {
     }
 
     return bestTarget;
+  };
+
+  auto maybeStartReload = [&](PlayerState& player) {
+    if (player.reloading || !player.alive) {
+      return;
+    }
+
+    if (player.ammo == 0 && rules.reloadTicks > 0) {
+      player.reloading = true;
+      player.reloadRemainingTicks = rules.reloadTicks;
+    }
+  };
+
+  auto consumeAmmo = [&](PlayerState& player, std::uint16_t amount) -> bool {
+    if (amount == 0) {
+      return true;
+    }
+
+    if (!player.alive || player.reloading || player.ammo < amount) {
+      return false;
+    }
+
+    player.ammo = static_cast<std::uint16_t>(player.ammo - amount);
+    maybeStartReload(player);
+    return true;
   };
 
   auto pushDamageEvents = [&](const PlayerState& source,
@@ -178,6 +212,10 @@ void RoomSimulation::processCombat() {
     if (target.hp == 0) {
       target.alive = false;
       target.velocity = Vec2{};
+      target.reloading = false;
+      target.reloadRemainingTicks = 0;
+      target.castingSkill = SkillSlot::None;
+      target.castRemainingTicks = 0;
 
       pendingCombatEvents_.push_back(CombatEvent{
           .type = CombatEventType::Knockout,
@@ -192,6 +230,100 @@ void RoomSimulation::processCombat() {
     }
   };
 
+  auto executeSkill = [&](PlayerState& source, SkillSlot slot) {
+    if (!source.alive) {
+      return;
+    }
+
+    if (slot == SkillSlot::Q) {
+      const auto& rule = rules.skillQ;
+      if (auto* target = findNearestTarget(source, rule.rangeMeters);
+          target != nullptr) {
+        pushDamageEvents(source, *target, rule.damage, SkillSlot::Q, rule.critical);
+      }
+      return;
+    }
+
+    if (slot == SkillSlot::E) {
+      // E는 이동/유틸 스킬 자리. 현재 스캐폴드에서는 상태 이벤트만 발행.
+      return;
+    }
+
+    if (slot == SkillSlot::R) {
+      const auto& rule = rules.skillR;
+      const float radiusSq = rule.radiusMeters * rule.radiusMeters;
+
+      for (auto& [targetId, target] : players_) {
+        if (targetId == source.playerId || !target.alive) {
+          continue;
+        }
+
+        if (distSq(source.position, target.position) <= radiusSq) {
+          pushDamageEvents(source, target, rule.damage, SkillSlot::R,
+                           rule.critical);
+        }
+      }
+    }
+  };
+
+  // 1) 틱 단위 상태 감소 (쿨다운/캐스트/재장전)
+  for (auto& [_, player] : players_) {
+    if (player.reloadRemainingTicks > 0) {
+      --player.reloadRemainingTicks;
+      if (player.reloadRemainingTicks == 0) {
+        player.reloading = false;
+        player.ammo = player.maxAmmo;
+      }
+    }
+
+    if (player.skillQCooldownTicks > 0) {
+      --player.skillQCooldownTicks;
+    }
+    if (player.skillECooldownTicks > 0) {
+      --player.skillECooldownTicks;
+    }
+    if (player.skillRCooldownTicks > 0) {
+      --player.skillRCooldownTicks;
+    }
+
+    if (player.castRemainingTicks > 0) {
+      --player.castRemainingTicks;
+      if (player.castRemainingTicks == 0) {
+        player.castingSkill = SkillSlot::None;
+      }
+    }
+  }
+
+  // 2) 캐스트 타임이 끝난 스킬 적용
+  if (!pendingSkillCasts_.empty()) {
+    std::vector<PendingSkillCast> stillPending;
+    stillPending.reserve(pendingSkillCasts_.size());
+
+    for (const auto& cast : pendingSkillCasts_) {
+      if (cast.executeTick > tick_) {
+        stillPending.push_back(cast);
+        continue;
+      }
+
+      auto sourceFound = players_.find(cast.sourcePlayerId);
+      if (sourceFound == players_.end()) {
+        continue;
+      }
+
+      auto& source = sourceFound->second;
+      if (!source.alive) {
+        continue;
+      }
+
+      source.castingSkill = SkillSlot::None;
+      source.castRemainingTicks = 0;
+      executeSkill(source, cast.slot);
+    }
+
+    pendingSkillCasts_.swap(stillPending);
+  }
+
+  // 3) 현재 입력 기반 사격/스킬 시전
   for (auto& [playerId, player] : players_) {
     if (!player.alive) {
       continue;
@@ -208,6 +340,9 @@ void RoomSimulation::processCombat() {
                                      ? prevInputFound->second
                                      : InputFrame{};
 
+    // 캐스팅 중에는 공격/스킬 입력 잠금.
+    bool actionLocked = player.castRemainingTicks > 0;
+
     const auto emitSkillCast = [&](SkillSlot slot) {
       pendingCombatEvents_.push_back(CombatEvent{
           .type = CombatEventType::SkillCast,
@@ -221,88 +356,104 @@ void RoomSimulation::processCombat() {
       });
     };
 
-    bool canFireNow = false;
-    if (input.firing) {
+    if (!actionLocked && input.firing && !player.reloading &&
+        player.ammo >= rules.ammoPerShot) {
       const auto fireTickFound = lastFireTick_.find(playerId);
       const bool firstShot = fireTickFound == lastFireTick_.end();
       const std::uint32_t lastFiredTick =
           fireTickFound != lastFireTick_.end() ? fireTickFound->second : 0;
 
-      if (firstShot || tick_ >= lastFiredTick + kFireIntervalTicks) {
-        canFireNow = true;
+      if (firstShot || tick_ >= lastFiredTick + rules.fireIntervalTicks) {
         lastFireTick_[playerId] = tick_;
+
+        if (consumeAmmo(player, rules.ammoPerShot)) {
+          const auto projectileDirection = directionFromRadian(input.aimRadian);
+
+          pendingCombatEvents_.push_back(CombatEvent{
+              .type = CombatEventType::ShotFired,
+              .sourcePlayerId = playerId,
+              .targetPlayerId = 0,
+              .skillSlot = SkillSlot::None,
+              .damage = 0,
+              .critical = false,
+              .serverTick = tick_,
+              .position = player.position,
+          });
+
+          const std::uint32_t projectileId = nextProjectileId_++;
+          pendingProjectileEvents_.push_back(ProjectileEvent{
+              .projectileId = projectileId,
+              .ownerPlayerId = playerId,
+              .targetPlayerId = 0,
+              .phase = ProjectilePhase::Spawn,
+              .serverTick = tick_,
+              .position = player.position,
+              .velocity =
+                  Vec2{.x = projectileDirection.x * rules.projectileSpeed,
+                       .y = projectileDirection.y * rules.projectileSpeed},
+          });
+
+          if (auto* target = findNearestTarget(player, rules.shotRangeMeters);
+              target != nullptr) {
+            pushDamageEvents(player, *target, rules.shotDamage, SkillSlot::None,
+                             false);
+
+            pendingProjectileEvents_.push_back(ProjectileEvent{
+                .projectileId = projectileId,
+                .ownerPlayerId = playerId,
+                .targetPlayerId = target->playerId,
+                .phase = ProjectilePhase::Hit,
+                .serverTick = tick_,
+                .position = target->position,
+                .velocity = Vec2{},
+            });
+          }
+        }
       }
     }
 
-    if (canFireNow) {
-      const auto projectileDirection = directionFromRadian(input.aimRadian);
+    auto requestSkillCast = [&](SkillSlot slot, const SkillRule& rule,
+                                std::uint32_t& cooldownTicks) {
+      if (actionLocked || !player.alive) {
+        return;
+      }
+      if (cooldownTicks > 0 || player.reloading) {
+        return;
+      }
+      if (!consumeAmmo(player, rule.ammoCost)) {
+        return;
+      }
 
-      pendingCombatEvents_.push_back(CombatEvent{
-          .type = CombatEventType::ShotFired,
-          .sourcePlayerId = playerId,
-          .targetPlayerId = 0,
-          .skillSlot = SkillSlot::None,
-          .damage = 0,
-          .critical = false,
-          .serverTick = tick_,
-          .position = player.position,
-      });
+      cooldownTicks = rule.cooldownTicks;
+      emitSkillCast(slot);
+      actionLocked = true;
 
-      const std::uint32_t projectileId = nextProjectileId_++;
-      pendingProjectileEvents_.push_back(ProjectileEvent{
-          .projectileId = projectileId,
-          .ownerPlayerId = playerId,
-          .targetPlayerId = 0,
-          .phase = ProjectilePhase::Spawn,
-          .serverTick = tick_,
-          .position = player.position,
-          .velocity = Vec2{.x = projectileDirection.x * kProjectileSpeed,
-                           .y = projectileDirection.y * kProjectileSpeed},
-      });
-
-      if (auto* target = findNearestTarget(player, kShotRange); target != nullptr) {
-        pushDamageEvents(player, *target, kShotDamage, SkillSlot::None, false);
-
-        pendingProjectileEvents_.push_back(ProjectileEvent{
-            .projectileId = projectileId,
-            .ownerPlayerId = playerId,
-            .targetPlayerId = target->playerId,
-            .phase = ProjectilePhase::Hit,
-            .serverTick = tick_,
-            .position = target->position,
-            .velocity = Vec2{},
+      if (rule.castTimeTicks > 0) {
+        player.castingSkill = slot;
+        player.castRemainingTicks = rule.castTimeTicks;
+        pendingSkillCasts_.push_back(PendingSkillCast{
+            .sourcePlayerId = playerId,
+            .slot = slot,
+            .executeTick = tick_ + rule.castTimeTicks,
+            .aimRadian = input.aimRadian,
         });
+      } else {
+        executeSkill(player, slot);
       }
-    }
+    };
 
     const bool castSkillQ = input.skillQ && !prevInput.skillQ;
     const bool castSkillE = input.skillE && !prevInput.skillE;
     const bool castSkillR = input.skillR && !prevInput.skillR;
 
     if (castSkillQ) {
-      emitSkillCast(SkillSlot::Q);
-      if (auto* target = findNearestTarget(player, kSkillQRange); target != nullptr) {
-        pushDamageEvents(player, *target, kSkillQDamage, SkillSlot::Q, false);
-      }
+      requestSkillCast(SkillSlot::Q, rules.skillQ, player.skillQCooldownTicks);
     }
-
     if (castSkillE) {
-      emitSkillCast(SkillSlot::E);
+      requestSkillCast(SkillSlot::E, rules.skillE, player.skillECooldownTicks);
     }
-
     if (castSkillR) {
-      emitSkillCast(SkillSlot::R);
-
-      const float radiusSq = kSkillRRadius * kSkillRRadius;
-      for (auto& [targetId, target] : players_) {
-        if (targetId == playerId || !target.alive) {
-          continue;
-        }
-
-        if (distSq(player.position, target.position) <= radiusSq) {
-          pushDamageEvents(player, target, kSkillRDamage, SkillSlot::R, true);
-        }
-      }
+      requestSkillCast(SkillSlot::R, rules.skillR, player.skillRCooldownTicks);
     }
 
     previousFrameInputs_[playerId] = input;

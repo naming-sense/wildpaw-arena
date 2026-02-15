@@ -20,6 +20,22 @@ function lerpPlayer(a: PlayerSnapshot, b: PlayerSnapshot, t: number): PlayerSnap
     lastProcessedInputSeq: Math.round(
       lerp(a.lastProcessedInputSeq, b.lastProcessedInputSeq, t),
     ),
+
+    ammo: t < 0.5 ? a.ammo : b.ammo,
+    maxAmmo: t < 0.5 ? a.maxAmmo : b.maxAmmo,
+    reloading: t < 0.5 ? a.reloading : b.reloading,
+    reloadRemainingTicks:
+      t < 0.5 ? a.reloadRemainingTicks : b.reloadRemainingTicks,
+
+    skillQCooldownTicks:
+      t < 0.5 ? a.skillQCooldownTicks : b.skillQCooldownTicks,
+    skillECooldownTicks:
+      t < 0.5 ? a.skillECooldownTicks : b.skillECooldownTicks,
+    skillRCooldownTicks:
+      t < 0.5 ? a.skillRCooldownTicks : b.skillRCooldownTicks,
+    castingSkill: t < 0.5 ? a.castingSkill : b.castingSkill,
+    castRemainingTicks:
+      t < 0.5 ? a.castRemainingTicks : b.castRemainingTicks,
   };
 }
 

@@ -9,8 +9,9 @@
   - 세션별 `strand + write_queue`로 송신 순서 보장
   - ack 기반 reliable retransmit queue (유실 복구)
   - 메시지 타입별 정책(Critical/Standard/BestEffort)
+  - `combat_rule_table` 기반 무기/스킬 룰(탄약/재장전/쿨다운/캐스트타임)
   - Prometheus `/metrics` 노출
-  - grid 기반 spatial interest filtering
+  - grid 기반 spatial interest filtering (snapshot + combat/projectile event)
 - `gateway/`: 인증/라우팅 계층 (TODO)
 - `matchmaker/`: 매칭 계층 (TODO)
 
@@ -53,7 +54,8 @@ cmake --build build -j
 - `ProjectileEventPayload` (spawn/hit/despawn)
 - `EventPayload`
 
-> 현재 combat/skill 판정은 스캐폴드용 서버 authoritative 샘플 룰(고정 데미지/간단 거리 판정)입니다.
+> 현재 combat/skill 판정은 스캐폴드용 서버 authoritative 샘플 룰이며,
+> `room/src/combat_rule_table.cpp`에서 탄약/재장전/쿨다운/캐스트타임/데미지 수치를 조정할 수 있습니다.
 
 ## 코드젠
 ```bash
@@ -73,6 +75,8 @@ curl -s http://127.0.0.1:9100/metrics
 - `wildpaw_room_reliable_inflight_packets`
 - `wildpaw_room_combat_event_sent_total`
 - `wildpaw_room_projectile_event_sent_total`
+- `wildpaw_room_combat_event_filtered_total`
+- `wildpaw_room_projectile_event_filtered_total`
 
 ## 로컬 부하 벤치
 ```bash

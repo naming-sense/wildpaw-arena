@@ -42,17 +42,21 @@ std::uint64_t unixTimeMs() {
       duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
 }
 
-std::vector<wildpaw::room::PlayerState> selectVisibleChangedPlayers(
-    const wildpaw::room::SnapshotDelta& delta,
+std::unordered_set<std::uint32_t> makeVisibleIdSet(
     const std::vector<wildpaw::room::PlayerState>& visiblePlayers) {
-  if (delta.changedPlayers.empty() || visiblePlayers.empty()) {
-    return {};
-  }
-
   std::unordered_set<std::uint32_t> visibleIds;
   visibleIds.reserve(visiblePlayers.size());
   for (const auto& player : visiblePlayers) {
     visibleIds.insert(player.playerId);
+  }
+  return visibleIds;
+}
+
+std::vector<wildpaw::room::PlayerState> selectVisibleChangedPlayers(
+    const wildpaw::room::SnapshotDelta& delta,
+    const std::unordered_set<std::uint32_t>& visibleIds) {
+  if (delta.changedPlayers.empty() || visibleIds.empty()) {
+    return {};
   }
 
   std::vector<wildpaw::room::PlayerState> filtered;
@@ -64,6 +68,43 @@ std::vector<wildpaw::room::PlayerState> selectVisibleChangedPlayers(
   }
 
   return filtered;
+}
+
+bool shouldSendCombatEvent(std::uint32_t viewerId,
+                           const std::unordered_set<std::uint32_t>& visibleIds,
+                           const wildpaw::room::CombatEvent& event) {
+  if (viewerId == event.sourcePlayerId || viewerId == event.targetPlayerId) {
+    return true;
+  }
+
+  if (visibleIds.contains(event.sourcePlayerId)) {
+    return true;
+  }
+
+  if (event.targetPlayerId != 0 && visibleIds.contains(event.targetPlayerId)) {
+    return true;
+  }
+
+  return false;
+}
+
+bool shouldSendProjectileEvent(
+    std::uint32_t viewerId,
+    const std::unordered_set<std::uint32_t>& visibleIds,
+    const wildpaw::room::ProjectileEvent& event) {
+  if (viewerId == event.ownerPlayerId || viewerId == event.targetPlayerId) {
+    return true;
+  }
+
+  if (visibleIds.contains(event.ownerPlayerId)) {
+    return true;
+  }
+
+  if (event.targetPlayerId != 0 && visibleIds.contains(event.targetPlayerId)) {
+    return true;
+  }
+
+  return false;
 }
 
 }  // namespace
@@ -305,6 +346,16 @@ class RoomServer {
     out << "# TYPE wildpaw_room_projectile_event_sent_total counter\n";
     out << "wildpaw_room_projectile_event_sent_total "
         << projectileEventSentTotal_.load(std::memory_order_relaxed) << "\n";
+
+    out << "# HELP wildpaw_room_combat_event_filtered_total Combat events filtered by interest\n";
+    out << "# TYPE wildpaw_room_combat_event_filtered_total counter\n";
+    out << "wildpaw_room_combat_event_filtered_total "
+        << combatEventFilteredTotal_.load(std::memory_order_relaxed) << "\n";
+
+    out << "# HELP wildpaw_room_projectile_event_filtered_total Projectile events filtered by interest\n";
+    out << "# TYPE wildpaw_room_projectile_event_filtered_total counter\n";
+    out << "wildpaw_room_projectile_event_filtered_total "
+        << projectileEventFilteredTotal_.load(std::memory_order_relaxed) << "\n";
 
     out << "# HELP wildpaw_room_reliable_inflight_packets Reliable in-flight packets\n";
     out << "# TYPE wildpaw_room_reliable_inflight_packets gauge\n";
@@ -575,43 +626,69 @@ class RoomServer {
 
     auto sessions = snapshotSessions();
 
-    if (!deltaSnapshot.changedPlayers.empty()) {
+    const bool needInterestFiltering =
+        !sessions.empty() &&
+        (!deltaSnapshot.changedPlayers.empty() || !combatEvents.empty() ||
+         !projectileEvents.empty());
+
+    std::unordered_map<std::uint32_t, std::unordered_set<std::uint32_t>>
+        visibleIdsByPlayer;
+
+    if (needInterestFiltering) {
       interestManager_.rebuild(worldSnapshot.players, 8.0f);
+      visibleIdsByPlayer.reserve(sessions.size());
 
-      for (const auto& [playerId, session] : sessions) {
+      for (const auto& [playerId, _] : sessions) {
         const auto visiblePlayers = interestManager_.filterFor(playerId, 25.0f);
-        const auto visibleChanged =
-            selectVisibleChangedPlayers(deltaSnapshot, visiblePlayers);
+        visibleIdsByPlayer.emplace(playerId, makeVisibleIdSet(visiblePlayers));
+      }
+    }
 
-        if (visibleChanged.empty()) {
+    for (const auto& [playerId, session] : sessions) {
+      const auto visibleFound = visibleIdsByPlayer.find(playerId);
+      if (visibleFound == visibleIdsByPlayer.end()) {
+        continue;
+      }
+
+      const auto& visibleIds = visibleFound->second;
+
+      if (!deltaSnapshot.changedPlayers.empty()) {
+        const auto visibleChanged =
+            selectVisibleChangedPlayers(deltaSnapshot, visibleIds);
+
+        if (!visibleChanged.empty()) {
+          const auto meta = session->nextEnvelopeMeta();
+          auto payload = wildpaw::room::wire::encodeSnapshotEnvelope(
+              true, deltaSnapshot.serverTick, serverTimeMs, visibleChanged, meta);
+          session->sendBinary(std::move(payload));
+          snapshotDeltaSentTotal_.fetch_add(1, std::memory_order_relaxed);
+        }
+      }
+
+      for (const auto& combatEvent : combatEvents) {
+        if (!shouldSendCombatEvent(playerId, visibleIds, combatEvent)) {
+          combatEventFilteredTotal_.fetch_add(1, std::memory_order_relaxed);
           continue;
         }
 
         const auto meta = session->nextEnvelopeMeta();
-        auto payload = wildpaw::room::wire::encodeSnapshotEnvelope(
-            true, deltaSnapshot.serverTick, serverTimeMs, visibleChanged, meta);
+        auto payload =
+            wildpaw::room::wire::encodeCombatEventEnvelope(combatEvent, meta);
         session->sendBinary(std::move(payload));
-        snapshotDeltaSentTotal_.fetch_add(1, std::memory_order_relaxed);
+        combatEventSentTotal_.fetch_add(1, std::memory_order_relaxed);
       }
-    }
 
-    if (!combatEvents.empty() || !projectileEvents.empty()) {
-      for (const auto& [_, session] : sessions) {
-        for (const auto& combatEvent : combatEvents) {
-          const auto meta = session->nextEnvelopeMeta();
-          auto payload =
-              wildpaw::room::wire::encodeCombatEventEnvelope(combatEvent, meta);
-          session->sendBinary(std::move(payload));
-          combatEventSentTotal_.fetch_add(1, std::memory_order_relaxed);
+      for (const auto& projectileEvent : projectileEvents) {
+        if (!shouldSendProjectileEvent(playerId, visibleIds, projectileEvent)) {
+          projectileEventFilteredTotal_.fetch_add(1, std::memory_order_relaxed);
+          continue;
         }
 
-        for (const auto& projectileEvent : projectileEvents) {
-          const auto meta = session->nextEnvelopeMeta();
-          auto payload = wildpaw::room::wire::encodeProjectileEventEnvelope(
-              projectileEvent, meta);
-          session->sendBinary(std::move(payload));
-          projectileEventSentTotal_.fetch_add(1, std::memory_order_relaxed);
-        }
+        const auto meta = session->nextEnvelopeMeta();
+        auto payload = wildpaw::room::wire::encodeProjectileEventEnvelope(
+            projectileEvent, meta);
+        session->sendBinary(std::move(payload));
+        projectileEventSentTotal_.fetch_add(1, std::memory_order_relaxed);
       }
     }
 
@@ -673,6 +750,8 @@ class RoomServer {
   std::atomic<std::uint64_t> eventSentTotal_{0};
   std::atomic<std::uint64_t> combatEventSentTotal_{0};
   std::atomic<std::uint64_t> projectileEventSentTotal_{0};
+  std::atomic<std::uint64_t> combatEventFilteredTotal_{0};
+  std::atomic<std::uint64_t> projectileEventFilteredTotal_{0};
 
   std::atomic<std::uint64_t> retransmitSentTotal_{0};
   std::atomic<std::uint64_t> retransmitDroppedTotal_{0};

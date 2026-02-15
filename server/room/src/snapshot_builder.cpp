@@ -19,7 +19,15 @@ bool changedEnough(const PlayerState& a, const PlayerState& b) {
 
   return posDistSq > kPosEpsilon || velDistSq > kVelEpsilon ||
          a.hp != b.hp || a.alive != b.alive ||
-         a.lastProcessedInputSeq != b.lastProcessedInputSeq;
+         a.lastProcessedInputSeq != b.lastProcessedInputSeq ||
+         a.ammo != b.ammo || a.maxAmmo != b.maxAmmo ||
+         a.reloading != b.reloading ||
+         a.reloadRemainingTicks != b.reloadRemainingTicks ||
+         a.skillQCooldownTicks != b.skillQCooldownTicks ||
+         a.skillECooldownTicks != b.skillECooldownTicks ||
+         a.skillRCooldownTicks != b.skillRCooldownTicks ||
+         a.castingSkill != b.castingSkill ||
+         a.castRemainingTicks != b.castRemainingTicks;
 }
 }  // namespace
 

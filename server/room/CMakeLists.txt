@@ -1,6 +1,7 @@
 add_executable(wildpaw-room
   src/main.cpp
   src/input_buffer.cpp
+  src/combat_rule_table.cpp
   src/room_simulation.cpp
   src/room_session.cpp
   src/snapshot_builder.cpp

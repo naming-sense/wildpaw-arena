@@ -2,6 +2,7 @@
 
 import * as flatbuffers from 'flatbuffers';
 
+import { SkillSlot } from '../../wildpaw/protocol/skill-slot';
 import { Vec2 } from '../../wildpaw/protocol/vec2';
 
 
@@ -53,8 +54,53 @@ lastProcessedInputSeq():number {
   return offset ? this.bb!.readUint32(this.bb_pos + offset) : 0;
 }
 
+ammo():number {
+  const offset = this.bb!.__offset(this.bb_pos, 16);
+  return offset ? this.bb!.readUint16(this.bb_pos + offset) : 0;
+}
+
+maxAmmo():number {
+  const offset = this.bb!.__offset(this.bb_pos, 18);
+  return offset ? this.bb!.readUint16(this.bb_pos + offset) : 0;
+}
+
+isReloading():boolean {
+  const offset = this.bb!.__offset(this.bb_pos, 20);
+  return offset ? !!this.bb!.readInt8(this.bb_pos + offset) : false;
+}
+
+reloadRemainingTicks():number {
+  const offset = this.bb!.__offset(this.bb_pos, 22);
+  return offset ? this.bb!.readUint32(this.bb_pos + offset) : 0;
+}
+
+skillQCooldownTicks():number {
+  const offset = this.bb!.__offset(this.bb_pos, 24);
+  return offset ? this.bb!.readUint32(this.bb_pos + offset) : 0;
+}
+
+skillECooldownTicks():number {
+  const offset = this.bb!.__offset(this.bb_pos, 26);
+  return offset ? this.bb!.readUint32(this.bb_pos + offset) : 0;
+}
+
+skillRCooldownTicks():number {
+  const offset = this.bb!.__offset(this.bb_pos, 28);
+  return offset ? this.bb!.readUint32(this.bb_pos + offset) : 0;
+}
+
+castingSkill():SkillSlot {
+  const offset = this.bb!.__offset(this.bb_pos, 30);
+  return offset ? this.bb!.readUint8(this.bb_pos + offset) : SkillSlot.None;
+}
+
+castRemainingTicks():number {
+  const offset = this.bb!.__offset(this.bb_pos, 32);
+  return offset ? this.bb!.readUint32(this.bb_pos + offset) : 0;
+}
+
 static startPlayerState(builder:flatbuffers.Builder) {
-  builder.startObject(6);
+  builder.startObject(15);
 }
 
 static addPlayerId(builder:flatbuffers.Builder, playerId:number) {
@@ -79,6 +125,42 @@ static addAlive(builder:flatbuffers.Builder, alive:boolean) {
 
 static addLastProcessedInputSeq(builder:flatbuffers.Builder, lastProcessedInputSeq:number) {
   builder.addFieldInt32(5, lastProcessedInputSeq, 0);
+}
+
+static addAmmo(builder:flatbuffers.Builder, ammo:number) {
+  builder.addFieldInt16(6, ammo, 0);
+}
+
+static addMaxAmmo(builder:flatbuffers.Builder, maxAmmo:number) {
+  builder.addFieldInt16(7, maxAmmo, 0);
+}
+
+static addIsReloading(builder:flatbuffers.Builder, isReloading:boolean) {
+  builder.addFieldInt8(8, +isReloading, +false);
+}
+
+static addReloadRemainingTicks(builder:flatbuffers.Builder, reloadRemainingTicks:number) {
+  builder.addFieldInt32(9, reloadRemainingTicks, 0);
+}
+
+static addSkillQCooldownTicks(builder:flatbuffers.Builder, skillQCooldownTicks:number) {
+  builder.addFieldInt32(10, skillQCooldownTicks, 0);
+}
+
+static addSkillECooldownTicks(builder:flatbuffers.Builder, skillECooldownTicks:number) {
+  builder.addFieldInt32(11, skillECooldownTicks, 0);
+}
+
+static addSkillRCooldownTicks(builder:flatbuffers.Builder, skillRCooldownTicks:number) {
+  builder.addFieldInt32(12, skillRCooldownTicks, 0);
+}
+
+static addCastingSkill(builder:flatbuffers.Builder, castingSkill:SkillSlot) {
+  builder.addFieldInt8(13, castingSkill, SkillSlot.None);
+}
+
+static addCastRemainingTicks(builder:flatbuffers.Builder, castRemainingTicks:number) {
+  builder.addFieldInt32(14, castRemainingTicks, 0);
 }
 
 static endPlayerState(builder:flatbuffers.Builder):flatbuffers.Offset {

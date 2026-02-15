@@ -343,7 +343,16 @@ struct PlayerState FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
     VT_VELOCITY = 8,
     VT_HP = 10,
     VT_ALIVE = 12,
-    VT_LAST_PROCESSED_INPUT_SEQ = 14
+    VT_LAST_PROCESSED_INPUT_SEQ = 14,
+    VT_AMMO = 16,
+    VT_MAX_AMMO = 18,
+    VT_IS_RELOADING = 20,
+    VT_RELOAD_REMAINING_TICKS = 22,
+    VT_SKILL_Q_COOLDOWN_TICKS = 24,
+    VT_SKILL_E_COOLDOWN_TICKS = 26,
+    VT_SKILL_R_COOLDOWN_TICKS = 28,
+    VT_CASTING_SKILL = 30,
+    VT_CAST_REMAINING_TICKS = 32
   };
   uint32_t player_id() const {
     return GetField<uint32_t>(VT_PLAYER_ID, 0);
@@ -363,6 +372,33 @@ struct PlayerState FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   uint32_t last_processed_input_seq() const {
     return GetField<uint32_t>(VT_LAST_PROCESSED_INPUT_SEQ, 0);
   }
+  uint16_t ammo() const {
+    return GetField<uint16_t>(VT_AMMO, 0);
+  }
+  uint16_t max_ammo() const {
+    return GetField<uint16_t>(VT_MAX_AMMO, 0);
+  }
+  bool is_reloading() const {
+    return GetField<uint8_t>(VT_IS_RELOADING, 0) != 0;
+  }
+  uint32_t reload_remaining_ticks() const {
+    return GetField<uint32_t>(VT_RELOAD_REMAINING_TICKS, 0);
+  }
+  uint32_t skill_q_cooldown_ticks() const {
+    return GetField<uint32_t>(VT_SKILL_Q_COOLDOWN_TICKS, 0);
+  }
+  uint32_t skill_e_cooldown_ticks() const {
+    return GetField<uint32_t>(VT_SKILL_E_COOLDOWN_TICKS, 0);
+  }
+  uint32_t skill_r_cooldown_ticks() const {
+    return GetField<uint32_t>(VT_SKILL_R_COOLDOWN_TICKS, 0);
+  }
+  wildpaw::protocol::SkillSlot casting_skill() const {
+    return static_cast<wildpaw::protocol::SkillSlot>(GetField<uint8_t>(VT_CASTING_SKILL, 0));
+  }
+  uint32_t cast_remaining_ticks() const {
+    return GetField<uint32_t>(VT_CAST_REMAINING_TICKS, 0);
+  }
   bool Verify(flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyField<uint32_t>(verifier, VT_PLAYER_ID, 4) &&
@@ -373,6 +409,15 @@ struct PlayerState FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
            VerifyField<uint16_t>(verifier, VT_HP, 2) &&
            VerifyField<uint8_t>(verifier, VT_ALIVE, 1) &&
            VerifyField<uint32_t>(verifier, VT_LAST_PROCESSED_INPUT_SEQ, 4) &&
+           VerifyField<uint16_t>(verifier, VT_AMMO, 2) &&
+           VerifyField<uint16_t>(verifier, VT_MAX_AMMO, 2) &&
+           VerifyField<uint8_t>(verifier, VT_IS_RELOADING, 1) &&
+           VerifyField<uint32_t>(verifier, VT_RELOAD_REMAINING_TICKS, 4) &&
+           VerifyField<uint32_t>(verifier, VT_SKILL_Q_COOLDOWN_TICKS, 4) &&
+           VerifyField<uint32_t>(verifier, VT_SKILL_E_COOLDOWN_TICKS, 4) &&
+           VerifyField<uint32_t>(verifier, VT_SKILL_R_COOLDOWN_TICKS, 4) &&
+           VerifyField<uint8_t>(verifier, VT_CASTING_SKILL, 1) &&
+           VerifyField<uint32_t>(verifier, VT_CAST_REMAINING_TICKS, 4) &&
            verifier.EndTable();
   }
 };
@@ -399,6 +444,33 @@ struct PlayerStateBuilder {
   void add_last_processed_input_seq(uint32_t last_processed_input_seq) {
     fbb_.AddElement<uint32_t>(PlayerState::VT_LAST_PROCESSED_INPUT_SEQ, last_processed_input_seq, 0);
   }
+  void add_ammo(uint16_t ammo) {
+    fbb_.AddElement<uint16_t>(PlayerState::VT_AMMO, ammo, 0);
+  }
+  void add_max_ammo(uint16_t max_ammo) {
+    fbb_.AddElement<uint16_t>(PlayerState::VT_MAX_AMMO, max_ammo, 0);
+  }
+  void add_is_reloading(bool is_reloading) {
+    fbb_.AddElement<uint8_t>(PlayerState::VT_IS_RELOADING, static_cast<uint8_t>(is_reloading), 0);
+  }
+  void add_reload_remaining_ticks(uint32_t reload_remaining_ticks) {
+    fbb_.AddElement<uint32_t>(PlayerState::VT_RELOAD_REMAINING_TICKS, reload_remaining_ticks, 0);
+  }
+  void add_skill_q_cooldown_ticks(uint32_t skill_q_cooldown_ticks) {
+    fbb_.AddElement<uint32_t>(PlayerState::VT_SKILL_Q_COOLDOWN_TICKS, skill_q_cooldown_ticks, 0);
+  }
+  void add_skill_e_cooldown_ticks(uint32_t skill_e_cooldown_ticks) {
+    fbb_.AddElement<uint32_t>(PlayerState::VT_SKILL_E_COOLDOWN_TICKS, skill_e_cooldown_ticks, 0);
+  }
+  void add_skill_r_cooldown_ticks(uint32_t skill_r_cooldown_ticks) {
+    fbb_.AddElement<uint32_t>(PlayerState::VT_SKILL_R_COOLDOWN_TICKS, skill_r_cooldown_ticks, 0);
+  }
+  void add_casting_skill(wildpaw::protocol::SkillSlot casting_skill) {
+    fbb_.AddElement<uint8_t>(PlayerState::VT_CASTING_SKILL, static_cast<uint8_t>(casting_skill), 0);
+  }
+  void add_cast_remaining_ticks(uint32_t cast_remaining_ticks) {
+    fbb_.AddElement<uint32_t>(PlayerState::VT_CAST_REMAINING_TICKS, cast_remaining_ticks, 0);
+  }
   explicit PlayerStateBuilder(flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
     start_ = fbb_.StartTable();
@@ -417,13 +489,31 @@ inline flatbuffers::Offset<PlayerState> CreatePlayerState(
     flatbuffers::Offset<wildpaw::protocol::Vec2> velocity = 0,
     uint16_t hp = 100,
     bool alive = true,
-    uint32_t last_processed_input_seq = 0) {
+    uint32_t last_processed_input_seq = 0,
+    uint16_t ammo = 0,
+    uint16_t max_ammo = 0,
+    bool is_reloading = false,
+    uint32_t reload_remaining_ticks = 0,
+    uint32_t skill_q_cooldown_ticks = 0,
+    uint32_t skill_e_cooldown_ticks = 0,
+    uint32_t skill_r_cooldown_ticks = 0,
+    wildpaw::protocol::SkillSlot casting_skill = wildpaw::protocol::SkillSlot::None,
+    uint32_t cast_remaining_ticks = 0) {
   PlayerStateBuilder builder_(_fbb);
+  builder_.add_cast_remaining_ticks(cast_remaining_ticks);
+  builder_.add_skill_r_cooldown_ticks(skill_r_cooldown_ticks);
+  builder_.add_skill_e_cooldown_ticks(skill_e_cooldown_ticks);
+  builder_.add_skill_q_cooldown_ticks(skill_q_cooldown_ticks);
+  builder_.add_reload_remaining_ticks(reload_remaining_ticks);
   builder_.add_last_processed_input_seq(last_processed_input_seq);
   builder_.add_velocity(velocity);
   builder_.add_position(position);
   builder_.add_player_id(player_id);
+  builder_.add_max_ammo(max_ammo);
+  builder_.add_ammo(ammo);
   builder_.add_hp(hp);
+  builder_.add_casting_skill(casting_skill);
+  builder_.add_is_reloading(is_reloading);
   builder_.add_alive(alive);
   return builder_.Finish();
 }

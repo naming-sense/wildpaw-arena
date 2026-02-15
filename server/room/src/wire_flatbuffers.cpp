@@ -193,7 +193,10 @@ std::vector<std::uint8_t> encodeSnapshotEnvelope(
 
     const auto playerState = wildpaw::protocol::CreatePlayerState(
         builder, player.playerId, position, velocity, player.hp, player.alive,
-        player.lastProcessedInputSeq);
+        player.lastProcessedInputSeq, player.ammo, player.maxAmmo,
+        player.reloading, player.reloadRemainingTicks, player.skillQCooldownTicks,
+        player.skillECooldownTicks, player.skillRCooldownTicks,
+        toProtocolSkillSlot(player.castingSkill), player.castRemainingTicks);
     playerOffsets.push_back(playerState);
   }
 
