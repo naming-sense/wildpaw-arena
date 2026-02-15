@@ -1,6 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace wildpaw::room {
 
@@ -28,7 +31,19 @@ struct CombatRuleTable {
   SkillRule skillR{};
 };
 
-// 임시 스캐폴드용 기본 룰 테이블.
+// 폴백(기본) 룰.
 const CombatRuleTable& defaultCombatRuleTable();
+
+// 외부 JSON 파일에서 프로필 룰 로드.
+// 실패 시 false를 반환하며, 기존/기본 룰을 유지한다.
+bool loadCombatRuleProfilesFromJson(std::string_view jsonPath,
+                                    std::string* errorMessage = nullptr);
+
+// 프로필 조회. 없으면 기본 룰 반환.
+const CombatRuleTable& combatRuleForProfile(std::string_view profileId);
+
+// 활성 프로필 목록/기본 프로필 id.
+std::vector<std::string> combatRuleProfileIds();
+std::string defaultCombatRuleProfileId();
 
 }  // namespace wildpaw::room

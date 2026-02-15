@@ -22,6 +22,7 @@
 #include <utility>
 #include <vector>
 
+#include "room/combat_rule_table.hpp"
 #include "room/interest_manager.hpp"
 #include "room/room_session.hpp"
 #include "room/room_simulation.hpp"
@@ -1094,6 +1095,15 @@ int main(int argc, char* argv[]) {
     const std::uint16_t metricsPort =
         argc > 4 ? static_cast<std::uint16_t>(std::stoi(argv[4])) : 9100;
 
+    const std::string rulesPath =
+        argc > 5 ? std::string{argv[5]} : "room/config/combat_rules.json";
+
+    std::string rulesError;
+    if (!wildpaw::room::loadCombatRuleProfilesFromJson(rulesPath, &rulesError)) {
+      std::cerr << "[room] combat rule load failed, fallback to built-in profiles: "
+                << rulesError << " path=" << rulesPath << '\n';
+    }
+
     net::io_context io;
     auto workGuard = net::make_work_guard(io);
 
@@ -1123,7 +1133,10 @@ int main(int argc, char* argv[]) {
 
     std::cout << "[room] websocket server listening on 0.0.0.0:" << port
               << " ioThreads=" << ioThreads << " tickRate=" << tickRate
-              << " metricsPort=" << metricsPort << '\n';
+              << " metricsPort=" << metricsPort
+              << " rulesPath=" << rulesPath
+              << " defaultProfile="
+              << wildpaw::room::defaultCombatRuleProfileId() << '\n';
 
     for (auto& thread : threads) {
       thread.join();

@@ -56,9 +56,19 @@ const stop = startThreeRealtimeLoop({
 ```
 
 ## 스모크 테스트 스크립트
-서버 기동 후 아래 스크립트로 ECS runtime 연결/이벤트 수신을 빠르게 확인할 수 있습니다.
+서버 기동 후 아래 스크립트로 연결/이벤트/룰 반영을 빠르게 확인할 수 있습니다.
 
 ```bash
 cd client/web
+# 기본 부하
+npx tsx ./scripts/bench-room.ts --url ws://127.0.0.1:7001 --clients 40 --duration-ms 4000 --input-interval-ms 50
+
+# ECS runtime + HUD 상태 확인
 npx tsx ./scripts/ecs-runtime-smoke.ts ws://127.0.0.1:7001 ecs-smoke
+
+# combat/projectile interest filtering 확인
+npx tsx ./scripts/interest-filter-smoke.ts ws://127.0.0.1:7001
+
+# 프로필별 룰(maxAmmo 등) 분리 확인
+npx tsx ./scripts/profile-rules-smoke.ts ws://127.0.0.1:7001
 ```

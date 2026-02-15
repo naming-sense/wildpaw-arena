@@ -24,10 +24,10 @@ cmake --build build -j
 
 ## 실행
 ```bash
-./build/room/wildpaw-room [port] [io_threads] [tick_rate] [metrics_port]
+./build/room/wildpaw-room [port] [io_threads] [tick_rate] [metrics_port] [rules_json_path]
 
 # 예시
-./build/room/wildpaw-room 7001 4 30 9100
+./build/room/wildpaw-room 7001 4 30 9100 room/config/combat_rules.json
 ```
 
 인자:
@@ -35,6 +35,7 @@ cmake --build build -j
 - `io_threads` (기본: `max(2, hw_concurrency)`)
 - `tick_rate` (기본: `30`)
 - `metrics_port` (기본: `9100`)
+- `rules_json_path` (기본: `room/config/combat_rules.json`)
 
 ## 전송 프로토콜
 - 스키마: `shared/protocol/fbs/wildpaw_protocol.fbs`
@@ -55,7 +56,9 @@ cmake --build build -j
 - `EventPayload`
 
 > 현재 combat/skill 판정은 스캐폴드용 서버 authoritative 샘플 룰이며,
-> `room/src/combat_rule_table.cpp`에서 탄약/재장전/쿨다운/캐스트타임/데미지 수치를 조정할 수 있습니다.
+> 기본값은 `room/src/combat_rule_table.cpp`, 런타임 오버라이드는
+> `room/config/combat_rules.json`(또는 실행 인자 `rules_json_path`)으로 적용됩니다.
+> 현재 스캐폴드에서는 접속 순서에 따라 프로필(`ranger/bruiser/skirmisher`)을 라운드로빈 배정합니다.
 
 ## 코드젠
 ```bash

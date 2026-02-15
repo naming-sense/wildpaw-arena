@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -40,6 +41,9 @@ struct PlayerState {
   std::uint16_t hp{100};
   bool alive{true};
   std::uint32_t lastProcessedInputSeq{0};
+
+  // 플레이어 룰 프로필 id(서버 내부용)
+  std::string profileId{"ranger"};
 
   // 무기/스킬 상태 (클라 HUD 동기화용)
   std::uint16_t ammo{0};

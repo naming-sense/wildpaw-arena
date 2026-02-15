@@ -28,8 +28,6 @@ RoomSimulation::RoomSimulation(std::uint32_t tickRate)
     : tickRate_(tickRate), inputBuffer_(256) {}
 
 void RoomSimulation::addPlayer(std::uint32_t playerId) {
-  const auto& rules = defaultCombatRuleTable();
-
   PlayerState state;
   state.playerId = playerId;
 
@@ -40,6 +38,16 @@ void RoomSimulation::addPlayer(std::uint32_t playerId) {
   state.position = {ringRadius * std::cos(angle), ringRadius * std::sin(angle)};
   state.velocity = {0.0f, 0.0f};
 
+  auto profileIds = combatRuleProfileIds();
+  std::sort(profileIds.begin(), profileIds.end());
+
+  if (!profileIds.empty()) {
+    state.profileId = profileIds[players_.size() % profileIds.size()];
+  } else {
+    state.profileId = defaultCombatRuleProfileId();
+  }
+
+  const auto& rules = combatRuleForProfile(state.profileId);
   state.maxAmmo = rules.maxAmmo;
   state.ammo = rules.maxAmmo;
 
@@ -130,8 +138,6 @@ void RoomSimulation::applyMovement() {
 }
 
 void RoomSimulation::processCombat() {
-  const auto& rules = defaultCombatRuleTable();
-
   auto findNearestTarget = [&](const PlayerState& source,
                                float rangeMeters) -> PlayerState* {
     if (rangeMeters <= 0.0f) {
@@ -157,7 +163,8 @@ void RoomSimulation::processCombat() {
     return bestTarget;
   };
 
-  auto maybeStartReload = [&](PlayerState& player) {
+  auto maybeStartReload = [&](PlayerState& player,
+                              const CombatRuleTable& rules) {
     if (player.reloading || !player.alive) {
       return;
     }
@@ -168,7 +175,9 @@ void RoomSimulation::processCombat() {
     }
   };
 
-  auto consumeAmmo = [&](PlayerState& player, std::uint16_t amount) -> bool {
+  auto consumeAmmo = [&](PlayerState& player,
+                         const CombatRuleTable& rules,
+                         std::uint16_t amount) -> bool {
     if (amount == 0) {
       return true;
     }
@@ -178,7 +187,7 @@ void RoomSimulation::processCombat() {
     }
 
     player.ammo = static_cast<std::uint16_t>(player.ammo - amount);
-    maybeStartReload(player);
+    maybeStartReload(player, rules);
     return true;
   };
 
@@ -235,8 +244,10 @@ void RoomSimulation::processCombat() {
       return;
     }
 
+    const auto& sourceRules = combatRuleForProfile(source.profileId);
+
     if (slot == SkillSlot::Q) {
-      const auto& rule = rules.skillQ;
+      const auto& rule = sourceRules.skillQ;
       if (auto* target = findNearestTarget(source, rule.rangeMeters);
           target != nullptr) {
         pushDamageEvents(source, *target, rule.damage, SkillSlot::Q, rule.critical);
@@ -250,7 +261,7 @@ void RoomSimulation::processCombat() {
     }
 
     if (slot == SkillSlot::R) {
-      const auto& rule = rules.skillR;
+      const auto& rule = sourceRules.skillR;
       const float radiusSq = rule.radiusMeters * rule.radiusMeters;
 
       for (auto& [targetId, target] : players_) {
@@ -340,6 +351,8 @@ void RoomSimulation::processCombat() {
                                      ? prevInputFound->second
                                      : InputFrame{};
 
+    const auto& rules = combatRuleForProfile(player.profileId);
+
     // 캐스팅 중에는 공격/스킬 입력 잠금.
     bool actionLocked = player.castRemainingTicks > 0;
 
@@ -366,7 +379,7 @@ void RoomSimulation::processCombat() {
       if (firstShot || tick_ >= lastFiredTick + rules.fireIntervalTicks) {
         lastFireTick_[playerId] = tick_;
 
-        if (consumeAmmo(player, rules.ammoPerShot)) {
+        if (consumeAmmo(player, rules, rules.ammoPerShot)) {
           const auto projectileDirection = directionFromRadian(input.aimRadian);
 
           pendingCombatEvents_.push_back(CombatEvent{
@@ -420,7 +433,7 @@ void RoomSimulation::processCombat() {
       if (cooldownTicks > 0 || player.reloading) {
         return;
       }
-      if (!consumeAmmo(player, rule.ammoCost)) {
+      if (!consumeAmmo(player, rules, rule.ammoCost)) {
         return;
       }
 
