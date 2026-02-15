@@ -1,6 +1,7 @@
 #include "room/combat_rule_table.hpp"
 
-#include <fstream>
+#include <mutex>
+#include <shared_mutex>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -91,6 +92,7 @@ std::unordered_map<std::string, CombatRuleTable> makeBuiltInProfiles() {
 CombatRuleTable gDefaultRule = makeDefaultRule();
 std::unordered_map<std::string, CombatRuleTable> gProfiles = makeBuiltInProfiles();
 std::string gDefaultProfileId = "ranger";
+std::shared_mutex gRuleMutex;
 
 void applySkillRule(const boost::property_tree::ptree& node, SkillRule& skill) {
   skill.cooldownTicks =
@@ -131,7 +133,7 @@ void applyProfileRule(const boost::property_tree::ptree& node,
 
 }  // namespace
 
-const CombatRuleTable& defaultCombatRuleTable() { return gDefaultRule; }
+CombatRuleTable defaultCombatRuleTable() { return gDefaultRule; }
 
 bool loadCombatRuleProfilesFromJson(std::string_view jsonPath,
                                     std::string* errorMessage) {
@@ -172,8 +174,12 @@ bool loadCombatRuleProfilesFromJson(std::string_view jsonPath,
       defaultProfile = loaded.begin()->first;
     }
 
-    gProfiles = std::move(loaded);
-    gDefaultProfileId = std::move(defaultProfile);
+    {
+      std::unique_lock lock(gRuleMutex);
+      gProfiles = std::move(loaded);
+      gDefaultProfileId = std::move(defaultProfile);
+    }
+
     return true;
   } catch (const std::exception& ex) {
     if (errorMessage != nullptr) {
@@ -183,7 +189,9 @@ bool loadCombatRuleProfilesFromJson(std::string_view jsonPath,
   }
 }
 
-const CombatRuleTable& combatRuleForProfile(std::string_view profileId) {
+CombatRuleTable combatRuleForProfile(std::string_view profileId) {
+  std::shared_lock lock(gRuleMutex);
+
   if (!profileId.empty()) {
     const auto found = gProfiles.find(std::string{profileId});
     if (found != gProfiles.end()) {
@@ -200,6 +208,8 @@ const CombatRuleTable& combatRuleForProfile(std::string_view profileId) {
 }
 
 std::vector<std::string> combatRuleProfileIds() {
+  std::shared_lock lock(gRuleMutex);
+
   std::vector<std::string> ids;
   ids.reserve(gProfiles.size());
 
@@ -210,6 +220,9 @@ std::vector<std::string> combatRuleProfileIds() {
   return ids;
 }
 
-std::string defaultCombatRuleProfileId() { return gDefaultProfileId; }
+std::string defaultCombatRuleProfileId() {
+  std::shared_lock lock(gRuleMutex);
+  return gDefaultProfileId;
+}
 
 }  // namespace wildpaw::room

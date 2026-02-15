@@ -8,6 +8,7 @@ import { ThreeCombatSceneAdapter } from "./threeCombatSceneAdapter";
 
 export interface ThreeRealtimeLoopOptions {
   roomToken: string;
+  profileId?: string;
   url: string;
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
@@ -21,6 +22,7 @@ export function startThreeRealtimeLoop(options: ThreeRealtimeLoopOptions): () =>
   const runtime = new RealtimeEcsRuntime({
     url: options.url,
     roomToken: options.roomToken,
+    profileId: options.profileId,
     renderAdapter: adapter,
   });
 

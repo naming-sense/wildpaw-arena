@@ -78,6 +78,10 @@ table ActionCommandPayload {
   skill_r:bool;
 }
 
+table SelectProfilePayload {
+  profile_id:string;
+}
+
 table PingPayload {}
 
 table WelcomePayload {
@@ -126,6 +130,7 @@ union MessagePayload {
   HelloPayload,
   InputPayload,
   ActionCommandPayload,
+  SelectProfilePayload,
   PingPayload,
   WelcomePayload,
   SnapshotPayload,

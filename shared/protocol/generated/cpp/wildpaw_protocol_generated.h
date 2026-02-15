@@ -31,6 +31,9 @@ struct InputPayloadBuilder;
 struct ActionCommandPayload;
 struct ActionCommandPayloadBuilder;
 
+struct SelectProfilePayload;
+struct SelectProfilePayloadBuilder;
+
 struct PingPayload;
 struct PingPayloadBuilder;
 
@@ -192,22 +195,24 @@ enum class MessagePayload : uint8_t {
   HelloPayload = 1,
   InputPayload = 2,
   ActionCommandPayload = 3,
-  PingPayload = 4,
-  WelcomePayload = 5,
-  SnapshotPayload = 6,
-  CombatEventPayload = 7,
-  ProjectileEventPayload = 8,
-  EventPayload = 9,
+  SelectProfilePayload = 4,
+  PingPayload = 5,
+  WelcomePayload = 6,
+  SnapshotPayload = 7,
+  CombatEventPayload = 8,
+  ProjectileEventPayload = 9,
+  EventPayload = 10,
   MIN = NONE,
   MAX = EventPayload
 };
 
-inline const MessagePayload (&EnumValuesMessagePayload())[10] {
+inline const MessagePayload (&EnumValuesMessagePayload())[11] {
   static const MessagePayload values[] = {
     MessagePayload::NONE,
     MessagePayload::HelloPayload,
     MessagePayload::InputPayload,
     MessagePayload::ActionCommandPayload,
+    MessagePayload::SelectProfilePayload,
     MessagePayload::PingPayload,
     MessagePayload::WelcomePayload,
     MessagePayload::SnapshotPayload,
@@ -219,11 +224,12 @@ inline const MessagePayload (&EnumValuesMessagePayload())[10] {
 }
 
 inline const char * const *EnumNamesMessagePayload() {
-  static const char * const names[11] = {
+  static const char * const names[12] = {
     "NONE",
     "HelloPayload",
     "InputPayload",
     "ActionCommandPayload",
+    "SelectProfilePayload",
     "PingPayload",
     "WelcomePayload",
     "SnapshotPayload",
@@ -255,6 +261,10 @@ template<> struct MessagePayloadTraits<wildpaw::protocol::InputPayload> {
 
 template<> struct MessagePayloadTraits<wildpaw::protocol::ActionCommandPayload> {
   static const MessagePayload enum_value = MessagePayload::ActionCommandPayload;
+};
+
+template<> struct MessagePayloadTraits<wildpaw::protocol::SelectProfilePayload> {
+  static const MessagePayload enum_value = MessagePayload::SelectProfilePayload;
 };
 
 template<> struct MessagePayloadTraits<wildpaw::protocol::PingPayload> {
@@ -805,6 +815,57 @@ inline flatbuffers::Offset<ActionCommandPayload> CreateActionCommandPayload(
   return builder_.Finish();
 }
 
+struct SelectProfilePayload FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
+  typedef SelectProfilePayloadBuilder Builder;
+  enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
+    VT_PROFILE_ID = 4
+  };
+  const flatbuffers::String *profile_id() const {
+    return GetPointer<const flatbuffers::String *>(VT_PROFILE_ID);
+  }
+  bool Verify(flatbuffers::Verifier &verifier) const {
+    return VerifyTableStart(verifier) &&
+           VerifyOffset(verifier, VT_PROFILE_ID) &&
+           verifier.VerifyString(profile_id()) &&
+           verifier.EndTable();
+  }
+};
+
+struct SelectProfilePayloadBuilder {
+  typedef SelectProfilePayload Table;
+  flatbuffers::FlatBufferBuilder &fbb_;
+  flatbuffers::uoffset_t start_;
+  void add_profile_id(flatbuffers::Offset<flatbuffers::String> profile_id) {
+    fbb_.AddOffset(SelectProfilePayload::VT_PROFILE_ID, profile_id);
+  }
+  explicit SelectProfilePayloadBuilder(flatbuffers::FlatBufferBuilder &_fbb)
+        : fbb_(_fbb) {
+    start_ = fbb_.StartTable();
+  }
+  flatbuffers::Offset<SelectProfilePayload> Finish() {
+    const auto end = fbb_.EndTable(start_);
+    auto o = flatbuffers::Offset<SelectProfilePayload>(end);
+    return o;
+  }
+};
+
+inline flatbuffers::Offset<SelectProfilePayload> CreateSelectProfilePayload(
+    flatbuffers::FlatBufferBuilder &_fbb,
+    flatbuffers::Offset<flatbuffers::String> profile_id = 0) {
+  SelectProfilePayloadBuilder builder_(_fbb);
+  builder_.add_profile_id(profile_id);
+  return builder_.Finish();
+}
+
+inline flatbuffers::Offset<SelectProfilePayload> CreateSelectProfilePayloadDirect(
+    flatbuffers::FlatBufferBuilder &_fbb,
+    const char *profile_id = nullptr) {
+  auto profile_id__ = profile_id ? _fbb.CreateString(profile_id) : 0;
+  return wildpaw::protocol::CreateSelectProfilePayload(
+      _fbb,
+      profile_id__);
+}
+
 struct PingPayload FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   typedef PingPayloadBuilder Builder;
   bool Verify(flatbuffers::Verifier &verifier) const {
@@ -1324,6 +1385,9 @@ struct Envelope FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   const wildpaw::protocol::ActionCommandPayload *payload_as_ActionCommandPayload() const {
     return payload_type() == wildpaw::protocol::MessagePayload::ActionCommandPayload ? static_cast<const wildpaw::protocol::ActionCommandPayload *>(payload()) : nullptr;
   }
+  const wildpaw::protocol::SelectProfilePayload *payload_as_SelectProfilePayload() const {
+    return payload_type() == wildpaw::protocol::MessagePayload::SelectProfilePayload ? static_cast<const wildpaw::protocol::SelectProfilePayload *>(payload()) : nullptr;
+  }
   const wildpaw::protocol::PingPayload *payload_as_PingPayload() const {
     return payload_type() == wildpaw::protocol::MessagePayload::PingPayload ? static_cast<const wildpaw::protocol::PingPayload *>(payload()) : nullptr;
   }
@@ -1364,6 +1428,10 @@ template<> inline const wildpaw::protocol::InputPayload *Envelope::payload_as<wi
 
 template<> inline const wildpaw::protocol::ActionCommandPayload *Envelope::payload_as<wildpaw::protocol::ActionCommandPayload>() const {
   return payload_as_ActionCommandPayload();
+}
+
+template<> inline const wildpaw::protocol::SelectProfilePayload *Envelope::payload_as<wildpaw::protocol::SelectProfilePayload>() const {
+  return payload_as_SelectProfilePayload();
 }
 
 template<> inline const wildpaw::protocol::PingPayload *Envelope::payload_as<wildpaw::protocol::PingPayload>() const {
@@ -1451,6 +1519,10 @@ inline bool VerifyMessagePayload(flatbuffers::Verifier &verifier, const void *ob
     }
     case MessagePayload::ActionCommandPayload: {
       auto ptr = reinterpret_cast<const wildpaw::protocol::ActionCommandPayload *>(obj);
+      return verifier.VerifyTable(ptr);
+    }
+    case MessagePayload::SelectProfilePayload: {
+      auto ptr = reinterpret_cast<const wildpaw::protocol::SelectProfilePayload *>(obj);
       return verifier.VerifyTable(ptr);
     }
     case MessagePayload::PingPayload: {

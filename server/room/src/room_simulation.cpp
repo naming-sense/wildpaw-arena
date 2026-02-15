@@ -47,11 +47,43 @@ void RoomSimulation::addPlayer(std::uint32_t playerId) {
     state.profileId = defaultCombatRuleProfileId();
   }
 
-  const auto& rules = combatRuleForProfile(state.profileId);
+  const auto rules = combatRuleForProfile(state.profileId);
   state.maxAmmo = rules.maxAmmo;
   state.ammo = rules.maxAmmo;
 
   players_[playerId] = state;
+}
+
+bool RoomSimulation::setPlayerProfile(std::uint32_t playerId,
+                                      std::string_view profileId) {
+  auto playerFound = players_.find(playerId);
+  if (playerFound == players_.end()) {
+    return false;
+  }
+
+  const auto profileIds = combatRuleProfileIds();
+  const bool exists =
+      std::find(profileIds.begin(), profileIds.end(), profileId) != profileIds.end();
+  if (!exists) {
+    return false;
+  }
+
+  auto& player = playerFound->second;
+  player.profileId = std::string{profileId};
+
+  const auto rules = combatRuleForProfile(player.profileId);
+  player.maxAmmo = rules.maxAmmo;
+  player.ammo = rules.maxAmmo;
+
+  player.reloading = false;
+  player.reloadRemainingTicks = 0;
+  player.castingSkill = SkillSlot::None;
+  player.castRemainingTicks = 0;
+  player.skillQCooldownTicks = 0;
+  player.skillECooldownTicks = 0;
+  player.skillRCooldownTicks = 0;
+
+  return true;
 }
 
 void RoomSimulation::removePlayer(std::uint32_t playerId) {
@@ -244,7 +276,7 @@ void RoomSimulation::processCombat() {
       return;
     }
 
-    const auto& sourceRules = combatRuleForProfile(source.profileId);
+    const auto sourceRules = combatRuleForProfile(source.profileId);
 
     if (slot == SkillSlot::Q) {
       const auto& rule = sourceRules.skillQ;
@@ -279,6 +311,18 @@ void RoomSimulation::processCombat() {
 
   // 1) 틱 단위 상태 감소 (쿨다운/캐스트/재장전)
   for (auto& [_, player] : players_) {
+    const auto rules = combatRuleForProfile(player.profileId);
+
+    // 룰 핫리로드 반영: 탄약 상한/재장전 길이 보정.
+    if (player.maxAmmo != rules.maxAmmo) {
+      player.maxAmmo = rules.maxAmmo;
+      player.ammo = std::min(player.ammo, player.maxAmmo);
+    }
+
+    if (player.reloading && player.reloadRemainingTicks > rules.reloadTicks) {
+      player.reloadRemainingTicks = rules.reloadTicks;
+    }
+
     if (player.reloadRemainingTicks > 0) {
       --player.reloadRemainingTicks;
       if (player.reloadRemainingTicks == 0) {
@@ -351,7 +395,7 @@ void RoomSimulation::processCombat() {
                                      ? prevInputFound->second
                                      : InputFrame{};
 
-    const auto& rules = combatRuleForProfile(player.profileId);
+    const auto rules = combatRuleForProfile(player.profileId);
 
     // 캐스팅 중에는 공격/스킬 입력 잠금.
     bool actionLocked = player.castRemainingTicks > 0;

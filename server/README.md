@@ -45,6 +45,7 @@ cmake --build build -j
 ### C2S payload
 - `HelloPayload`
 - `ActionCommandPayload` (권장)
+- `SelectProfilePayload` (프로필/캐릭터 선택)
 - `InputPayload` (legacy-compat)
 - `PingPayload`
 
@@ -59,6 +60,9 @@ cmake --build build -j
 > 기본값은 `room/src/combat_rule_table.cpp`, 런타임 오버라이드는
 > `room/config/combat_rules.json`(또는 실행 인자 `rules_json_path`)으로 적용됩니다.
 > 현재 스캐폴드에서는 접속 순서에 따라 프로필(`ranger/bruiser/skirmisher`)을 라운드로빈 배정합니다.
+> 클라이언트는 `SelectProfilePayload`로 세션 중 프로필 변경을 요청할 수 있으며,
+> 서버는 `profile.applied` / `profile.invalid` 이벤트를 반환합니다.
+> 룰 JSON 파일 수정 시 서버가 주기적으로 변경을 감지해 핫리로드합니다.
 
 ## 코드젠
 ```bash
@@ -80,6 +84,8 @@ curl -s http://127.0.0.1:9100/metrics
 - `wildpaw_room_projectile_event_sent_total`
 - `wildpaw_room_combat_event_filtered_total`
 - `wildpaw_room_projectile_event_filtered_total`
+- `wildpaw_room_rule_reload_success_total`
+- `wildpaw_room_rule_reload_failure_total`
 
 ## 로컬 부하 벤치
 ```bash

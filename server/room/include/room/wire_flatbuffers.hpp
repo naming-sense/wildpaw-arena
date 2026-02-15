@@ -17,6 +17,7 @@ enum class ClientMessageType {
   Hello,
   Input,
   ActionCommand,
+  SelectProfile,
   Ping,
 };
 
@@ -27,6 +28,9 @@ struct DecodedClientEnvelope {
   // Hello payload
   std::string roomToken;
   std::string clientVersion;
+
+  // SelectProfile payload
+  std::string profileId;
 
   // Input/Action payload
   InputFrame input{};

@@ -12,6 +12,7 @@ export { PingPayload } from './wildpaw/protocol/ping-payload';
 export { PlayerState } from './wildpaw/protocol/player-state';
 export { ProjectileEventPayload } from './wildpaw/protocol/projectile-event-payload';
 export { ProjectilePhase } from './wildpaw/protocol/projectile-phase';
+export { SelectProfilePayload } from './wildpaw/protocol/select-profile-payload';
 export { SkillSlot } from './wildpaw/protocol/skill-slot';
 export { SnapshotKind } from './wildpaw/protocol/snapshot-kind';
 export { SnapshotPayload } from './wildpaw/protocol/snapshot-payload';

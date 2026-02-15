@@ -34,6 +34,7 @@ flatc --ts -o client/web/src/netcode/gen shared/protocol/fbs/wildpaw_protocol.fb
 - `HelloPayload`
 - `InputPayload` (legacy-compat)
 - `ActionCommandPayload` (권장 C2S 입력)
+- `SelectProfilePayload` (프로필/캐릭터 선택)
 - `PingPayload`
 - `WelcomePayload`
 - `SnapshotPayload`

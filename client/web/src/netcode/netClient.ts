@@ -16,6 +16,7 @@ import { InputPayload } from "./gen/wildpaw/protocol/input-payload";
 import { MessagePayload } from "./gen/wildpaw/protocol/message-payload";
 import { PingPayload } from "./gen/wildpaw/protocol/ping-payload";
 import { ProjectileEventPayload } from "./gen/wildpaw/protocol/projectile-event-payload";
+import { SelectProfilePayload } from "./gen/wildpaw/protocol/select-profile-payload";
 import { SnapshotKind } from "./gen/wildpaw/protocol/snapshot-kind";
 import { SnapshotPayload } from "./gen/wildpaw/protocol/snapshot-payload";
 import { WelcomePayload } from "./gen/wildpaw/protocol/welcome-payload";
@@ -85,6 +86,7 @@ function toNumber(value: bigint): number {
 export class RealtimeClient {
   private ws: WebSocket | null = null;
   private readonly sequenceTracker = new SequenceTracker();
+  private readonly seenRemoteEnvelopeSeqs: number[] = [];
 
   constructor(private readonly options: RealtimeClientOptions) {}
 
@@ -109,6 +111,10 @@ export class RealtimeClient {
     this.sendEnvelope("C2S_PING", {});
   }
 
+  selectProfile(profileId: string): void {
+    this.sendEnvelope("C2S_SELECT_PROFILE", { profileId });
+  }
+
   disconnect(): void {
     this.ws?.close();
     this.ws = null;
@@ -122,7 +128,12 @@ export class RealtimeClient {
   }
 
   private sendEnvelope(
-    type: "C2S_HELLO" | "C2S_INPUT" | "C2S_ACTION_COMMAND" | "C2S_PING",
+    type:
+      | "C2S_HELLO"
+      | "C2S_INPUT"
+      | "C2S_ACTION_COMMAND"
+      | "C2S_SELECT_PROFILE"
+      | "C2S_PING",
     payload: unknown,
   ): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
@@ -174,6 +185,14 @@ export class RealtimeClient {
         Boolean(input.skillR),
       );
       payloadType = MessagePayload.ActionCommandPayload;
+    } else if (type === "C2S_SELECT_PROFILE") {
+      const body = payload as { profileId: string };
+      const profileIdOffset = builder.createString(body.profileId);
+      payloadOffset = SelectProfilePayload.createSelectProfilePayload(
+        builder,
+        profileIdOffset,
+      );
+      payloadType = MessagePayload.SelectProfilePayload;
     } else if (type === "C2S_PING") {
       payloadOffset = PingPayload.createPingPayload(builder);
       payloadType = MessagePayload.PingPayload;
@@ -208,6 +227,23 @@ export class RealtimeClient {
     this.options.onEvent?.("text.unexpected", data);
   }
 
+  private isDuplicateRemoteEnvelopeSeq(seq: number): boolean {
+    if (seq <= 0 || !Number.isFinite(seq)) {
+      return false;
+    }
+
+    if (this.seenRemoteEnvelopeSeqs.includes(seq)) {
+      return true;
+    }
+
+    this.seenRemoteEnvelopeSeqs.push(seq);
+    if (this.seenRemoteEnvelopeSeqs.length > 256) {
+      this.seenRemoteEnvelopeSeqs.shift();
+    }
+
+    return false;
+  }
+
   private handleBinaryEnvelope(buffer: ArrayBuffer): void {
     const byteBuffer = new flatbuffers.ByteBuffer(new Uint8Array(buffer));
     if (!Envelope.bufferHasIdentifier(byteBuffer)) {
@@ -219,6 +255,10 @@ export class RealtimeClient {
 
     const envelope = Envelope.getRootAsEnvelope(byteBuffer);
     this.sequenceTracker.noteRemote(envelope.seq());
+
+    if (this.isDuplicateRemoteEnvelopeSeq(envelope.seq())) {
+      return;
+    }
 
     switch (envelope.payloadType()) {
       case MessagePayload.WelcomePayload: {

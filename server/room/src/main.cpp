@@ -9,13 +9,16 @@
 #include <csignal>
 #include <cstdint>
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -213,11 +216,13 @@ class RoomServer {
  public:
   RoomServer(net::io_context& io,
              const tcp::endpoint& endpoint,
-             std::uint16_t tickRate)
+             std::uint16_t tickRate,
+             std::string rulesPath)
       : io_(io),
         acceptor_(net::make_strand(io)),
         simulation_(tickRate),
-        tickIntervalMs_(std::max<int>(1, 1000 / static_cast<int>(tickRate))) {
+        tickIntervalMs_(std::max<int>(1, 1000 / static_cast<int>(tickRate))),
+        rulesPath_(std::move(rulesPath)) {
     beast::error_code ec;
 
     acceptor_.open(endpoint.protocol(), ec);
@@ -238,6 +243,11 @@ class RoomServer {
     acceptor_.listen(net::socket_base::max_listen_connections, ec);
     if (ec) {
       throw beast::system_error(ec);
+    }
+
+    std::error_code fsError;
+    if (std::filesystem::exists(rulesPath_, fsError)) {
+      rulesLastWriteTime_ = std::filesystem::last_write_time(rulesPath_, fsError);
     }
   }
 
@@ -358,6 +368,16 @@ class RoomServer {
     out << "wildpaw_room_projectile_event_filtered_total "
         << projectileEventFilteredTotal_.load(std::memory_order_relaxed) << "\n";
 
+    out << "# HELP wildpaw_room_rule_reload_success_total Rule hot-reload success count\n";
+    out << "# TYPE wildpaw_room_rule_reload_success_total counter\n";
+    out << "wildpaw_room_rule_reload_success_total "
+        << ruleReloadSuccessTotal_.load(std::memory_order_relaxed) << "\n";
+
+    out << "# HELP wildpaw_room_rule_reload_failure_total Rule hot-reload failure count\n";
+    out << "# TYPE wildpaw_room_rule_reload_failure_total counter\n";
+    out << "wildpaw_room_rule_reload_failure_total "
+        << ruleReloadFailureTotal_.load(std::memory_order_relaxed) << "\n";
+
     out << "# HELP wildpaw_room_reliable_inflight_packets Reliable in-flight packets\n";
     out << "# TYPE wildpaw_room_reliable_inflight_packets gauge\n";
     out << "wildpaw_room_reliable_inflight_packets " << reliableInFlight << "\n";
@@ -434,6 +454,18 @@ class RoomServer {
         enqueueInput(playerId, decoded->input);
         inputFramesTotal_.fetch_add(1, std::memory_order_relaxed);
         return;
+
+      case wildpaw::room::wire::ClientMessageType::SelectProfile: {
+        const bool applied = setPlayerProfile(playerId, decoded->profileId);
+        if (applied) {
+          sendEventWithPolicy(session, "profile.applied", decoded->profileId,
+                              WsSession::ReliableClass::Standard);
+        } else {
+          sendEventWithPolicy(session, "profile.invalid", decoded->profileId,
+                              WsSession::ReliableClass::Standard);
+        }
+        return;
+      }
 
       case wildpaw::room::wire::ClientMessageType::Ping:
         sendEventWithPolicy(session, "pong", "ok",
@@ -512,6 +544,15 @@ class RoomServer {
     }
 
     eventSentTotal_.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  bool setPlayerProfile(std::uint32_t playerId, std::string_view profileId) {
+    if (profileId.empty()) {
+      return false;
+    }
+
+    std::lock_guard<std::mutex> lock(simulationMutex_);
+    return simulation_.setPlayerProfile(playerId, profileId);
   }
 
   void enqueueInput(std::uint32_t playerId, const wildpaw::room::InputFrame& input) {
@@ -597,9 +638,51 @@ class RoomServer {
     });
   }
 
+  void maybeReloadRules() {
+    using clock = std::chrono::steady_clock;
+    const auto now = clock::now();
+
+    if (now < nextRuleReloadCheckAt_) {
+      return;
+    }
+
+    nextRuleReloadCheckAt_ = now + std::chrono::seconds(1);
+
+    std::error_code fsError;
+    if (!std::filesystem::exists(rulesPath_, fsError)) {
+      return;
+    }
+
+    const auto writeTime = std::filesystem::last_write_time(rulesPath_, fsError);
+    if (fsError) {
+      return;
+    }
+
+    if (rulesLastWriteTime_.has_value() && writeTime <= rulesLastWriteTime_.value()) {
+      return;
+    }
+
+    std::string error;
+    if (!wildpaw::room::loadCombatRuleProfilesFromJson(rulesPath_, &error)) {
+      ruleReloadFailureTotal_.fetch_add(1, std::memory_order_relaxed);
+      std::cerr << "[room] rules hot-reload failed: " << error
+                << " path=" << rulesPath_ << '\n';
+      return;
+    }
+
+    rulesLastWriteTime_ = writeTime;
+    ruleReloadSuccessTotal_.fetch_add(1, std::memory_order_relaxed);
+
+    std::cout << "[room] rules hot-reloaded from " << rulesPath_
+              << " defaultProfile="
+              << wildpaw::room::defaultCombatRuleProfileId() << '\n';
+  }
+
   void tickOnce() {
     using clock = std::chrono::steady_clock;
     const auto tickStart = clock::now();
+
+    maybeReloadRules();
 
     const auto drainedInputs = drainPendingInputs();
 
@@ -727,6 +810,10 @@ class RoomServer {
 
   int tickIntervalMs_{33};
 
+  std::string rulesPath_;
+  std::optional<std::filesystem::file_time_type> rulesLastWriteTime_;
+  std::chrono::steady_clock::time_point nextRuleReloadCheckAt_{};
+
   std::atomic<bool> running_{false};
   std::jthread tickThread_;
 
@@ -753,6 +840,8 @@ class RoomServer {
   std::atomic<std::uint64_t> projectileEventSentTotal_{0};
   std::atomic<std::uint64_t> combatEventFilteredTotal_{0};
   std::atomic<std::uint64_t> projectileEventFilteredTotal_{0};
+  std::atomic<std::uint64_t> ruleReloadSuccessTotal_{0};
+  std::atomic<std::uint64_t> ruleReloadFailureTotal_{0};
 
   std::atomic<std::uint64_t> retransmitSentTotal_{0};
   std::atomic<std::uint64_t> retransmitDroppedTotal_{0};
@@ -1107,7 +1196,8 @@ int main(int argc, char* argv[]) {
     net::io_context io;
     auto workGuard = net::make_work_guard(io);
 
-    RoomServer roomServer(io, tcp::endpoint(tcp::v4(), port), tickRate);
+    RoomServer roomServer(io, tcp::endpoint(tcp::v4(), port), tickRate,
+                          rulesPath);
     MetricsServer metricsServer(
         io, tcp::endpoint(tcp::v4(), metricsPort),
         [&roomServer]() { return roomServer.renderPrometheusMetrics(); });

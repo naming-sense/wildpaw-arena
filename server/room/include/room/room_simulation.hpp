@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -92,6 +93,7 @@ class RoomSimulation {
   void addPlayer(std::uint32_t playerId);
   void removePlayer(std::uint32_t playerId);
   void pushInput(std::uint32_t playerId, const InputFrame& frame);
+  bool setPlayerProfile(std::uint32_t playerId, std::string_view profileId);
 
   WorldSnapshot tick();
   [[nodiscard]] WorldSnapshot snapshot() const;

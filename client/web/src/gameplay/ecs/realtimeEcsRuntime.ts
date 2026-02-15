@@ -41,6 +41,7 @@ export interface EcsRenderAdapter {
 export interface RealtimeEcsRuntimeOptions {
   url: string;
   roomToken: string;
+  profileId?: string;
   renderAdapter: EcsRenderAdapter;
   interpolationDelayMs?: number;
   fixedDtSeconds?: number;
@@ -59,6 +60,7 @@ export class RealtimeEcsRuntime {
 
   private inputSeq = 1;
   private localTick = 0;
+  private profileRequested = false;
 
   constructor(private readonly options: RealtimeEcsRuntimeOptions) {
     this.interpolationDelayMs = options.interpolationDelayMs ?? 100;
@@ -78,6 +80,11 @@ export class RealtimeEcsRuntime {
           const body = payload as { playerId?: number };
           if (typeof body.playerId === "number") {
             this.localPlayerId = body.playerId;
+
+            if (this.options.profileId && !this.profileRequested) {
+              this.client.selectProfile(this.options.profileId);
+              this.profileRequested = true;
+            }
           }
         }
       },

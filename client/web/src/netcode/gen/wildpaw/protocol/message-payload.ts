@@ -7,6 +7,7 @@ import { HelloPayload } from '../../wildpaw/protocol/hello-payload';
 import { InputPayload } from '../../wildpaw/protocol/input-payload';
 import { PingPayload } from '../../wildpaw/protocol/ping-payload';
 import { ProjectileEventPayload } from '../../wildpaw/protocol/projectile-event-payload';
+import { SelectProfilePayload } from '../../wildpaw/protocol/select-profile-payload';
 import { SnapshotPayload } from '../../wildpaw/protocol/snapshot-payload';
 import { WelcomePayload } from '../../wildpaw/protocol/welcome-payload';
 
@@ -16,23 +17,25 @@ export enum MessagePayload {
   HelloPayload = 1,
   InputPayload = 2,
   ActionCommandPayload = 3,
-  PingPayload = 4,
-  WelcomePayload = 5,
-  SnapshotPayload = 6,
-  CombatEventPayload = 7,
-  ProjectileEventPayload = 8,
-  EventPayload = 9
+  SelectProfilePayload = 4,
+  PingPayload = 5,
+  WelcomePayload = 6,
+  SnapshotPayload = 7,
+  CombatEventPayload = 8,
+  ProjectileEventPayload = 9,
+  EventPayload = 10
 }
 
 export function unionToMessagePayload(
   type: MessagePayload,
-  accessor: (obj:ActionCommandPayload|CombatEventPayload|EventPayload|HelloPayload|InputPayload|PingPayload|ProjectileEventPayload|SnapshotPayload|WelcomePayload) => ActionCommandPayload|CombatEventPayload|EventPayload|HelloPayload|InputPayload|PingPayload|ProjectileEventPayload|SnapshotPayload|WelcomePayload|null
-): ActionCommandPayload|CombatEventPayload|EventPayload|HelloPayload|InputPayload|PingPayload|ProjectileEventPayload|SnapshotPayload|WelcomePayload|null {
+  accessor: (obj:ActionCommandPayload|CombatEventPayload|EventPayload|HelloPayload|InputPayload|PingPayload|ProjectileEventPayload|SelectProfilePayload|SnapshotPayload|WelcomePayload) => ActionCommandPayload|CombatEventPayload|EventPayload|HelloPayload|InputPayload|PingPayload|ProjectileEventPayload|SelectProfilePayload|SnapshotPayload|WelcomePayload|null
+): ActionCommandPayload|CombatEventPayload|EventPayload|HelloPayload|InputPayload|PingPayload|ProjectileEventPayload|SelectProfilePayload|SnapshotPayload|WelcomePayload|null {
   switch(MessagePayload[type]) {
     case 'NONE': return null; 
     case 'HelloPayload': return accessor(new HelloPayload())! as HelloPayload;
     case 'InputPayload': return accessor(new InputPayload())! as InputPayload;
     case 'ActionCommandPayload': return accessor(new ActionCommandPayload())! as ActionCommandPayload;
+    case 'SelectProfilePayload': return accessor(new SelectProfilePayload())! as SelectProfilePayload;
     case 'PingPayload': return accessor(new PingPayload())! as PingPayload;
     case 'WelcomePayload': return accessor(new WelcomePayload())! as WelcomePayload;
     case 'SnapshotPayload': return accessor(new SnapshotPayload())! as SnapshotPayload;
@@ -45,14 +48,15 @@ export function unionToMessagePayload(
 
 export function unionListToMessagePayload(
   type: MessagePayload, 
-  accessor: (index: number, obj:ActionCommandPayload|CombatEventPayload|EventPayload|HelloPayload|InputPayload|PingPayload|ProjectileEventPayload|SnapshotPayload|WelcomePayload) => ActionCommandPayload|CombatEventPayload|EventPayload|HelloPayload|InputPayload|PingPayload|ProjectileEventPayload|SnapshotPayload|WelcomePayload|null, 
+  accessor: (index: number, obj:ActionCommandPayload|CombatEventPayload|EventPayload|HelloPayload|InputPayload|PingPayload|ProjectileEventPayload|SelectProfilePayload|SnapshotPayload|WelcomePayload) => ActionCommandPayload|CombatEventPayload|EventPayload|HelloPayload|InputPayload|PingPayload|ProjectileEventPayload|SelectProfilePayload|SnapshotPayload|WelcomePayload|null, 
   index: number
-): ActionCommandPayload|CombatEventPayload|EventPayload|HelloPayload|InputPayload|PingPayload|ProjectileEventPayload|SnapshotPayload|WelcomePayload|null {
+): ActionCommandPayload|CombatEventPayload|EventPayload|HelloPayload|InputPayload|PingPayload|ProjectileEventPayload|SelectProfilePayload|SnapshotPayload|WelcomePayload|null {
   switch(MessagePayload[type]) {
     case 'NONE': return null; 
     case 'HelloPayload': return accessor(index, new HelloPayload())! as HelloPayload;
     case 'InputPayload': return accessor(index, new InputPayload())! as InputPayload;
     case 'ActionCommandPayload': return accessor(index, new ActionCommandPayload())! as ActionCommandPayload;
+    case 'SelectProfilePayload': return accessor(index, new SelectProfilePayload())! as SelectProfilePayload;
     case 'PingPayload': return accessor(index, new PingPayload())! as PingPayload;
     case 'WelcomePayload': return accessor(index, new WelcomePayload())! as WelcomePayload;
     case 'SnapshotPayload': return accessor(index, new SnapshotPayload())! as SnapshotPayload;

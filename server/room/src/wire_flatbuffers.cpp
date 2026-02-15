@@ -148,6 +148,18 @@ std::optional<DecodedClientEnvelope> decodeClientEnvelope(
       return decoded;
     }
 
+    case wildpaw::protocol::MessagePayload::SelectProfilePayload: {
+      const auto* profile = envelope->payload_as_SelectProfilePayload();
+      if (profile == nullptr) {
+        return std::nullopt;
+      }
+
+      decoded.type = ClientMessageType::SelectProfile;
+      decoded.profileId =
+          profile->profile_id() != nullptr ? profile->profile_id()->str() : "";
+      return decoded;
+    }
+
     case wildpaw::protocol::MessagePayload::PingPayload: {
       decoded.type = ClientMessageType::Ping;
       return decoded;
