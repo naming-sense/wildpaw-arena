@@ -21,6 +21,9 @@
 - 샘플 authoritative combat(사격/스킬/데미지/다운) + projectile 이벤트
 - `combat_rule_table` 룰 테이블(탄약/재장전/쿨다운/캐스트타임/데미지)
 - 프로필(캐릭터/클래스) 선택 패킷(`SelectProfilePayload`)
+- 팀 슬롯 배정(Team1/Team2, slot 1..N)
+- 룸 정원 강제(`maxPlayersPerRoom = team_size * 2`)
+- 정원 초과 접속 시 `room.full` 이벤트 후 연결 종료
 - `combat_rules.json` **핫리로드**(파일 변경 감지)
 - Prometheus `/metrics` 노출
 
@@ -70,10 +73,13 @@ cmake --build build -j
 
 ### 2-2. 실행
 ```bash
-./build/room/wildpaw-room [port] [io_threads] [tick_rate] [metrics_port] [rules_json_path]
+./build/room/wildpaw-room [port] [io_threads] [tick_rate] [metrics_port] [rules_json_path] [team_size]
 
-# 예시
-./build/room/wildpaw-room 7001 4 30 9100 room/config/combat_rules.json
+# 예시 (3:3)
+./build/room/wildpaw-room 7001 4 30 9100 room/config/combat_rules.json 3
+
+# 예시 (5:5)
+./build/room/wildpaw-room 7001 4 30 9100 room/config/combat_rules.json 5
 ```
 
 - `port`: WebSocket listen (기본 7001)
@@ -81,6 +87,9 @@ cmake --build build -j
 - `tick_rate`: 서버 틱(기본 30Hz)
 - `metrics_port`: Prometheus endpoint (기본 9100)
 - `rules_json_path`: 룰 JSON 경로(기본 `room/config/combat_rules.json`)
+- `team_size`: 팀당 슬롯 수 (기본 3)
+  - `maxPlayersPerRoom = team_size * 2`
+  - 예: 3:3이면 6명, 5:5이면 10명
 
 ---
 
@@ -130,14 +139,27 @@ Envelope 필드:
 ## 5) 연결/핸드셰이크 플로우(현재)
 
 1) Client → `C2S_HELLO`
-2) Server → `S2C_WELCOME` (Critical reliable)
-3) Server → `S2C_SNAPSHOT_BASE` (Critical reliable)
-4) (선택) Client → `C2S_SELECT_PROFILE(profileId)`
-5) Server → `profile.applied` 또는 `profile.invalid` (Standard reliable)
-6) Client → `C2S_ACTION_COMMAND` 스트림 시작
+2) Server가 수용 가능(`activePlayers < maxPlayersPerRoom`)이면
+   - 팀 슬롯 배정 (`teamId`, `teamSlot`)
+   - `S2C_WELCOME` (Critical reliable)
+   - `S2C_SNAPSHOT_BASE` (Critical reliable)
+   - `team.assigned` (Standard reliable)
+3) (선택) Client → `C2S_SELECT_PROFILE(profileId)`
+4) Server → `profile.applied` 또는 `profile.invalid` (Standard reliable)
+5) Client → `C2S_ACTION_COMMAND` 스트림 시작
+
+정원 초과면:
+- Server → `room.full` (Standard reliable)
+- 연결 종료(close reason: `room.full`)
 
 서버는 접속 시점에 `playerId`를 부여(현재 1001부터 증가)하며,
 스캐폴드 단계에서는 룰 프로필도 접속 순서 기반으로 기본 배정(라운드로빈)된다.
+
+### 5-1. 팀 슬롯/정원 정책
+- `team_size = N` 이면 팀은 `Team1`, `Team2` 각 `slot 1..N`을 가진다.
+- 배정은 기본적으로 **인원 적은 팀 우선**, 동률이면 `Team1` 우선.
+- `maxPlayersPerRoom = N * 2` 를 강제한다.
+- Admin Sessions API에는 `teamId`, `teamSlot`이 포함된다.
 
 ---
 
@@ -306,6 +328,11 @@ endpoint:
   - `POST /admin/api/sessions/{playerId}/disconnect`
   - `POST /admin/api/rules/reload`
 
+`/admin/api/status`에는 다음이 포함된다.
+- `teamSize`
+- `maxPlayersPerRoom`
+- `teamOccupancy.team1/team2`
+
 ### 14-1. 인증
 - 환경변수 `WILDPAW_ADMIN_TOKEN`이 설정되면 `/admin*` 경로는 인증 필요
 - 전달 방식:
@@ -315,6 +342,7 @@ endpoint:
 
 ### 14-2. Sessions API에 포함되는 운영 필드
 - `playerId`
+- `teamId`, `teamSlot`
 - `remote` (ip:port)
 - `connectedAtMs`, `lastSeenAtMs`
 - `bytesIn`, `bytesOut`
@@ -342,7 +370,7 @@ cd server
 cmake -S . -B build
 cmake --build build -j
 WILDPAW_ADMIN_TOKEN=secret123 \
-  ./build/room/wildpaw-room 7001 4 30 9100 room/config/combat_rules.json
+  ./build/room/wildpaw-room 7001 4 30 9100 room/config/combat_rules.json 3
 
 # metrics
 curl -s http://127.0.0.1:9100/metrics | head
@@ -369,6 +397,9 @@ npx tsx ./scripts/profile-rules-smoke.ts ws://127.0.0.1:7001
 
 # SELECT_PROFILE 적용 확인
 npx tsx ./scripts/profile-select-smoke.ts ws://127.0.0.1:7001 skirmisher
+
+# 룸 정원/팀 슬롯 확인 (3:3 기준: 7명 접속 시 1명 room.full)
+npx tsx ./scripts/room-capacity-smoke.ts ws://127.0.0.1:7001 7 3000
 ```
 
 ---

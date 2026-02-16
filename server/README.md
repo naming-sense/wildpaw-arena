@@ -19,6 +19,8 @@
   - ack 기반 reliable retransmit queue (유실 복구)
   - 메시지 타입별 정책(Critical/Standard/BestEffort)
   - `combat_rule_table` 기반 무기/스킬 룰(탄약/재장전/쿨다운/캐스트타임)
+  - 팀 슬롯 배정(Team1/Team2, slot 1..N) + 룸 정원 강제(`maxPlayersPerRoom = team_size * 2`)
+  - 정원 초과 접속 시 `room.full` 이벤트 응답 후 연결 종료
   - Prometheus `/metrics` 노출
   - grid 기반 spatial interest filtering (snapshot + combat/projectile event)
 - `gateway/`: 인증/라우팅 계층 (TODO)
@@ -33,10 +35,13 @@ cmake --build build -j
 
 ## 실행
 ```bash
-./build/room/wildpaw-room [port] [io_threads] [tick_rate] [metrics_port] [rules_json_path]
+./build/room/wildpaw-room [port] [io_threads] [tick_rate] [metrics_port] [rules_json_path] [team_size]
 
-# 예시
-./build/room/wildpaw-room 7001 4 30 9100 room/config/combat_rules.json
+# 예시 (3:3)
+./build/room/wildpaw-room 7001 4 30 9100 room/config/combat_rules.json 3
+
+# 예시 (5:5)
+./build/room/wildpaw-room 7001 4 30 9100 room/config/combat_rules.json 5
 ```
 
 인자:
@@ -45,6 +50,7 @@ cmake --build build -j
 - `tick_rate` (기본: `30`)
 - `metrics_port` (기본: `9100`)
 - `rules_json_path` (기본: `room/config/combat_rules.json`)
+- `team_size` (기본: `3`) → `maxPlayersPerRoom = team_size * 2`
 
 ## 전송 프로토콜
 - 스키마: `shared/protocol/fbs/wildpaw_protocol.fbs`
@@ -63,7 +69,7 @@ cmake --build build -j
 - `SnapshotPayload` (`kind=Base|Delta`)
 - `CombatEventPayload` (사격/스킬/데미지/다운)
 - `ProjectileEventPayload` (spawn/hit/despawn)
-- `EventPayload`
+- `EventPayload` (예: `hello.ack`, `profile.applied`, `team.assigned`, `room.full`)
 
 > 현재 combat/skill 판정은 스캐폴드용 서버 authoritative 샘플 룰이며,
 > 기본값은 `room/src/combat_rule_table.cpp`, 런타임 오버라이드는
@@ -130,6 +136,9 @@ curl -s -X POST -H 'x-admin-token: your-secret-token' \
 cd client/web
 npm install
 npx tsx ./scripts/bench-room.ts --url ws://127.0.0.1:7001 --clients 150 --duration-ms 8000 --input-interval-ms 50
+
+# 룸 정원/팀 슬롯 스모크 (예: 3:3 => clients=7 중 1명 room.full)
+npx tsx ./scripts/room-capacity-smoke.ts ws://127.0.0.1:7001 7 3000
 ```
 
 ## 참고

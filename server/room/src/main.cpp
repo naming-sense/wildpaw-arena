@@ -48,6 +48,10 @@ std::uint64_t unixTimeMs() {
       duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
 }
 
+constexpr std::uint16_t normalizeTeamSize(std::uint16_t teamSize) {
+  return teamSize == 0 ? 1 : teamSize;
+}
+
 std::string jsonEscape(std::string_view input) {
   std::string out;
   out.reserve(input.size() + 8);
@@ -353,6 +357,7 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
 
   void doRead();
   void doWrite();
+  void doCloseNow();
   void onClosed(const beast::error_code& ec);
 
   websocket::stream<beast::tcp_stream> ws_;
@@ -384,6 +389,9 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
   std::deque<ReliablePacket> reliableQueue_;
 
   bool closed_{false};
+  bool closeRequested_{false};
+  bool closing_{false};
+  std::string closeReason_;
 };
 
 class RoomServer {
@@ -391,12 +399,15 @@ class RoomServer {
   RoomServer(net::io_context& io,
              const tcp::endpoint& endpoint,
              std::uint16_t tickRate,
+             std::uint16_t teamSize,
              std::string rulesPath)
       : io_(io),
         acceptor_(net::make_strand(io)),
         wsPort_(endpoint.port()),
         simulation_(tickRate),
         tickIntervalMs_(std::max<int>(1, 1000 / static_cast<int>(tickRate))),
+        teamSize_(normalizeTeamSize(teamSize)),
+        maxPlayersPerRoom_(static_cast<std::size_t>(teamSize_) * 2u),
         rulesPath_(std::move(rulesPath)) {
     beast::error_code ec;
 
@@ -607,9 +618,17 @@ class RoomServer {
       return ids;
     }();
 
+    const auto [teamOneCount, teamTwoCount] = currentTeamOccupancy();
+
     out << '{';
     out << "\"nowMs\":" << unixTimeMs() << ',';
     out << "\"rooms\":1,";
+    out << "\"teamSize\":" << teamSize_ << ',';
+    out << "\"maxPlayersPerRoom\":" << maxPlayersPerRoom_ << ',';
+    out << "\"teamOccupancy\":{";
+    out << "\"team1\":" << teamOneCount << ',';
+    out << "\"team2\":" << teamTwoCount;
+    out << "},";
     out << "\"wsPort\":" << wsPort_ << ',';
     out << "\"tickRate\":" << simulation_.tickRate() << ',';
     out << "\"currentTick\":" << tickTotal_.load(std::memory_order_relaxed)
@@ -680,29 +699,41 @@ class RoomServer {
     out << "\"nowMs\":" << unixTimeMs() << ',';
     out << "\"sessions\":[";
 
-    std::vector<std::shared_ptr<WsSession>> sessions;
+    struct SessionView {
+      std::shared_ptr<WsSession> session;
+      TeamAssignment assignment;
+    };
+
+    std::vector<SessionView> sessions;
     {
       std::lock_guard<std::mutex> lock(sessionsMutex_);
       sessions.reserve(sessions_.size());
-      for (const auto& [_, session] : sessions_) {
-        sessions.push_back(session);
+      for (const auto& [playerId, session] : sessions_) {
+        TeamAssignment assignment;
+        if (const auto found = teamAssignments_.find(playerId);
+            found != teamAssignments_.end()) {
+          assignment = found->second;
+        }
+        sessions.push_back(SessionView{.session = session, .assignment = assignment});
       }
     }
 
     std::sort(sessions.begin(), sessions.end(),
-              [](const std::shared_ptr<WsSession>& a,
-                 const std::shared_ptr<WsSession>& b) {
-                return a->playerId() < b->playerId();
+              [](const SessionView& a, const SessionView& b) {
+                return a.session->playerId() < b.session->playerId();
               });
 
     for (std::size_t i = 0; i < sessions.size(); ++i) {
-      const auto& session = sessions[i];
+      const auto& view = sessions[i];
+      const auto& session = view.session;
       if (i > 0) {
         out << ',';
       }
 
       out << '{';
       out << "\"playerId\":" << session->playerId() << ',';
+      out << "\"teamId\":" << static_cast<int>(view.assignment.teamId) << ',';
+      out << "\"teamSlot\":" << view.assignment.slot << ',';
       out << "\"remote\":\"" << jsonEscape(session->remoteEndpoint())
           << "\",";
       out << "\"connectedAtMs\":" << session->connectedAtMs() << ',';
@@ -795,12 +826,42 @@ class RoomServer {
     return true;
   }
 
-  void onSessionReady(const std::shared_ptr<WsSession>& session) {
+  bool onSessionReady(const std::shared_ptr<WsSession>& session) {
     const std::uint32_t playerId = session->playerId();
+
+    TeamAssignment assignment;
+    bool accepted = false;
 
     {
       std::lock_guard<std::mutex> lock(sessionsMutex_);
-      sessions_[playerId] = session;
+
+      if (sessions_.size() < maxPlayersPerRoom_) {
+        const auto reserved = allocateTeamAssignmentLocked();
+        if (reserved.has_value()) {
+          assignment = reserved.value();
+          sessions_[playerId] = session;
+          teamAssignments_[playerId] = assignment;
+          accepted = true;
+        }
+      }
+    }
+
+    if (!accepted) {
+      std::ostringstream detail;
+      detail << "capacity reached active=" << activeSessionCount()
+             << " maxPlayersPerRoom=" << maxPlayersPerRoom_
+             << " teamSize=" << teamSize_;
+      const std::string detailText = detail.str();
+
+      recordViolation(playerId, session->remoteEndpoint(), "room_full", detailText);
+
+      const auto fullMeta = session->nextEnvelopeMeta();
+      auto fullPayload = wildpaw::room::wire::encodeEventEnvelope(
+          "room.full", detailText, fullMeta);
+      session->sendReliableBinary(fullMeta.seq, std::move(fullPayload),
+                                  WsSession::ReliableClass::Standard);
+      session->requestClose("room.full");
+      return false;
     }
 
     wildpaw::room::WorldSnapshot baseSnapshot;
@@ -823,8 +884,20 @@ class RoomServer {
                                 WsSession::ReliableClass::Critical);
     snapshotBaseSentTotal_.fetch_add(1, std::memory_order_relaxed);
 
+    std::ostringstream teamAssignedMessage;
+    teamAssignedMessage << "{\"teamId\":" << static_cast<int>(assignment.teamId)
+                        << ",\"teamSlot\":" << assignment.slot
+                        << ",\"teamSize\":" << teamSize_ << "}";
+    sendEventWithPolicy(session, "team.assigned", teamAssignedMessage.str(),
+                        WsSession::ReliableClass::Standard);
+
     std::cout << "[room] player connected: " << playerId
-              << " activePlayers=" << activeSessionCount() << '\n';
+              << " team=" << static_cast<int>(assignment.teamId)
+              << " slot=" << assignment.slot
+              << " activePlayers=" << activeSessionCount() << "/"
+              << maxPlayersPerRoom_ << '\n';
+
+    return true;
   }
 
   void onSessionBinaryMessage(std::uint32_t playerId,
@@ -893,6 +966,7 @@ class RoomServer {
     {
       std::lock_guard<std::mutex> lock(sessionsMutex_);
       sessions_.erase(playerId);
+      teamAssignments_.erase(playerId);
     }
 
     {
@@ -901,13 +975,19 @@ class RoomServer {
     }
 
     std::cout << "[room] player disconnected: " << playerId
-              << " activePlayers=" << activeSessionCount() << '\n';
+              << " activePlayers=" << activeSessionCount() << "/"
+              << maxPlayersPerRoom_ << '\n';
   }
 
  private:
   struct PendingInput {
     std::uint32_t playerId{0};
     wildpaw::room::InputFrame input{};
+  };
+
+  struct TeamAssignment {
+    std::uint8_t teamId{0};
+    std::uint16_t slot{0};
   };
 
   static constexpr std::size_t kMaxPendingInputFrames = 100000;
@@ -925,6 +1005,81 @@ class RoomServer {
   [[nodiscard]] std::size_t activeSessionCount() {
     std::lock_guard<std::mutex> lock(sessionsMutex_);
     return sessions_.size();
+  }
+
+  [[nodiscard]] std::pair<std::size_t, std::size_t> currentTeamOccupancy() {
+    std::size_t teamOne = 0;
+    std::size_t teamTwo = 0;
+
+    std::lock_guard<std::mutex> lock(sessionsMutex_);
+    for (const auto& [_, assignment] : teamAssignments_) {
+      if (assignment.teamId == 1) {
+        ++teamOne;
+      } else if (assignment.teamId == 2) {
+        ++teamTwo;
+      }
+    }
+
+    return {teamOne, teamTwo};
+  }
+
+  [[nodiscard]] std::optional<TeamAssignment> allocateTeamAssignmentLocked() {
+    if (teamSize_ == 0) {
+      return std::nullopt;
+    }
+
+    if (sessions_.size() >= maxPlayersPerRoom_) {
+      return std::nullopt;
+    }
+
+    std::vector<bool> teamOneUsed(teamSize_, false);
+    std::vector<bool> teamTwoUsed(teamSize_, false);
+    std::size_t teamOneCount = 0;
+    std::size_t teamTwoCount = 0;
+
+    for (const auto& [_, assignment] : teamAssignments_) {
+      if (assignment.teamId == 1) {
+        ++teamOneCount;
+        if (assignment.slot >= 1 && assignment.slot <= teamSize_) {
+          teamOneUsed[assignment.slot - 1] = true;
+        }
+      } else if (assignment.teamId == 2) {
+        ++teamTwoCount;
+        if (assignment.slot >= 1 && assignment.slot <= teamSize_) {
+          teamTwoUsed[assignment.slot - 1] = true;
+        }
+      }
+    }
+
+    auto findOpenSlot = [&](std::uint8_t teamId) -> std::optional<std::uint16_t> {
+      const auto& used = (teamId == 1) ? teamOneUsed : teamTwoUsed;
+      for (std::uint16_t i = 0; i < teamSize_; ++i) {
+        if (!used[i]) {
+          return static_cast<std::uint16_t>(i + 1);
+        }
+      }
+      return std::nullopt;
+    };
+
+    std::uint8_t preferredTeam = 1;
+    if (teamTwoCount < teamOneCount) {
+      preferredTeam = 2;
+    }
+
+    auto slot = findOpenSlot(preferredTeam);
+    if (!slot.has_value()) {
+      preferredTeam = preferredTeam == 1 ? 2 : 1;
+      slot = findOpenSlot(preferredTeam);
+    }
+
+    if (!slot.has_value()) {
+      return std::nullopt;
+    }
+
+    TeamAssignment assignment;
+    assignment.teamId = preferredTeam;
+    assignment.slot = slot.value();
+    return assignment;
   }
 
   [[nodiscard]] std::size_t pendingInputDepth() {
@@ -1233,6 +1388,9 @@ class RoomServer {
 
   int tickIntervalMs_{33};
 
+  std::uint16_t teamSize_{3};
+  std::size_t maxPlayersPerRoom_{6};
+
   std::string rulesPath_;
   std::optional<std::filesystem::file_time_type> rulesLastWriteTime_;
   std::chrono::steady_clock::time_point nextRuleReloadCheckAt_{};
@@ -1242,6 +1400,7 @@ class RoomServer {
 
   std::mutex sessionsMutex_;
   std::unordered_map<std::uint32_t, std::shared_ptr<WsSession>> sessions_;
+  std::unordered_map<std::uint32_t, TeamAssignment> teamAssignments_;
 
   std::mutex violationsMutex_;
   std::deque<ViolationEvent> violations_;
@@ -1354,8 +1513,9 @@ void WsSession::start() {
       return;
     }
 
-    self->server_.onSessionReady(self);
-    self->doRead();
+    if (self->server_.onSessionReady(self)) {
+      self->doRead();
+    }
   });
 }
 
@@ -1461,17 +1621,35 @@ void WsSession::sendReliableBinary(std::uint32_t sequence,
 void WsSession::requestClose(std::string_view reason) {
   auto self = shared_from_this();
   net::post(ws_.get_executor(), [self, reasonStr = std::string{reason}]() mutable {
-    if (self->closed_) {
+    if (self->closed_ || self->closing_) {
       return;
     }
 
-    websocket::close_reason closeReason;
-    closeReason.code = websocket::close_code::normal;
-    closeReason.reason = std::move(reasonStr);
+    self->closeRequested_ = true;
+    if (!reasonStr.empty()) {
+      self->closeReason_ = std::move(reasonStr);
+    }
 
-    self->ws_.async_close(closeReason, [self](beast::error_code ec) {
-      self->onClosed(ec);
-    });
+    if (self->writeQueue_.empty()) {
+      self->doCloseNow();
+    }
+  });
+}
+
+void WsSession::doCloseNow() {
+  if (closed_ || closing_) {
+    return;
+  }
+
+  closing_ = true;
+
+  websocket::close_reason closeReason;
+  closeReason.code = websocket::close_code::normal;
+  closeReason.reason = closeReason_.empty() ? "closed" : closeReason_;
+
+  auto self = shared_from_this();
+  ws_.async_close(closeReason, [self](beast::error_code ec) {
+    self->onClosed(ec);
   });
 }
 
@@ -1489,6 +1667,8 @@ void WsSession::doWrite() {
                     self->writeQueue_.pop_front();
                     if (!self->writeQueue_.empty()) {
                       self->doWrite();
+                    } else if (self->closeRequested_) {
+                      self->doCloseNow();
                     }
                   });
 }
@@ -1567,7 +1747,7 @@ class AdminHttpSession : public std::enable_shared_from_this<AdminHttpSession> {
   <div class="card" style="margin-top:12px;">
     <h2>Sessions</h2>
     <table>
-      <thead><tr><th>playerId</th><th>remote</th><th>bytesIn/out</th><th>lastSeen</th><th>invalid</th><th>action</th></tr></thead>
+      <thead><tr><th>playerId</th><th>team</th><th>remote</th><th>bytesIn/out</th><th>lastSeen</th><th>invalid</th><th>action</th></tr></thead>
       <tbody id="sessions"></tbody>
     </table>
   </div>
@@ -1607,6 +1787,7 @@ class AdminHttpSession : public std::enable_shared_from_this<AdminHttpSession> {
           const tr = document.createElement('tr');
           tr.innerHTML = `
             <td>${s.playerId}</td>
+            <td>T${s.teamId}-S${s.teamSlot}</td>
             <td>${s.remote}</td>
             <td>${s.bytesIn}/${s.bytesOut}</td>
             <td>${s.lastSeenAtMs}</td>
@@ -1936,6 +2117,10 @@ int main(int argc, char* argv[]) {
     const std::string rulesPath =
         argc > 5 ? std::string{argv[5]} : "room/config/combat_rules.json";
 
+    const std::uint16_t teamSize =
+        argc > 6 ? static_cast<std::uint16_t>(std::max(1, std::stoi(argv[6])))
+                 : 3;
+
     std::string rulesError;
     if (!wildpaw::room::loadCombatRuleProfilesFromJson(rulesPath, &rulesError)) {
       std::cerr << "[room] combat rule load failed, fallback to built-in profiles: "
@@ -1954,7 +2139,7 @@ int main(int argc, char* argv[]) {
     auto workGuard = net::make_work_guard(io);
 
     RoomServer roomServer(io, tcp::endpoint(tcp::v4(), port), tickRate,
-                          rulesPath);
+                          teamSize, rulesPath);
     MetricsServer metricsServer(
         io, tcp::endpoint(tcp::v4(), metricsPort),
         [&roomServer]() { return roomServer.renderPrometheusMetrics(); },
@@ -1992,6 +2177,8 @@ int main(int argc, char* argv[]) {
               << " ioThreads=" << ioThreads << " tickRate=" << tickRate
               << " metricsPort=" << metricsPort
               << " rulesPath=" << rulesPath
+              << " teamSize=" << teamSize
+              << " maxPlayersPerRoom=" << (static_cast<std::uint32_t>(teamSize) * 2u)
               << " defaultProfile="
               << wildpaw::room::defaultCombatRuleProfileId()
               << " adminAuth=" << (adminToken.empty() ? "off" : "on") << '\n';
