@@ -3,6 +3,12 @@
 - 구현 스펙(실코드 기준): `SERVER_SPEC.md`
 - 관리자 페이지 요구사항/범위: `ADMIN_DASHBOARD_SPEC.md`
 
+## 용어 주의 (헷갈림 방지)
+- `room` = 한 매치가 실행되는 **룸 인스턴스**
+- `wildpaw-room` 프로세스 1개 = 룸 인스턴스 1개 (현재 구현)
+- 단, **서버 머신 1대 = 룸 1개**는 아님 (한 머신에서 프로세스 여러 개 실행 가능)
+- `rooms`(룸 개수)와 `capacity`(룸 정원, 예: 3:3=6명/5:5=10명)는 별개 개념
+
 ## 구성
 - `room/`: 실시간 authoritative 룸 서버
   - WebSocket **binary-only** C2S/S2C

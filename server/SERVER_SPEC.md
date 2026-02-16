@@ -30,6 +30,20 @@
 - lag compensation(리와인드), LOS 판정, 장애물/맵 충돌
 - deterministic physics / 리플레이 / persistence(저장)
 
+### 0-1) 용어 정리 (헷갈림 방지)
+- **Room(룸 인스턴스)**: 실제 한 판(매치)을 시뮬레이션하는 단위
+- **Room Server Process**: `wildpaw-room` 실행 프로세스 1개
+- **Server Host**: 프로세스를 실행하는 물리/가상 서버
+
+현재 구현 기준:
+- **Room Server Process 1개 = Room 인스턴스 1개**
+- 하지만 **Server Host 1대 = Room 1개**를 의미하지 않는다.
+  - 같은 Host에서 `wildpaw-room` 프로세스를 여러 개 띄우면 Room도 여러 개 생성 가능
+
+또한,
+- **rooms(룸 개수)** 와 **capacity(룸 정원)** 은 다른 개념이다.
+  - 예: 3:3 모드면 capacity=6, 5:5 모드면 capacity=10 (룸 1개 기준)
+
 ---
 
 ## 1) 디렉토리 & 소스 오브 트루스
