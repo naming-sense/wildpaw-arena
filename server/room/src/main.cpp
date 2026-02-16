@@ -5,8 +5,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <csignal>
+#include <cstdlib>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
@@ -44,6 +46,92 @@ std::uint64_t unixTimeMs() {
   using namespace std::chrono;
   return static_cast<std::uint64_t>(
       duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
+}
+
+std::string jsonEscape(std::string_view input) {
+  std::string out;
+  out.reserve(input.size() + 8);
+
+  auto hex = [](std::uint8_t value) {
+    constexpr char kHex[] = "0123456789abcdef";
+    std::string s;
+    s.push_back(kHex[(value >> 4) & 0xF]);
+    s.push_back(kHex[value & 0xF]);
+    return s;
+  };
+
+  for (const unsigned char c : input) {
+    switch (c) {
+      case '\\':
+        out += "\\\\";
+        break;
+      case '"':
+        out += "\\\"";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      default:
+        if (c < 0x20) {
+          out += "\\u00";
+          out += hex(c);
+        } else {
+          out.push_back(static_cast<char>(c));
+        }
+        break;
+    }
+  }
+
+  return out;
+}
+
+std::string_view stripQuery(std::string_view target,
+                            std::string_view* queryOut = nullptr) {
+  const auto pos = target.find('?');
+  if (pos == std::string_view::npos) {
+    if (queryOut != nullptr) {
+      *queryOut = {};
+    }
+    return target;
+  }
+
+  if (queryOut != nullptr) {
+    *queryOut = target.substr(pos + 1);
+  }
+
+  return target.substr(0, pos);
+}
+
+std::optional<std::string> getQueryParam(std::string_view query,
+                                        std::string_view key) {
+  if (query.empty() || key.empty()) {
+    return std::nullopt;
+  }
+
+  std::size_t start = 0;
+  while (start < query.size()) {
+    const auto amp = query.find('&', start);
+    const auto end = amp == std::string_view::npos ? query.size() : amp;
+    const auto eq = query.find('=', start);
+
+    if (eq != std::string_view::npos && eq < end) {
+      const auto k = query.substr(start, eq - start);
+      const auto v = query.substr(eq + 1, end - (eq + 1));
+      if (k == key) {
+        return std::string{v};
+      }
+    }
+
+    start = end + 1;
+  }
+
+  return std::nullopt;
 }
 
 std::unordered_set<std::uint32_t> makeVisibleIdSet(
@@ -117,10 +205,18 @@ class RoomServer;
 
 class WsSession : public std::enable_shared_from_this<WsSession> {
  public:
-  WsSession(tcp::socket&& socket, RoomServer& server, std::uint32_t playerId)
+  WsSession(tcp::socket&& socket,
+            RoomServer& server,
+            std::uint32_t playerId,
+            std::string remoteIp,
+            std::uint16_t remotePort)
       : ws_(std::move(socket)),
         server_(server),
         playerId_(playerId),
+        remoteIp_(std::move(remoteIp)),
+        remotePort_(remotePort),
+        connectedAtMs_(unixTimeMs()),
+        lastSeenAtMs_(connectedAtMs_),
         reliability_(playerId) {}
 
   void start();
@@ -158,6 +254,69 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
   }
 
   [[nodiscard]] std::uint32_t playerId() const { return playerId_; }
+
+  [[nodiscard]] const std::string& remoteIp() const { return remoteIp_; }
+  [[nodiscard]] std::uint16_t remotePort() const { return remotePort_; }
+
+  [[nodiscard]] std::string remoteEndpoint() const {
+    std::string out = remoteIp_;
+    out.push_back(':');
+    out += std::to_string(remotePort_);
+    return out;
+  }
+
+  [[nodiscard]] std::uint64_t connectedAtMs() const { return connectedAtMs_; }
+  [[nodiscard]] std::uint64_t lastSeenAtMs() const {
+    return lastSeenAtMs_.load(std::memory_order_relaxed);
+  }
+
+  [[nodiscard]] std::uint64_t bytesIn() const {
+    return bytesIn_.load(std::memory_order_relaxed);
+  }
+  [[nodiscard]] std::uint64_t bytesOut() const {
+    return bytesOut_.load(std::memory_order_relaxed);
+  }
+  [[nodiscard]] std::uint64_t binaryFramesIn() const {
+    return binaryFramesIn_.load(std::memory_order_relaxed);
+  }
+  [[nodiscard]] std::uint64_t textFramesIn() const {
+    return textFramesIn_.load(std::memory_order_relaxed);
+  }
+  [[nodiscard]] std::uint64_t invalidEnvelopeTotal() const {
+    return invalidEnvelopeTotal_.load(std::memory_order_relaxed);
+  }
+  [[nodiscard]] std::uint64_t unsupportedMessageTotal() const {
+    return unsupportedMessageTotal_.load(std::memory_order_relaxed);
+  }
+  [[nodiscard]] std::uint64_t invalidProfileSelectTotal() const {
+    return invalidProfileSelectTotal_.load(std::memory_order_relaxed);
+  }
+
+  void noteBinaryFrame(std::size_t bytes) {
+    binaryFramesIn_.fetch_add(1, std::memory_order_relaxed);
+    bytesIn_.fetch_add(bytes, std::memory_order_relaxed);
+    lastSeenAtMs_.store(unixTimeMs(), std::memory_order_relaxed);
+  }
+
+  void noteTextFrame(std::size_t bytes) {
+    textFramesIn_.fetch_add(1, std::memory_order_relaxed);
+    bytesIn_.fetch_add(bytes, std::memory_order_relaxed);
+    lastSeenAtMs_.store(unixTimeMs(), std::memory_order_relaxed);
+  }
+
+  void noteInvalidEnvelope() {
+    invalidEnvelopeTotal_.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  void noteUnsupportedMessage() {
+    unsupportedMessageTotal_.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  void noteInvalidProfileSelect() {
+    invalidProfileSelectTotal_.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  void requestClose(std::string_view reason);
 
  private:
   struct ReliablePolicy {
@@ -203,6 +362,21 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
   RoomServer& server_;
   std::uint32_t playerId_{0};
 
+  std::string remoteIp_;
+  std::uint16_t remotePort_{0};
+
+  std::uint64_t connectedAtMs_{0};
+  std::atomic<std::uint64_t> lastSeenAtMs_{0};
+
+  std::atomic<std::uint64_t> bytesIn_{0};
+  std::atomic<std::uint64_t> bytesOut_{0};
+  std::atomic<std::uint64_t> binaryFramesIn_{0};
+  std::atomic<std::uint64_t> binaryFramesOut_{0};
+  std::atomic<std::uint64_t> textFramesIn_{0};
+  std::atomic<std::uint64_t> invalidEnvelopeTotal_{0};
+  std::atomic<std::uint64_t> unsupportedMessageTotal_{0};
+  std::atomic<std::uint64_t> invalidProfileSelectTotal_{0};
+
   mutable std::mutex reliabilityMutex_;
   wildpaw::room::RoomSession reliability_;
 
@@ -220,6 +394,7 @@ class RoomServer {
              std::string rulesPath)
       : io_(io),
         acceptor_(net::make_strand(io)),
+        wsPort_(endpoint.port()),
         simulation_(tickRate),
         tickIntervalMs_(std::max<int>(1, 1000 / static_cast<int>(tickRate))),
         rulesPath_(std::move(rulesPath)) {
@@ -395,6 +570,231 @@ class RoomServer {
     return out.str();
   }
 
+  struct ViolationEvent {
+    std::uint64_t timeMs{0};
+    std::uint32_t playerId{0};
+    std::string remoteEndpoint;
+    std::string type;
+    std::string detail;
+  };
+
+  void recordViolation(std::uint32_t playerId,
+                       std::string_view remoteEndpoint,
+                       std::string_view type,
+                       std::string_view detail) {
+    ViolationEvent event;
+    event.timeMs = unixTimeMs();
+    event.playerId = playerId;
+    event.remoteEndpoint = std::string{remoteEndpoint};
+    event.type = std::string{type};
+    event.detail = std::string{detail};
+
+    {
+      std::lock_guard<std::mutex> lock(violationsMutex_);
+      violations_.push_back(std::move(event));
+      while (violations_.size() > kMaxViolations) {
+        violations_.pop_front();
+      }
+    }
+  }
+
+  std::string renderAdminStatusJson() {
+    std::ostringstream out;
+
+    const auto profiles = []() {
+      auto ids = wildpaw::room::combatRuleProfileIds();
+      std::sort(ids.begin(), ids.end());
+      return ids;
+    }();
+
+    out << '{';
+    out << "\"nowMs\":" << unixTimeMs() << ',';
+    out << "\"rooms\":1,";
+    out << "\"wsPort\":" << wsPort_ << ',';
+    out << "\"tickRate\":" << simulation_.tickRate() << ',';
+    out << "\"currentTick\":" << tickTotal_.load(std::memory_order_relaxed)
+        << ',';
+    out << "\"rulesPath\":\"" << jsonEscape(rulesPath_) << "\",";
+    out << "\"defaultProfile\":\""
+        << jsonEscape(wildpaw::room::defaultCombatRuleProfileId()) << "\",";
+
+    out << "\"profiles\":[";
+    for (std::size_t i = 0; i < profiles.size(); ++i) {
+      if (i > 0) {
+        out << ',';
+      }
+      out << "\"" << jsonEscape(profiles[i]) << "\"";
+    }
+    out << "],";
+
+    out << "\"metrics\":{";
+    out << "\"activeSessions\":" << activeSessionCount() << ',';
+    out << "\"pendingInputDepth\":" << pendingInputDepth() << ',';
+    out << "\"pendingInputPeak\":"
+        << pendingInputQueuePeak_.load(std::memory_order_relaxed) << ',';
+    out << "\"droppedInputFramesTotal\":"
+        << droppedInputFrames_.load(std::memory_order_relaxed) << ',';
+    out << "\"inputFramesTotal\":"
+        << inputFramesTotal_.load(std::memory_order_relaxed) << ',';
+    out << "\"tickTotal\":" << tickTotal_.load(std::memory_order_relaxed)
+        << ',';
+    out << "\"tickOverrunTotal\":"
+        << tickOverrunTotal_.load(std::memory_order_relaxed) << ',';
+    out << "\"tickLastDurationMs\":"
+        << (lastTickDurationMicros_.load(std::memory_order_relaxed) / 1000.0)
+        << ',';
+    out << "\"snapshotBaseSentTotal\":"
+        << snapshotBaseSentTotal_.load(std::memory_order_relaxed) << ',';
+    out << "\"snapshotDeltaSentTotal\":"
+        << snapshotDeltaSentTotal_.load(std::memory_order_relaxed) << ',';
+    out << "\"eventSentTotal\":"
+        << eventSentTotal_.load(std::memory_order_relaxed) << ',';
+    out << "\"combatEventSentTotal\":"
+        << combatEventSentTotal_.load(std::memory_order_relaxed) << ',';
+    out << "\"projectileEventSentTotal\":"
+        << projectileEventSentTotal_.load(std::memory_order_relaxed) << ',';
+    out << "\"combatEventFilteredTotal\":"
+        << combatEventFilteredTotal_.load(std::memory_order_relaxed) << ',';
+    out << "\"projectileEventFilteredTotal\":"
+        << projectileEventFilteredTotal_.load(std::memory_order_relaxed) << ',';
+    out << "\"ruleReloadSuccessTotal\":"
+        << ruleReloadSuccessTotal_.load(std::memory_order_relaxed) << ',';
+    out << "\"ruleReloadFailureTotal\":"
+        << ruleReloadFailureTotal_.load(std::memory_order_relaxed) << ',';
+    out << "\"reliableInFlight\":" << reliableInFlightTotal() << ',';
+    out << "\"retransmitSentTotal\":"
+        << retransmitSentTotal_.load(std::memory_order_relaxed) << ',';
+    out << "\"retransmitDroppedTotal\":"
+        << retransmitDroppedTotal_.load(std::memory_order_relaxed);
+    out << '}';
+
+    out << '}';
+    out << '}';
+    return out.str();
+  }
+
+  std::string renderAdminSessionsJson() {
+    std::ostringstream out;
+
+    out << '{';
+    out << "\"nowMs\":" << unixTimeMs() << ',';
+    out << "\"sessions\":[";
+
+    std::vector<std::shared_ptr<WsSession>> sessions;
+    {
+      std::lock_guard<std::mutex> lock(sessionsMutex_);
+      sessions.reserve(sessions_.size());
+      for (const auto& [_, session] : sessions_) {
+        sessions.push_back(session);
+      }
+    }
+
+    std::sort(sessions.begin(), sessions.end(),
+              [](const std::shared_ptr<WsSession>& a,
+                 const std::shared_ptr<WsSession>& b) {
+                return a->playerId() < b->playerId();
+              });
+
+    for (std::size_t i = 0; i < sessions.size(); ++i) {
+      const auto& session = sessions[i];
+      if (i > 0) {
+        out << ',';
+      }
+
+      out << '{';
+      out << "\"playerId\":" << session->playerId() << ',';
+      out << "\"remote\":\"" << jsonEscape(session->remoteEndpoint())
+          << "\",";
+      out << "\"connectedAtMs\":" << session->connectedAtMs() << ',';
+      out << "\"lastSeenAtMs\":" << session->lastSeenAtMs() << ',';
+      out << "\"bytesIn\":" << session->bytesIn() << ',';
+      out << "\"bytesOut\":" << session->bytesOut() << ',';
+      out << "\"binaryFramesIn\":" << session->binaryFramesIn() << ',';
+      out << "\"textFramesIn\":" << session->textFramesIn() << ',';
+      out << "\"invalidEnvelopeTotal\":" << session->invalidEnvelopeTotal()
+          << ',';
+      out << "\"unsupportedMessageTotal\":"
+          << session->unsupportedMessageTotal() << ',';
+      out << "\"invalidProfileSelectTotal\":"
+          << session->invalidProfileSelectTotal() << ',';
+      out << "\"reliableInFlight\":" << session->reliableInFlightCount();
+      out << '}';
+    }
+
+    out << "]";
+    out << '}';
+    return out.str();
+  }
+
+  std::string renderAdminViolationsJson() {
+    std::ostringstream out;
+
+    out << '{';
+    out << "\"nowMs\":" << unixTimeMs() << ',';
+    out << "\"violations\":[";
+
+    std::deque<ViolationEvent> copy;
+    {
+      std::lock_guard<std::mutex> lock(violationsMutex_);
+      copy = violations_;
+    }
+
+    for (std::size_t i = 0; i < copy.size(); ++i) {
+      const auto& ev = copy[i];
+      if (i > 0) {
+        out << ',';
+      }
+
+      out << '{';
+      out << "\"timeMs\":" << ev.timeMs << ',';
+      out << "\"playerId\":" << ev.playerId << ',';
+      out << "\"remote\":\"" << jsonEscape(ev.remoteEndpoint) << "\",";
+      out << "\"type\":\"" << jsonEscape(ev.type) << "\",";
+      out << "\"detail\":\"" << jsonEscape(ev.detail) << "\"";
+      out << '}';
+    }
+
+    out << "]";
+    out << '}';
+    return out.str();
+  }
+
+  bool disconnectSession(std::uint32_t playerId) {
+    auto session = getSession(playerId);
+    if (!session) {
+      return false;
+    }
+
+    recordViolation(playerId, session->remoteEndpoint(), "admin_disconnect",
+                    "disconnect requested");
+    session->requestClose("admin_disconnect");
+    return true;
+  }
+
+  bool reloadRulesNow(std::string* errorMessage = nullptr) {
+    std::string error;
+    if (!wildpaw::room::loadCombatRuleProfilesFromJson(rulesPath_, &error)) {
+      ruleReloadFailureTotal_.fetch_add(1, std::memory_order_relaxed);
+      if (errorMessage != nullptr) {
+        *errorMessage = error;
+      }
+      recordViolation(0, "-", "rules_reload_failed", error);
+      return false;
+    }
+
+    std::error_code fsError;
+    if (std::filesystem::exists(rulesPath_, fsError)) {
+      rulesLastWriteTime_ = std::filesystem::last_write_time(rulesPath_, fsError);
+    }
+
+    ruleReloadSuccessTotal_.fetch_add(1, std::memory_order_relaxed);
+    if (errorMessage != nullptr) {
+      errorMessage->clear();
+    }
+
+    return true;
+  }
+
   void onSessionReady(const std::shared_ptr<WsSession>& session) {
     const std::uint32_t playerId = session->playerId();
 
@@ -436,6 +836,9 @@ class RoomServer {
 
     const auto decoded = wildpaw::room::wire::decodeClientEnvelope(payload);
     if (!decoded.has_value()) {
+      session->noteInvalidEnvelope();
+      recordViolation(playerId, session->remoteEndpoint(), "invalid_envelope",
+                      "decodeClientEnvelope failed");
       sendEventWithPolicy(session, "warn", "invalid-envelope",
                           WsSession::ReliableClass::None);
       return;
@@ -461,6 +864,9 @@ class RoomServer {
           sendEventWithPolicy(session, "profile.applied", decoded->profileId,
                               WsSession::ReliableClass::Standard);
         } else {
+          session->noteInvalidProfileSelect();
+          recordViolation(playerId, session->remoteEndpoint(), "profile_invalid",
+                          decoded->profileId);
           sendEventWithPolicy(session, "profile.invalid", decoded->profileId,
                               WsSession::ReliableClass::Standard);
         }
@@ -473,6 +879,10 @@ class RoomServer {
         return;
 
       default:
+        session->noteUnsupportedMessage();
+        recordViolation(playerId, session->remoteEndpoint(),
+                        "unsupported_message_type",
+                        "unsupported message type");
         sendEventWithPolicy(session, "warn", "unsupported-message-type",
                             WsSession::ReliableClass::None);
         return;
@@ -501,6 +911,7 @@ class RoomServer {
   };
 
   static constexpr std::size_t kMaxPendingInputFrames = 100000;
+  static constexpr std::size_t kMaxViolations = 200;
 
   std::shared_ptr<WsSession> getSession(std::uint32_t playerId) {
     std::lock_guard<std::mutex> lock(sessionsMutex_);
@@ -612,9 +1023,20 @@ class RoomServer {
                                            << '\n';
                                }
                              } else {
+                               beast::error_code epEc;
+                               const auto endpoint = socket.remote_endpoint(epEc);
+                               std::string remoteIp = "unknown";
+                               std::uint16_t remotePort = 0;
+
+                               if (!epEc) {
+                                 remoteIp = endpoint.address().to_string();
+                                 remotePort = endpoint.port();
+                               }
+
                                const std::uint32_t playerId = nextPlayerId_++;
                                auto session = std::make_shared<WsSession>(
-                                   std::move(socket), *this, playerId);
+                                   std::move(socket), *this, playerId,
+                                   std::move(remoteIp), remotePort);
                                session->start();
                              }
 
@@ -803,6 +1225,7 @@ class RoomServer {
 
   net::io_context& io_;
   tcp::acceptor acceptor_;
+  std::uint16_t wsPort_{0};
 
   wildpaw::room::RoomSimulation simulation_;
   wildpaw::room::SnapshotBuilder snapshotBuilder_;
@@ -819,6 +1242,9 @@ class RoomServer {
 
   std::mutex sessionsMutex_;
   std::unordered_map<std::uint32_t, std::shared_ptr<WsSession>> sessions_;
+
+  std::mutex violationsMutex_;
+  std::deque<ViolationEvent> violations_;
 
   std::mutex simulationMutex_;
 
@@ -915,8 +1341,11 @@ void WsSession::start() {
       websocket::stream_base::timeout::suggested(beast::role_type::server));
   ws_.set_option(websocket::stream_base::decorator(
       [](websocket::response_type& response) {
-        response.set(beast::http::field::server, "wildpaw-room/0.7");
+        response.set(beast::http::field::server, "wildpaw-room/0.8");
       }));
+
+  // 보호: 지나치게 큰 메시지(악성/버그)를 즉시 끊는다.
+  ws_.read_message_max(64 * 1024);
 
   auto self = shared_from_this();
   ws_.async_accept([self](beast::error_code ec) {
@@ -934,11 +1363,23 @@ void WsSession::doRead() {
   auto self = shared_from_this();
   ws_.async_read(readBuffer_, [self](beast::error_code ec, std::size_t) {
     if (ec) {
+      if (ec == websocket::error::message_too_big) {
+        self->server_.recordViolation(self->playerId_, self->remoteEndpoint(),
+                                      "message_too_big", ec.message());
+      }
+
       self->onClosed(ec);
       return;
     }
 
+    const std::size_t bytes = beast::buffer_bytes(self->readBuffer_.data());
+
     if (self->ws_.got_text()) {
+      self->noteTextFrame(bytes);
+      self->server_.recordViolation(self->playerId_, self->remoteEndpoint(),
+                                    "c2s_text_frame",
+                                    "text frame received (binary-only)");
+
       self->readBuffer_.consume(self->readBuffer_.size());
 
       const auto meta = self->nextEnvelopeMeta();
@@ -950,18 +1391,22 @@ void WsSession::doRead() {
       return;
     }
 
-    std::vector<std::uint8_t> payload(beast::buffer_bytes(self->readBuffer_.data()));
+    std::vector<std::uint8_t> payload(bytes);
     if (!payload.empty()) {
       net::buffer_copy(net::buffer(payload), self->readBuffer_.data());
     }
     self->readBuffer_.consume(self->readBuffer_.size());
 
+    self->noteBinaryFrame(payload.size());
     self->server_.onSessionBinaryMessage(self->playerId_, payload);
     self->doRead();
   });
 }
 
 void WsSession::sendBinary(std::vector<std::uint8_t> payload) {
+  bytesOut_.fetch_add(payload.size(), std::memory_order_relaxed);
+  binaryFramesOut_.fetch_add(1, std::memory_order_relaxed);
+
   auto self = shared_from_this();
   net::post(ws_.get_executor(),
             [self, payload = std::move(payload)]() mutable {
@@ -1013,6 +1458,23 @@ void WsSession::sendReliableBinary(std::uint32_t sequence,
   sendBinary(std::move(payload));
 }
 
+void WsSession::requestClose(std::string_view reason) {
+  auto self = shared_from_this();
+  net::post(ws_.get_executor(), [self, reasonStr = std::string{reason}]() mutable {
+    if (self->closed_) {
+      return;
+    }
+
+    websocket::close_reason closeReason;
+    closeReason.code = websocket::close_code::normal;
+    closeReason.reason = std::move(reasonStr);
+
+    self->ws_.async_close(closeReason, [self](beast::error_code ec) {
+      self->onClosed(ec);
+    });
+  });
+}
+
 void WsSession::doWrite() {
   auto self = shared_from_this();
   ws_.binary(true);
@@ -1045,15 +1507,148 @@ void WsSession::onClosed(const beast::error_code& ec) {
   server_.onSessionClosed(playerId_);
 }
 
-class MetricsHttpSession : public std::enable_shared_from_this<MetricsHttpSession> {
+class AdminHttpSession : public std::enable_shared_from_this<AdminHttpSession> {
  public:
-  explicit MetricsHttpSession(tcp::socket socket,
-                              std::function<std::string()> renderMetrics)
-      : socket_(std::move(socket)), renderMetrics_(std::move(renderMetrics)) {}
+  using JsonRenderer = std::function<std::string()>;
+  using DisconnectHandler = std::function<bool(std::uint32_t)>;
+  using ReloadHandler = std::function<bool(std::string*)>;
+
+  AdminHttpSession(tcp::socket socket,
+                   JsonRenderer renderMetrics,
+                   JsonRenderer renderStatus,
+                   JsonRenderer renderSessions,
+                   JsonRenderer renderViolations,
+                   DisconnectHandler disconnectSession,
+                   ReloadHandler reloadRules,
+                   std::string adminToken)
+      : socket_(std::move(socket)),
+        renderMetrics_(std::move(renderMetrics)),
+        renderStatus_(std::move(renderStatus)),
+        renderSessions_(std::move(renderSessions)),
+        renderViolations_(std::move(renderViolations)),
+        disconnectSession_(std::move(disconnectSession)),
+        reloadRules_(std::move(reloadRules)),
+        adminToken_(std::move(adminToken)) {}
 
   void start() { doRead(); }
 
  private:
+  static constexpr std::string_view kAdminHtml = R"HTML(<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Wildpaw Admin</title>
+  <style>
+    body { font-family: ui-sans-serif, system-ui; margin: 16px; background:#0b1020; color:#d7def7; }
+    h1,h2 { margin: 8px 0; }
+    .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
+    .card { background:#151b33; border:1px solid #243057; border-radius:10px; padding:12px; }
+    input,button { background:#1a2448; color:#d7def7; border:1px solid #2a3b74; border-radius:8px; padding:6px 10px; }
+    table { width:100%; border-collapse:collapse; }
+    th,td { border-bottom:1px solid #243057; padding:6px; font-size:13px; text-align:left; }
+    pre { white-space:pre-wrap; background:#0f1530; border:1px solid #243057; border-radius:8px; padding:8px; }
+  </style>
+</head>
+<body>
+  <h1>Wildpaw Room Admin</h1>
+  <div class="row card">
+    <label>Admin Token <input id="token" type="password" placeholder="x-admin-token" /></label>
+    <button id="refresh">Refresh</button>
+    <button id="reload">Rules Reload</button>
+    <span id="statusMsg"></span>
+  </div>
+
+  <div class="card">
+    <h2>Overview</h2>
+    <pre id="overview">loading...</pre>
+  </div>
+
+  <div class="card" style="margin-top:12px;">
+    <h2>Sessions</h2>
+    <table>
+      <thead><tr><th>playerId</th><th>remote</th><th>bytesIn/out</th><th>lastSeen</th><th>invalid</th><th>action</th></tr></thead>
+      <tbody id="sessions"></tbody>
+    </table>
+  </div>
+
+  <div class="card" style="margin-top:12px;">
+    <h2>Violations</h2>
+    <pre id="violations">loading...</pre>
+  </div>
+
+  <script>
+    const q = (s) => document.querySelector(s);
+    const tokenEl = q('#token');
+    const msgEl = q('#statusMsg');
+
+    const headers = () => tokenEl.value ? {'x-admin-token': tokenEl.value} : {};
+
+    async function api(path, options = {}) {
+      const res = await fetch(path, { ...options, headers: { ...(options.headers||{}), ...headers() } });
+      if (!res.ok) throw new Error(path + ' ' + res.status);
+      const ct = res.headers.get('content-type') || '';
+      return ct.includes('application/json') ? res.json() : res.text();
+    }
+
+    async function refresh() {
+      try {
+        const [status, sessions, violations] = await Promise.all([
+          api('/admin/api/status'),
+          api('/admin/api/sessions'),
+          api('/admin/api/violations'),
+        ]);
+
+        q('#overview').textContent = JSON.stringify(status, null, 2);
+
+        const tbody = q('#sessions');
+        tbody.innerHTML = '';
+        for (const s of sessions.sessions || []) {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${s.playerId}</td>
+            <td>${s.remote}</td>
+            <td>${s.bytesIn}/${s.bytesOut}</td>
+            <td>${s.lastSeenAtMs}</td>
+            <td>${s.invalidEnvelopeTotal}/${s.unsupportedMessageTotal}/${s.invalidProfileSelectTotal}</td>
+            <td><button data-id="${s.playerId}">disconnect</button></td>
+          `;
+          tr.querySelector('button').onclick = async () => {
+            try {
+              await api(`/admin/api/sessions/${s.playerId}/disconnect`, { method:'POST' });
+              msgEl.textContent = `disconnected ${s.playerId}`;
+              await refresh();
+            } catch (e) {
+              msgEl.textContent = 'disconnect failed: ' + e.message;
+            }
+          };
+          tbody.appendChild(tr);
+        }
+
+        q('#violations').textContent = JSON.stringify(violations, null, 2);
+        msgEl.textContent = 'ok';
+      } catch (e) {
+        msgEl.textContent = 'error: ' + e.message;
+      }
+    }
+
+    q('#refresh').onclick = refresh;
+    q('#reload').onclick = async () => {
+      try {
+        const r = await api('/admin/api/rules/reload', { method:'POST' });
+        msgEl.textContent = JSON.stringify(r);
+        await refresh();
+      } catch (e) {
+        msgEl.textContent = 'reload failed: ' + e.message;
+      }
+    };
+
+    refresh();
+    setInterval(refresh, 2000);
+  </script>
+</body>
+</html>)HTML";
+
   void doRead() {
     auto self = shared_from_this();
     http::async_read(socket_, buffer_, request_,
@@ -1065,15 +1660,139 @@ class MetricsHttpSession : public std::enable_shared_from_this<MetricsHttpSessio
                      });
   }
 
-  void doWrite() {
+  bool authorizeAdmin(std::string_view query) const {
+    if (adminToken_.empty()) {
+      return true;
+    }
+
+    if (auto it = request_.find("x-admin-token"); it != request_.end()) {
+      if (it->value() == adminToken_) {
+        return true;
+      }
+    }
+
+    const auto token = getQueryParam(query, "token");
+    return token.has_value() && *token == adminToken_;
+  }
+
+  static bool parseDisconnectPath(std::string_view path, std::uint32_t& playerIdOut) {
+    constexpr std::string_view kPrefix = "/admin/api/sessions/";
+    constexpr std::string_view kSuffix = "/disconnect";
+
+    if (!path.starts_with(kPrefix) || !path.ends_with(kSuffix)) {
+      return false;
+    }
+
+    const auto idView =
+        path.substr(kPrefix.size(), path.size() - kPrefix.size() - kSuffix.size());
+    if (idView.empty()) {
+      return false;
+    }
+
+    std::uint32_t parsed = 0;
+    const auto* begin = idView.data();
+    const auto* end = idView.data() + idView.size();
+    const auto [ptr, ec] = std::from_chars(begin, end, parsed);
+    if (ec != std::errc{} || ptr != end) {
+      return false;
+    }
+
+    playerIdOut = parsed;
+    return true;
+  }
+
+  std::shared_ptr<http::response<http::string_body>> makeTextResponse(
+      http::status status,
+      std::string body,
+      std::string_view contentType,
+      std::string_view serverTag = "wildpaw-admin") {
     auto response = std::make_shared<http::response<http::string_body>>(
-        http::status::ok, request_.version());
-    response->set(http::field::server, "wildpaw-metrics");
-    response->set(http::field::content_type,
-                  "text/plain; version=0.0.4; charset=utf-8");
+        status, request_.version());
+    response->set(http::field::server, serverTag);
+    response->set(http::field::content_type, contentType);
     response->keep_alive(false);
-    response->body() = renderMetrics_();
+    response->body() = std::move(body);
     response->prepare_payload();
+    return response;
+  }
+
+  void doWrite() {
+    const auto method = request_.method();
+    std::string_view query;
+    const auto target = std::string_view{request_.target()};
+    const auto path = stripQuery(target, &query);
+
+    std::shared_ptr<http::response<http::string_body>> response;
+
+    if (method == http::verb::get && path == "/metrics") {
+      response = makeTextResponse(http::status::ok, renderMetrics_(),
+                                  "text/plain; version=0.0.4; charset=utf-8",
+                                  "wildpaw-metrics");
+    } else if (path.starts_with("/admin")) {
+      if (!authorizeAdmin(query)) {
+        response = makeTextResponse(http::status::unauthorized,
+                                    "{\"ok\":false,\"error\":\"unauthorized\"}",
+                                    "application/json; charset=utf-8");
+      } else if (method == http::verb::get && (path == "/admin" || path == "/admin/")) {
+        response = makeTextResponse(http::status::ok, std::string{kAdminHtml},
+                                    "text/html; charset=utf-8");
+      } else if (method == http::verb::get && path == "/admin/api/status") {
+        response = makeTextResponse(http::status::ok, renderStatus_(),
+                                    "application/json; charset=utf-8");
+      } else if (method == http::verb::get && path == "/admin/api/sessions") {
+        response = makeTextResponse(http::status::ok, renderSessions_(),
+                                    "application/json; charset=utf-8");
+      } else if (method == http::verb::get && path == "/admin/api/violations") {
+        response = makeTextResponse(http::status::ok, renderViolations_(),
+                                    "application/json; charset=utf-8");
+      } else if (method == http::verb::post && path == "/admin/api/rules/reload") {
+        std::string error;
+        const bool ok = reloadRules_(&error);
+        if (ok) {
+          response = makeTextResponse(
+              http::status::ok,
+              "{\"ok\":true,\"message\":\"rules reloaded\"}",
+              "application/json; charset=utf-8");
+        } else {
+          response = makeTextResponse(
+              http::status::bad_request,
+              std::string{"{\"ok\":false,\"error\":\""} + jsonEscape(error) +
+                  "\"}",
+              "application/json; charset=utf-8");
+        }
+      } else if (method == http::verb::post &&
+                 path.starts_with("/admin/api/sessions/") &&
+                 path.ends_with("/disconnect")) {
+        std::uint32_t playerId = 0;
+        if (!parseDisconnectPath(path, playerId)) {
+          response = makeTextResponse(
+              http::status::bad_request,
+              "{\"ok\":false,\"error\":\"invalid player id\"}",
+              "application/json; charset=utf-8");
+        } else {
+          const bool ok = disconnectSession_(playerId);
+          if (ok) {
+            response = makeTextResponse(
+                http::status::ok,
+                "{\"ok\":true,\"message\":\"disconnect requested\"}",
+                "application/json; charset=utf-8");
+          } else {
+            response = makeTextResponse(
+                http::status::not_found,
+                "{\"ok\":false,\"error\":\"session not found\"}",
+                "application/json; charset=utf-8");
+          }
+        }
+      } else {
+        response = makeTextResponse(http::status::not_found,
+                                    "{\"ok\":false,\"error\":\"not found\"}",
+                                    "application/json; charset=utf-8");
+      }
+    } else {
+      response = makeTextResponse(http::status::not_found,
+                                  "{\"ok\":false,\"error\":\"not found\"}",
+                                  "application/json; charset=utf-8");
+    }
 
     auto self = shared_from_this();
     http::async_write(
@@ -1087,17 +1806,36 @@ class MetricsHttpSession : public std::enable_shared_from_this<MetricsHttpSessio
   tcp::socket socket_;
   beast::flat_buffer buffer_;
   http::request<http::string_body> request_;
-  std::function<std::string()> renderMetrics_;
+
+  JsonRenderer renderMetrics_;
+  JsonRenderer renderStatus_;
+  JsonRenderer renderSessions_;
+  JsonRenderer renderViolations_;
+  DisconnectHandler disconnectSession_;
+  ReloadHandler reloadRules_;
+  std::string adminToken_;
 };
 
 class MetricsServer {
  public:
   MetricsServer(net::io_context& io,
                 const tcp::endpoint& endpoint,
-                std::function<std::string()> renderMetrics)
+                std::function<std::string()> renderMetrics,
+                std::function<std::string()> renderStatus,
+                std::function<std::string()> renderSessions,
+                std::function<std::string()> renderViolations,
+                std::function<bool(std::uint32_t)> disconnectSession,
+                std::function<bool(std::string*)> reloadRules,
+                std::string adminToken)
       : io_(io),
         acceptor_(net::make_strand(io)),
-        renderMetrics_(std::move(renderMetrics)) {
+        renderMetrics_(std::move(renderMetrics)),
+        renderStatus_(std::move(renderStatus)),
+        renderSessions_(std::move(renderSessions)),
+        renderViolations_(std::move(renderViolations)),
+        disconnectSession_(std::move(disconnectSession)),
+        reloadRules_(std::move(reloadRules)),
+        adminToken_(std::move(adminToken)) {
     beast::error_code ec;
 
     acceptor_.open(endpoint.protocol(), ec);
@@ -1149,8 +1887,11 @@ class MetricsServer {
     acceptor_.async_accept(net::make_strand(io_),
                            [this](beast::error_code ec, tcp::socket socket) {
                              if (!ec) {
-                               std::make_shared<MetricsHttpSession>(
-                                   std::move(socket), renderMetrics_)
+                               std::make_shared<AdminHttpSession>(
+                                   std::move(socket), renderMetrics_,
+                                   renderStatus_, renderSessions_,
+                                   renderViolations_, disconnectSession_,
+                                   reloadRules_, adminToken_)
                                    ->start();
                              } else if (ec != net::error::operation_aborted) {
                                std::cerr << "[metrics] accept failed: " << ec.message()
@@ -1165,7 +1906,15 @@ class MetricsServer {
 
   net::io_context& io_;
   tcp::acceptor acceptor_;
+
   std::function<std::string()> renderMetrics_;
+  std::function<std::string()> renderStatus_;
+  std::function<std::string()> renderSessions_;
+  std::function<std::string()> renderViolations_;
+  std::function<bool(std::uint32_t)> disconnectSession_;
+  std::function<bool(std::string*)> reloadRules_;
+  std::string adminToken_;
+
   std::atomic<bool> running_{false};
 };
 
@@ -1193,6 +1942,14 @@ int main(int argc, char* argv[]) {
                 << rulesError << " path=" << rulesPath << '\n';
     }
 
+    const std::string adminToken = []() {
+      const char* env = std::getenv("WILDPAW_ADMIN_TOKEN");
+      if (env == nullptr) {
+        return std::string{};
+      }
+      return std::string{env};
+    }();
+
     net::io_context io;
     auto workGuard = net::make_work_guard(io);
 
@@ -1200,7 +1957,17 @@ int main(int argc, char* argv[]) {
                           rulesPath);
     MetricsServer metricsServer(
         io, tcp::endpoint(tcp::v4(), metricsPort),
-        [&roomServer]() { return roomServer.renderPrometheusMetrics(); });
+        [&roomServer]() { return roomServer.renderPrometheusMetrics(); },
+        [&roomServer]() { return roomServer.renderAdminStatusJson(); },
+        [&roomServer]() { return roomServer.renderAdminSessionsJson(); },
+        [&roomServer]() { return roomServer.renderAdminViolationsJson(); },
+        [&roomServer](std::uint32_t playerId) {
+          return roomServer.disconnectSession(playerId);
+        },
+        [&roomServer](std::string* error) {
+          return roomServer.reloadRulesNow(error);
+        },
+        adminToken);
 
     roomServer.start();
     metricsServer.start();
@@ -1226,7 +1993,8 @@ int main(int argc, char* argv[]) {
               << " metricsPort=" << metricsPort
               << " rulesPath=" << rulesPath
               << " defaultProfile="
-              << wildpaw::room::defaultCombatRuleProfileId() << '\n';
+              << wildpaw::room::defaultCombatRuleProfileId()
+              << " adminAuth=" << (adminToken.empty() ? "off" : "on") << '\n';
 
     for (auto& thread : threads) {
       thread.join();

@@ -280,17 +280,62 @@ endpoint:
 
 ---
 
-## 14) 벤치/스모크 테스트(현재 레포 포함)
+## 14) Admin Dashboard / HTTP API
+
+`metrics_port`는 `/metrics` 뿐 아니라 관리자 UI/API도 함께 제공한다.
+
+- UI: `GET /admin/`
+- API:
+  - `GET /admin/api/status`
+  - `GET /admin/api/sessions`
+  - `GET /admin/api/violations`
+  - `POST /admin/api/sessions/{playerId}/disconnect`
+  - `POST /admin/api/rules/reload`
+
+### 14-1. 인증
+- 환경변수 `WILDPAW_ADMIN_TOKEN`이 설정되면 `/admin*` 경로는 인증 필요
+- 전달 방식:
+  - header: `x-admin-token: <token>`
+  - 또는 query: `?token=<token>`
+- 토큰 미설정 시(개발 모드) `/admin*` 인증 없이 접근 가능
+
+### 14-2. Sessions API에 포함되는 운영 필드
+- `playerId`
+- `remote` (ip:port)
+- `connectedAtMs`, `lastSeenAtMs`
+- `bytesIn`, `bytesOut`
+- `binaryFramesIn`, `textFramesIn`
+- `invalidEnvelopeTotal`, `unsupportedMessageTotal`, `invalidProfileSelectTotal`
+- `reliableInFlight`
+
+### 14-3. Violations API
+서버가 감지/기록하는 이벤트 예시:
+- `c2s_text_frame`
+- `invalid_envelope`
+- `unsupported_message_type`
+- `profile_invalid`
+- `message_too_big`
+- `admin_disconnect`
+- `rules_reload_failed`
+
+---
+
+## 15) 벤치/스모크 테스트(현재 레포 포함)
 
 ```bash
 # server
 cd server
 cmake -S . -B build
 cmake --build build -j
-./build/room/wildpaw-room 7001 4 30 9100 room/config/combat_rules.json
+WILDPAW_ADMIN_TOKEN=secret123 \
+  ./build/room/wildpaw-room 7001 4 30 9100 room/config/combat_rules.json
 
 # metrics
 curl -s http://127.0.0.1:9100/metrics | head
+
+# admin status/sessions
+curl -s -H 'x-admin-token: secret123' http://127.0.0.1:9100/admin/api/status | head
+curl -s -H 'x-admin-token: secret123' http://127.0.0.1:9100/admin/api/sessions | head
 
 # client web scripts
 cd client/web
@@ -314,7 +359,7 @@ npx tsx ./scripts/profile-select-smoke.ts ws://127.0.0.1:7001 skirmisher
 
 ---
 
-## 15) Known gaps / 다음 TODO(구현 관점)
+## 16) Known gaps / 다음 TODO(구현 관점)
 
 - lag compensation(리와인드) 미구현
 - 장애물/맵 충돌/LOS 미구현

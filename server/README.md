@@ -1,6 +1,7 @@
 # Wildpaw Server Scaffold (C++20 + Asio/Beast)
 
 - 구현 스펙(실코드 기준): `SERVER_SPEC.md`
+- 관리자 페이지 요구사항/범위: `ADMIN_DASHBOARD_SPEC.md`
 
 ## 구성
 - `room/`: 실시간 authoritative 룸 서버
@@ -74,6 +75,35 @@ cmake --build build -j
 ## Prometheus 지표
 ```bash
 curl -s http://127.0.0.1:9100/metrics
+```
+
+## 관리자 페이지 (Admin)
+기본 URL: `http://127.0.0.1:<metrics_port>/admin/`
+
+권장(토큰 보호):
+```bash
+WILDPAW_ADMIN_TOKEN="your-secret-token" \
+  ./build/room/wildpaw-room 7001 4 30 9100 room/config/combat_rules.json
+```
+
+Admin API 예시:
+```bash
+# 상태
+curl -s -H 'x-admin-token: your-secret-token' http://127.0.0.1:9100/admin/api/status
+
+# 세션 목록(동접/IP/이상 카운터)
+curl -s -H 'x-admin-token: your-secret-token' http://127.0.0.1:9100/admin/api/sessions
+
+# 비정상 패킷/운영 이벤트 로그
+curl -s -H 'x-admin-token: your-secret-token' http://127.0.0.1:9100/admin/api/violations
+
+# 강제 연결 종료
+curl -s -X POST -H 'x-admin-token: your-secret-token' \
+  http://127.0.0.1:9100/admin/api/sessions/1001/disconnect
+
+# 룰 수동 리로드
+curl -s -X POST -H 'x-admin-token: your-secret-token' \
+  http://127.0.0.1:9100/admin/api/rules/reload
 ```
 
 주요 지표:
