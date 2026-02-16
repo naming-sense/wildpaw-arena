@@ -1,5 +1,7 @@
 # Wildpaw Server Scaffold (C++20 + Asio/Beast)
 
+- 구현 스펙(실코드 기준): `SERVER_SPEC.md`
+
 ## 구성
 - `room/`: 실시간 authoritative 룸 서버
   - WebSocket **binary-only** C2S/S2C
