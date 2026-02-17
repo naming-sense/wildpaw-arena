@@ -1,80 +1,89 @@
-# client/web netcode + gameplay scaffold
+# client/web
 
-Three.js 클라이언트에 붙일 netcode/게임루프 스캐폴드입니다.
+`client/web`는 현재 **두 트랙**을 함께 담고 있습니다.
 
-## 포함 모듈
+1. 기존 netcode/gameplay 스캐폴드(`src/netcode`, `src/gameplay` 일부)
+2. 실제 실행 가능한 Vite+React+Three.js 프로토타입(`src/app`, `src/net`, `src/ecs`, `src/render`)
 
-### netcode (`src/netcode`)
-- `types.ts`: snapshot/input/combat-event 타입
-- `prediction.ts`: 로컬 예측/복구
-- `interpolation.ts`: 원격 플레이어 보간 버퍼
-- `netClient.ts`: FlatBuffers 기반 realtime transport
-  - C2S binary envelope 송신 (`HELLO/ACTION_COMMAND/SELECT_PROFILE/PING`, `INPUT` 하위호환)
-  - S2C binary envelope 수신 (`WELCOME/SNAPSHOT/COMBAT_EVENT/PROJECTILE_EVENT/EVENT`)
-  - `seq/ack/ackBits` 자동 추적
-  - 중복 envelope(seq) 수신 방지(dedup)
-- `src/netcode/gen/*`: flatc로 생성된 TS 코드
+---
 
-### gameplay (`src/gameplay`)
-- `ecs/realtimeEcsRuntime.ts`
-  - `RealtimeClient` + prediction/reconciliation + interpolation 결합
-  - 입력 송신(`sendInput`) / 렌더 스텝(`step`) 통합
-  - HUD 상태(탄약/재장전/스킬 쿨다운/캐스팅) 콜백 제공
-  - 옵션 `profileId` 지정 시 접속 직후 `SELECT_PROFILE` 자동 요청
-- `three/threeCombatSceneAdapter.ts`
-  - 스냅샷 기반 플레이어 Mesh 동기화
-  - combat/projectile 이벤트 FX 기본 구현
-- `three/threeRealtimeLoop.ts`
-  - `requestAnimationFrame` 기반 렌더 루프 + 20Hz 입력 루프 결합
+## 현재 구현 범위 (실행형 프로토타입)
 
-## 의존성 설치
+- Vite + TypeScript(strict) + React + Three.js + Zustand
+- Render/Simulation 루프 분리
+  - Render: `requestAnimationFrame`
+  - Simulation: `33.33ms (30Hz)` 고정 스텝
+- ECS 골격
+  - Component: `Transform`, `Velocity`, `Health`, `Team`, `Weapon`, `SkillSet`, `StatusEffect`, `RenderProxy`
+  - System: Input → Movement → Collision → WeaponFire → Projectile → Skill → BuffDebuff → Animation
+  - 렌더 보간: `GameApp.syncRenderProxies()`에서 프레임 단위 보간
+- Netcode 구현
+  - `InputCommand` + 로컬 prediction/reconciliation
+  - remote snapshot interpolation + dead reckoning(extrapolation)
+  - server time offset(clock skew) 보정 샘플링
+  - 재접속 상태머신 + persistent `clientId`
+- 디버그/운영 지표
+  - FPS / frame time / draw calls
+  - ping / jitter / packet loss
+  - replay logger
+
+## 모델/애니메이션 QA
+
+- 전용 페이지: `/model-lab.html`
+- 게임 루프와 분리해 GLB/clip/skeleton/bounds/timeline 검증
+- 상세 문서:
+  - `docs/MODEL_ANIMATION_TEST_PAGE.md`
+  - `docs/IMPLEMENTATION_HISTORY_2026-02.md`
+
+## 운영 스크립트 (개발/테스트)
+
+```bash
+./scripts/run_services_detached.sh start
+./scripts/run_services_detached.sh status
+./scripts/run_services_detached.sh logs
+./scripts/run_services_detached.sh restart
+./scripts/run_services_detached.sh stop
+```
+
+- web preview: `0.0.0.0:4173`
+- mock ws room: `0.0.0.0:8080`
+- runtime 로그/상태: `client/web/.run/`
+
+## 실행
+
 ```bash
 cd client/web
 npm install
+npm run dev
 ```
 
-## 통합 순서 (M1+)
-1. 렌더 초기화 후 `ThreeCombatSceneAdapter` 생성
-2. `startThreeRealtimeLoop()`로 네트워크/입력/렌더 루프 연결
-3. 입력 샘플러(`sampleInput`)에서 `move/fire/skillQ/E/R` 상태 반환
+빌드/테스트:
 
-```ts
-const stop = startThreeRealtimeLoop({
-  roomToken: "dev-room",
-  profileId: "skirmisher",
-  url: "ws://127.0.0.1:7001",
-  renderer,
-  scene,
-  camera,
-  sampleInput: () => ({
-    moveX: inputAxis.x,
-    moveY: inputAxis.y,
-    fire: mouse.left,
-    aimRadian,
-    skillQ: keyQ,
-    skillE: keyE,
-    skillR: keyR,
-  }),
-});
+```bash
+npm run build
+npm test
 ```
 
-## 스모크 테스트 스크립트
-서버 기동 후 아래 스크립트로 연결/이벤트/룰 반영을 빠르게 확인할 수 있습니다.
+---
+
+## 기존 netcode/gameplay 스캐폴드 (legacy track)
+
+`src/netcode` + `src/gameplay`의 일부 유틸은 초기 설계/호환 레이어로 유지됩니다.
+
+- `src/netcode`
+  - `types.ts`: snapshot/input/combat-event 타입 alias
+  - `prediction.ts`: prediction/reconcile bridge
+  - `interpolation.ts`: interpolation buffer bridge
+  - `netClient.ts`: realtime client bridge
+- 향후 `shared/protocol` 확정(FlatBuffers/bitpack) 시 교체 대상
+
+스모크 테스트 예시(서버 준비 후):
 
 ```bash
 cd client/web
-# 기본 부하
 npx tsx ./scripts/bench-room.ts --url ws://127.0.0.1:7001 --clients 40 --duration-ms 4000 --input-interval-ms 50
-
-# ECS runtime + HUD 상태 확인
 npx tsx ./scripts/ecs-runtime-smoke.ts ws://127.0.0.1:7001 ecs-smoke
-
-# combat/projectile interest filtering 확인
 npx tsx ./scripts/interest-filter-smoke.ts ws://127.0.0.1:7001
-
-# 프로필별 룰(maxAmmo 등) 분리 확인
 npx tsx ./scripts/profile-rules-smoke.ts ws://127.0.0.1:7001
-
-# SELECT_PROFILE 패킷 적용 확인
 npx tsx ./scripts/profile-select-smoke.ts ws://127.0.0.1:7001 skirmisher
 ```

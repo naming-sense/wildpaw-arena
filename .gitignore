@@ -5,6 +5,10 @@ out/
 # JS/TS
 node_modules/
 dist/
+*.tsbuildinfo
+
+# Local runtime outputs
+client/web/.run/
 
 # OS
 .DS_Store

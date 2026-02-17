@@ -9,6 +9,11 @@
 
 ---
 
+## 최근 구현 로그 (2026-02)
+
+- 클라이언트/목업 서버 구현 히스토리: `client/web/docs/IMPLEMENTATION_HISTORY_2026-02.md`
+- 모델/애니메이션 QA 페이지 계획/의도: `client/web/docs/MODEL_ANIMATION_TEST_PAGE.md`
+
 ## 1) 핵심 목표
 1. **대중성**: 3분 내외 짧은 경기, 쉬운 조작, 시각적으로 명확한 정보 전달
 2. **경쟁성**: 스킬-포지셔닝-조합 카운터가 살아있는 팀 전술

@@ -1,13 +1,32 @@
 {
-  "name": "wildpaw-web-netcode",
+  "name": "wildpaw-client-web",
   "private": true,
+  "version": "0.1.0",
   "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
   "dependencies": {
     "flatbuffers": "2.0.7",
-    "three": "^0.180.0"
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "three": "^0.180.0",
+    "zustand": "^4.5.2"
   },
   "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/three": "^0.180.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "jsdom": "^25.0.1",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vite": "^5.4.10",
+    "vitest": "^2.1.4"
   }
 }
