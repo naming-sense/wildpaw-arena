@@ -1,0 +1,465 @@
+{
+  "version": "mvp-v0.2",
+  "updatedAt": "2026-02-17",
+  "units": {
+    "health": "hp",
+    "distance": "meter",
+    "speed": "meter_per_second",
+    "time": "millisecond",
+    "damage": "hp",
+    "ratio": "0_to_1"
+  },
+  "heroes": [
+    {
+      "id": "lumifox",
+      "nameKr": "루미폭스",
+      "role": "Skirmisher",
+      "stats": {
+        "hp": 2400,
+        "moveSpeedMps": 6.1,
+        "hitboxRadiusM": 0.45,
+        "ultChargeRequired": 1900
+      },
+      "weapon": {
+        "class": "Dual SMG",
+        "rangeM": 9.0,
+        "falloffStartM": 6.0,
+        "falloffEndM": 11.0,
+        "damagePerShot": 62,
+        "shotsPerSec": 10.4,
+        "bodyDps": 645,
+        "critMultiplier": 1.3,
+        "ammo": 28,
+        "reloadSec": 1.45
+      },
+      "passive": {
+        "name": "측면/후방 사냥",
+        "sideBackCritChanceBonus": 0.12
+      },
+      "skills": {
+        "q": {
+          "name": "그림자 대시",
+          "cooldownMs": 8500,
+          "castTimeMs": 80,
+          "dashDistanceM": 6.5,
+          "invulnerableMs": 180,
+          "reloadSpeedBonus": 0.3,
+          "reloadSpeedDurationMs": 2200
+        },
+        "e": {
+          "name": "디코이 향수탄",
+          "cooldownMs": 12000,
+          "castTimeMs": 180,
+          "decoyHp": 450,
+          "decoyDurationMs": 3500,
+          "enemyAimDisruption": 0.3
+        },
+        "r": {
+          "name": "문라이트 체이스",
+          "castTimeMs": 250,
+          "durationMs": 6000,
+          "moveSpeedBonus": 0.2,
+          "fireRateBonus": 0.18,
+          "takedownExtendMs": 1400,
+          "maxExtendMs": 4000
+        }
+      }
+    },
+    {
+      "id": "bruno_bear",
+      "nameKr": "브루노 베어",
+      "role": "Vanguard",
+      "stats": {
+        "hp": 3400,
+        "moveSpeedMps": 4.7,
+        "hitboxRadiusM": 0.6,
+        "ultChargeRequired": 2100
+      },
+      "weapon": {
+        "class": "Heavy Shotgun",
+        "rangeM": 5.5,
+        "falloffStartM": 4.0,
+        "falloffEndM": 8.0,
+        "pelletCount": 11,
+        "pelletDamage": 58,
+        "shotsPerSec": 1.05,
+        "bodyDps": 669,
+        "critMultiplier": 1.2,
+        "ammo": 6,
+        "reloadSec": 1.9
+      },
+      "passive": {
+        "name": "불굴의 모피",
+        "closeRangeDamageReduction": 0.15,
+        "closeRangeRadiusM": 6.0
+      },
+      "skills": {
+        "q": {
+          "name": "아이언 쇼울더",
+          "cooldownMs": 10000,
+          "castTimeMs": 120,
+          "dashDistanceM": 5.2,
+          "impactDamage": 260,
+          "knockbackM": 3.0,
+          "stunMs": 350
+        },
+        "e": {
+          "name": "배리어 포즈",
+          "cooldownMs": 14000,
+          "castTimeMs": 180,
+          "barrierHp": 2200,
+          "durationMs": 4500,
+          "barrierArcDeg": 140
+        },
+        "r": {
+          "name": "그리즐리 임팩트",
+          "castTimeMs": 450,
+          "radiusM": 4.8,
+          "damage": 520,
+          "stunMs": 1200
+        }
+      }
+    },
+    {
+      "id": "stinkrat",
+      "nameKr": "스팅크랫",
+      "role": "Controller",
+      "stats": {
+        "hp": 2800,
+        "moveSpeedMps": 5.0,
+        "hitboxRadiusM": 0.5,
+        "ultChargeRequired": 2050
+      },
+      "weapon": {
+        "class": "Gas Launcher",
+        "rangeM": 10.5,
+        "falloffStartM": 8.0,
+        "falloffEndM": 14.0,
+        "damagePerShot": 205,
+        "shotsPerSec": 2.35,
+        "bodyDps": 482,
+        "critMultiplier": 1.15,
+        "ammo": 8,
+        "reloadSec": 1.8
+      },
+      "passive": {
+        "name": "중독 증폭",
+        "bonusDamageVsDebuffed": 0.08
+      },
+      "skills": {
+        "q": {
+          "name": "점착 가스탄",
+          "cooldownMs": 9000,
+          "castTimeMs": 200,
+          "rangeM": 11.0,
+          "radiusM": 3.6,
+          "initialDamage": 140,
+          "dotPerSec": 32,
+          "dotDurationMs": 3000,
+          "slow": 0.35
+        },
+        "e": {
+          "name": "트랩 와이어",
+          "cooldownMs": 13000,
+          "castTimeMs": 250,
+          "deployRangeM": 8.0,
+          "wireLengthM": 7.0,
+          "damage": 110,
+          "rootMs": 1100,
+          "charges": 2
+        },
+        "r": {
+          "name": "독안개 폭풍",
+          "castTimeMs": 500,
+          "radiusM": 6.5,
+          "durationMs": 7000,
+          "damagePerSec": 75,
+          "visionReduction": 0.65
+        }
+      }
+    },
+    {
+      "id": "milky_rabbit",
+      "nameKr": "밀키 래빗",
+      "role": "Support",
+      "stats": {
+        "hp": 2550,
+        "moveSpeedMps": 5.6,
+        "hitboxRadiusM": 0.47,
+        "ultChargeRequired": 1950
+      },
+      "weapon": {
+        "class": "Burst Pistol",
+        "rangeM": 10.5,
+        "falloffStartM": 8.0,
+        "falloffEndM": 13.0,
+        "damagePerShot": 79,
+        "shotsPerSec": 6.1,
+        "bodyDps": 482,
+        "critMultiplier": 1.35,
+        "ammo": 18,
+        "reloadSec": 1.55
+      },
+      "passive": {
+        "name": "응급 케어",
+        "healAmpWhenAllyHpUnder50": 0.18
+      },
+      "skills": {
+        "q": {
+          "name": "케어샷",
+          "cooldownMs": 7500,
+          "castTimeMs": 180,
+          "rangeM": 12.0,
+          "heal": 280,
+          "enemyDamage": 140,
+          "pierceCount": 2,
+          "pierceFalloff": 0.2
+        },
+        "e": {
+          "name": "홉 링크",
+          "cooldownMs": 12000,
+          "castTimeMs": 120,
+          "jumpRangeM": 8.0,
+          "shield": 420,
+          "shieldDurationMs": 3000
+        },
+        "r": {
+          "name": "스프링 하모니",
+          "castTimeMs": 400,
+          "radiusM": 6.0,
+          "instantHeal": 420,
+          "hotPerSec": 120,
+          "hotDurationMs": 4000,
+          "statusResist": 0.35,
+          "statusResistDurationMs": 4000
+        }
+      }
+    },
+    {
+      "id": "iris_wolf",
+      "nameKr": "아이리스 울프",
+      "role": "Striker",
+      "stats": {
+        "hp": 2950,
+        "moveSpeedMps": 5.4,
+        "hitboxRadiusM": 0.5,
+        "ultChargeRequired": 2100
+      },
+      "weapon": {
+        "class": "AR",
+        "rangeM": 11.5,
+        "falloffStartM": 9.0,
+        "falloffEndM": 16.0,
+        "damagePerShot": 72,
+        "shotsPerSec": 8.5,
+        "bodyDps": 612,
+        "critMultiplier": 1.35,
+        "ammo": 30,
+        "reloadSec": 1.65
+      },
+      "passive": {
+        "name": "추적 본능",
+        "consecutiveHitThreshold": 6,
+        "recoilReduction": 0.2,
+        "durationMs": 2500
+      },
+      "skills": {
+        "q": {
+          "name": "포커스 버스트",
+          "cooldownMs": 7000,
+          "castTimeMs": 150,
+          "shots": 3,
+          "damagePerShot": 96,
+          "bonusIfAllHit": 120
+        },
+        "e": {
+          "name": "센트 마크",
+          "cooldownMs": 13000,
+          "castTimeMs": 140,
+          "rangeM": 13.0,
+          "markDurationMs": 5000,
+          "teamDamageAmp": 0.1
+        },
+        "r": {
+          "name": "헌트 콜",
+          "castTimeMs": 300,
+          "durationMs": 7000,
+          "allyMoveSpeedBonus": 0.14,
+          "allyFireRateBonus": 0.1,
+          "selfReloadSpeedBonus": 0.25
+        }
+      }
+    },
+    {
+      "id": "coral_cat",
+      "nameKr": "코랄 캣",
+      "role": "Skirmisher",
+      "stats": {
+        "hp": 2450,
+        "moveSpeedMps": 5.9,
+        "hitboxRadiusM": 0.46,
+        "ultChargeRequired": 2000
+      },
+      "weapon": {
+        "class": "DMR",
+        "rangeM": 16.0,
+        "falloffStartM": 13.0,
+        "falloffEndM": 22.0,
+        "damagePerShot": 178,
+        "shotsPerSec": 3.1,
+        "bodyDps": 552,
+        "critMultiplier": 1.45,
+        "ammo": 12,
+        "reloadSec": 1.75
+      },
+      "passive": {
+        "name": "엄폐 첫 발",
+        "firstShotBonus": 0.3,
+        "nearCoverDistanceM": 2.2,
+        "outOfCombatRequiredMs": 1200
+      },
+      "skills": {
+        "q": {
+          "name": "클로 라인",
+          "cooldownMs": 10000,
+          "castTimeMs": 120,
+          "hookRangeM": 12.0,
+          "travelSpeedMps": 28.0,
+          "landingDamage": 180,
+          "landingRadiusM": 2.2
+        },
+        "e": {
+          "name": "글리터 스모크",
+          "cooldownMs": 14000,
+          "castTimeMs": 180,
+          "smokeRadiusM": 3.8,
+          "stealthDurationMs": 2500,
+          "enemySlow": 0.22,
+          "slowDurationMs": 2800
+        },
+        "r": {
+          "name": "세븐 라이브스",
+          "castTimeMs": 250,
+          "durationMs": 8000,
+          "onTakedownMoveSpeedBonus": 0.18,
+          "buffDurationMs": 2500,
+          "qCooldownRefund": 0.6,
+          "maxTriggers": 3
+        }
+      }
+    },
+    {
+      "id": "rockhorn_rhino",
+      "nameKr": "록혼 라이노",
+      "role": "Vanguard",
+      "stats": {
+        "hp": 3350,
+        "moveSpeedMps": 4.6,
+        "hitboxRadiusM": 0.62,
+        "ultChargeRequired": 2200
+      },
+      "weapon": {
+        "class": "Minigun",
+        "rangeM": 10.5,
+        "falloffStartM": 8.0,
+        "falloffEndM": 15.0,
+        "damagePerShot": 44,
+        "shotsPerSecMin": 9.0,
+        "shotsPerSecMax": 14.0,
+        "spinUpMs": 1400,
+        "bodyDpsAvg": 620,
+        "critMultiplier": 1.2,
+        "ammo": 120,
+        "reloadSec": 2.2
+      },
+      "passive": {
+        "name": "연속 탄막",
+        "sustainedFireDamageAmp": 0.18,
+        "rampUpMs": 2500
+      },
+      "skills": {
+        "q": {
+          "name": "포트리스 스텝",
+          "cooldownMs": 11000,
+          "castTimeMs": 150,
+          "durationMs": 2800,
+          "frontalDamageReduction": 0.35,
+          "moveSpeedWhileActiveMps": 4.2
+        },
+        "e": {
+          "name": "타운트 로어",
+          "cooldownMs": 13000,
+          "castTimeMs": 220,
+          "radiusM": 5.0,
+          "enemyAccuracyDebuff": 0.3,
+          "durationMs": 2500
+        },
+        "r": {
+          "name": "스틸 스탬피드",
+          "castTimeMs": 380,
+          "dashDistanceM": 10.0,
+          "pathWidthM": 3.2,
+          "impactDamage": 320,
+          "knockupMs": 900
+        }
+      }
+    },
+    {
+      "id": "pearl_panda",
+      "nameKr": "펄 팬더",
+      "role": "SupportController",
+      "stats": {
+        "hp": 2750,
+        "moveSpeedMps": 5.2,
+        "hitboxRadiusM": 0.5,
+        "ultChargeRequired": 2050
+      },
+      "weapon": {
+        "class": "Energy Beamgun",
+        "rangeM": 9.5,
+        "damagePerSec": 528,
+        "critMultiplier": 1.1,
+        "overheatMax": 100,
+        "heatPerSec": 28,
+        "coolPerSec": 40
+      },
+      "passive": {
+        "name": "양극 전환",
+        "swapModeChargeBonus": 0.12,
+        "swapWindowMs": 5000
+      },
+      "skills": {
+        "q": {
+          "name": "소프트 빔",
+          "cooldownMs": 8000,
+          "castTimeMs": 100,
+          "rangeM": 10.0,
+          "channelMaxMs": 2800,
+          "healPerSec": 180,
+          "selfHealPerSec": 30
+        },
+        "e": {
+          "name": "하드 빔",
+          "cooldownMs": 10000,
+          "castTimeMs": 100,
+          "rangeM": 10.0,
+          "channelMaxMs": 2200,
+          "damagePerSec": 165,
+          "slow": 0.28,
+          "pierceTargets": 3
+        },
+        "r": {
+          "name": "인양 필드",
+          "castTimeMs": 350,
+          "radiusM": 5.5,
+          "durationMs": 6000,
+          "rescueTriggerHpRatio": 0.15,
+          "rescueShield": 900,
+          "rescueShieldDurationMs": 3000,
+          "rescueHotTotal": 260,
+          "triggersPerCast": 1
+        }
+      }
+    }
+  ]
+}
