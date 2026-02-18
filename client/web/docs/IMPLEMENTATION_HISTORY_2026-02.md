@@ -128,3 +128,25 @@ npm run test
 - 조작감 요구사항 반영
   - 이동 입력 중에는 "누른 방향"을 바라보도록 복원(터치/WASD)
   - 입력 해제 시 마지막 바라보는 방향 유지(sticky facing)
+
+## 13) 게임플로우 UX/UI 실구현 1차 (BOOT~RESULT)
+
+- 신규 상태 스토어 도입
+  - `src/ui/store/useAppFlowStore.ts`
+  - AppFlowState(BOOT/AUTH/ONBOARDING/LOBBY/PARTY/QUEUEING/READY_CHECK/DRAFT/MATCH_LOADING/IN_MATCH/RESULT/RECONNECTING) + 화면별 상태/이벤트 액션 정의
+- 신규 화면 레이어 도입
+  - `src/ui/flow/AppFlowLayer.tsx`
+  - 화면별 컴포넌트(부트/인증/온보딩/로비/큐/수락/드래프트/로딩/결과/재접속) + 런타임 타이머(큐 tick, ready check countdown, draft timeout)
+- AppShell 구조 개편
+  - 초기 진입을 전투 직행에서 상태머신 기반 진입으로 전환
+  - `MATCH_LOADING` 시점에만 `bootstrap()`로 실제 GameApp 생성/연결
+  - `RESULT/LOBBY` 등 전투 외 상태로 전환하면 GameApp 정리(stop)
+- Hero 선택 연동
+  - 로비/드래프트에서 선택한 heroId를 GameApp 생성 옵션으로 전달
+  - `bootstrap`/`GameAppOptions`/`resolvePreferredHeroId` 확장으로 runtime hero 선택 반영
+- UI 스타일 확장
+  - TopBar/BottomNav/모드카드/히어로그리드/드래프트/모달/토스트/로딩바/반응형(1366, 820) 규칙 추가
+- 운영/검증
+  - `npm run build` ✅
+  - `npm run test` ✅
+  - detached 재시작(web 4173 / ws 8080) ✅

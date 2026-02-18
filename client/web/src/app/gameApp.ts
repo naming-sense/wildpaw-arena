@@ -36,6 +36,7 @@ import type { GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 interface GameAppOptions {
   wsUrl?: string;
+  heroId?: string;
 }
 
 const HERO_MOVE_ANIM_THRESHOLD = 0.15;
@@ -64,7 +65,11 @@ function normalizeHeroId(rawHeroId: string): string {
   return normalized;
 }
 
-function resolvePreferredHeroId(): string {
+function resolvePreferredHeroId(explicitHeroId?: string): string {
+  if (explicitHeroId && explicitHeroId.trim().length > 0) {
+    return normalizeHeroId(explicitHeroId);
+  }
+
   if (typeof window === "undefined") {
     return DEFAULT_HERO_ID;
   }
@@ -184,10 +189,10 @@ export class GameApp {
   private readonly netMetrics = new NetMetricsTracker();
   private readonly replay = new ReplayLogger();
   private readonly gltfLoader = createGltfLoader();
-  private readonly selectedHeroId = resolvePreferredHeroId();
-  private readonly localHeroDef = pickHeroDef(this.selectedHeroId);
-  private readonly localHeroAsset = pickHeroAsset(this.selectedHeroId);
-  private readonly localHeroAssetPath = this.localHeroAsset.gltfPath;
+  private readonly selectedHeroId: string;
+  private readonly localHeroDef: HeroDef;
+  private readonly localHeroAsset: HeroAssetManifest;
+  private readonly localHeroAssetPath: string;
 
   private readonly remoteEntities = new Map<number, EntityId>();
   private localPlayerEntityId: EntityId;
@@ -227,6 +232,11 @@ export class GameApp {
     this.input = new KeyboardMouseInput(canvas);
     this.ensureHitMarkerElement();
     this.ensureDamageOverlayElement();
+
+    this.selectedHeroId = resolvePreferredHeroId(options.heroId);
+    this.localHeroDef = pickHeroDef(this.selectedHeroId);
+    this.localHeroAsset = pickHeroAsset(this.selectedHeroId);
+    this.localHeroAssetPath = this.localHeroAsset.gltfPath;
 
     this.hasRealtimeServer = Boolean(options.wsUrl);
 
