@@ -137,6 +137,109 @@ body,
   min-width: 320px;
 }
 
+.flow-panel {
+  top: 12px;
+  left: 12px;
+  transform: none;
+  z-index: 11;
+  width: min(580px, calc(100% - 24px));
+  max-height: calc(100% - 24px);
+  overflow: auto;
+  pointer-events: auto;
+}
+
+.flow-panel p {
+  margin: 4px 0;
+  font-size: 13px;
+}
+
+.flow-hint {
+  color: #9ad8ff;
+}
+
+.flow-error {
+  color: #ff9f9f;
+  font-weight: 700;
+}
+
+.flow-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.flow-controls button,
+.flow-logs-header button {
+  border: 0;
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: #7ea2ff;
+  color: #041132;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.flow-controls button:disabled,
+.flow-logs-header button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.flow-inline-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  padding: 4px 8px;
+  background: rgba(18, 24, 40, 0.8);
+  font-size: 12px;
+}
+
+.flow-inline-input input,
+.flow-inline-input select {
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(8, 12, 20, 0.95);
+  color: #eff4ff;
+  padding: 4px 6px;
+  min-width: 128px;
+}
+
+.flow-logs {
+  margin-top: 10px;
+  background: rgba(9, 14, 22, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 10px;
+  padding: 8px;
+}
+
+.flow-logs-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.flow-logs pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow: auto;
+  font-size: 11px;
+  color: #d8ecff;
+}
+
+.flow-token {
+  margin: 6px 0;
+  font-size: 11px;
+  word-break: break-all;
+}
+
 @media (hover: hover) and (pointer: fine) {
   .mobile-fire-button {
     display: none;

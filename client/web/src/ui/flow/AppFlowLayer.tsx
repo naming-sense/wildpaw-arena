@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { HERO_DEFS, HERO_DEF_BY_ID } from "../../gameplay/hero/heroDefs";
+import { LobbyView } from "../lobby/LobbyView";
 import { useUiStore } from "../store/useUiStore";
 import {
   MATCH_MODE_OPTIONS,
@@ -658,6 +659,7 @@ export function AppFlowLayer(): JSX.Element {
       {showBottomNav ? <BottomNav /> : null}
 
       <FlowContent flowState={flowState} />
+      <LobbyView />
 
       {systemNotice ? <div className="flow-toast" role="status" aria-live="polite">{systemNotice}</div> : null}
     </>

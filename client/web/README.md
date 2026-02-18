@@ -26,6 +26,32 @@
   - FPS / frame time / draw calls
   - ping / jitter / packet loss
   - replay logger
+- 게임플로우 제어 채널(20 계약서 기반) 클라이언트
+  - `src/flow/controlFlowClient.ts`
+  - Envelope: `event/eventId/requestId/sessionId/ts/payload`
+  - AppFlowState: `BOOT/AUTH/ONBOARDING/LOBBY/QUEUEING/READY_CHECK/DRAFT/MATCH_LOADING/IN_MATCH/RESULT/...`
+  - UI 패널: `src/ui/lobby/LobbyView.tsx` (Flow Control Overlay)
+
+## Gateway Control Channel 연동
+
+기본 endpoint 해석:
+- `ws://<현재호스트>:7200` (https면 `wss`)
+
+명시 오버라이드:
+
+```bash
+VITE_GATEWAY_WS_URL=ws://127.0.0.1:7200 npm run dev
+```
+
+Flow Overlay에서 제공하는 동작:
+- BOOT_READY / AUTH_GUEST / ONBOARDING_COMPLETE
+- QUEUE_JOIN / QUEUE_CANCEL
+- MATCH_ACCEPT
+- DRAFT_PICK
+- ROOM_CONNECT_OK/FAIL
+- REMATCH_YES
+
+> 현재는 계약서 검증용 구현으로, 전투 room socket 자동 전환(매치할당 endpoint로 즉시 스위치)은 다음 단계에서 고도화합니다.
 
 ## 모델/애니메이션 QA
 
