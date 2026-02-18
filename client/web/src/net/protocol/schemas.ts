@@ -20,9 +20,15 @@ export interface NetworkPlayerState {
   vx: number;
   vy: number;
   hp: number;
+  maxHp?: number;
   shield: number;
   alive: boolean;
   lastProcessedInputSeq: number;
+  heroId?: string;
+  heroName?: string;
+  ammo?: number;
+  maxAmmo?: number;
+  reloading?: boolean;
 }
 
 export interface WorldSnapshot {

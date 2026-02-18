@@ -3,6 +3,10 @@ import { create } from "zustand";
 interface HudState {
   hp: number;
   maxHp: number;
+  heroName: string;
+  ammo: number;
+  maxAmmo: number;
+  reloading: boolean;
   kills: number;
   wave: number;
   fps: number;
@@ -20,6 +24,10 @@ interface HudState {
 export const useUiStore = create<HudState>((set) => ({
   hp: 100,
   maxHp: 100,
+  heroName: "코랄 캣",
+  ammo: 0,
+  maxAmmo: 0,
+  reloading: false,
   kills: 0,
   wave: 1,
   fps: 0,

@@ -12,6 +12,7 @@ export interface RealtimeSocketClientOptions {
   url?: string;
   reconnectMinMs: number;
   reconnectMaxMs: number;
+  heroId?: string;
   onSnapshot?: (snapshot: WorldSnapshot) => void;
   onStateChange?: (state: ConnectionState) => void;
   onEvent?: (name: string, payload: unknown) => void;
@@ -19,6 +20,7 @@ export interface RealtimeSocketClientOptions {
 }
 
 const CLIENT_ID_STORAGE_KEY = "wildpaw-client-id";
+const HERO_ID_STORAGE_KEY = "wildpaw-hero-id";
 
 function getOrCreateClientId(): string {
   const fallback = `wildpaw-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -45,6 +47,40 @@ function getOrCreateClientId(): string {
   }
 }
 
+function normalizeHeroId(rawHeroId: string): string {
+  const heroId = rawHeroId.trim();
+  return heroId === "whitecat_commando" ? "coral_cat" : heroId;
+}
+
+function getPreferredHeroId(explicit?: string): string {
+  if (explicit && explicit.trim().length > 0) {
+    return normalizeHeroId(explicit);
+  }
+
+  if (typeof window === "undefined") {
+    return "coral_cat";
+  }
+
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const fromQuery = params.get("hero");
+    if (fromQuery && fromQuery.trim().length > 0) {
+      const hero = normalizeHeroId(fromQuery);
+      window.localStorage.setItem(HERO_ID_STORAGE_KEY, hero);
+      return hero;
+    }
+
+    const stored = window.localStorage.getItem(HERO_ID_STORAGE_KEY);
+    if (stored && stored.trim().length > 0) {
+      return normalizeHeroId(stored);
+    }
+  } catch {
+    // ignore localStorage/query parsing failures
+  }
+
+  return "coral_cat";
+}
+
 export class RealtimeSocketClient {
   private ws: WebSocket | null = null;
   private reconnectTimer: number | null = null;
@@ -52,8 +88,11 @@ export class RealtimeSocketClient {
   private state: ConnectionState = "Disconnected";
   private pingSentAt = 0;
   private readonly clientId = getOrCreateClientId();
+  private readonly heroId: string;
 
-  constructor(private readonly options: RealtimeSocketClientOptions) {}
+  constructor(private readonly options: RealtimeSocketClientOptions) {
+    this.heroId = getPreferredHeroId(options.heroId);
+  }
 
   connect(roomToken = "dev-room"): void {
     if (!this.options.url) {
@@ -70,6 +109,7 @@ export class RealtimeSocketClient {
         roomToken,
         clientVersion: "0.2.0",
         clientId: this.clientId,
+        heroId: this.heroId,
       });
     };
 

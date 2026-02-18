@@ -30,6 +30,8 @@ import { ReplayLogger } from "../debug/replay/replayLogger";
 import { useUiStore } from "../ui/store/useUiStore";
 import { createGltfLoader } from "../assets/loaders/gltfLoader";
 import { HERO_ASSET_MANIFEST, type HeroAssetManifest } from "../assets/manifests/heroes";
+import { HERO_DEFS, HERO_DEF_BY_ID, type HeroDef } from "../gameplay/hero/heroDefs";
+import { WEAPON_DEFS, WEAPON_DEF_BY_ID } from "../gameplay/weapon/weaponDefs";
 import type { GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 interface GameAppOptions {
@@ -39,6 +41,126 @@ interface GameAppOptions {
 const HERO_MOVE_ANIM_THRESHOLD = 0.15;
 const LOCAL_MODE_STATE = "Local (No Server)";
 const LOCAL_MARKER_COLOR = 0x4ad8ff;
+const DEFAULT_HERO_ID = "coral_cat";
+const BULLET_TRAIL_MUZZLE_HEIGHT = 1.05;
+const BULLET_PROJECTILE_SPEED = 28;
+const BULLET_TRAIL_LENGTH = 1.35;
+const BULLET_TRAIL_RADIUS = 0.053;
+const BULLET_IMPACT_RADIUS = 0.09;
+const BULLET_TRAIL_LIFE_MS = 460;
+const MUZZLE_FLASH_LIFE_MS = 90;
+const MUZZLE_FLASH_RADIUS = 0.17;
+const MUZZLE_FLASH_LENGTH = 0.38;
+const DAMAGE_TEXT_LIFE_MS = 680;
+const DAMAGE_TEXT_FLOAT_SPEED = 1.35;
+const HIT_MARKER_LIFE_MS = 130;
+const DAMAGE_OVERLAY_LIFE_MS = 220;
+
+function normalizeHeroId(rawHeroId: string): string {
+  const normalized = rawHeroId.trim();
+  if (normalized === "whitecat_commando") {
+    return DEFAULT_HERO_ID;
+  }
+  return normalized;
+}
+
+function resolvePreferredHeroId(): string {
+  if (typeof window === "undefined") {
+    return DEFAULT_HERO_ID;
+  }
+
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const fromQuery = params.get("hero");
+    if (fromQuery && fromQuery.trim().length > 0) {
+      return normalizeHeroId(fromQuery);
+    }
+  } catch {
+    // ignore parse errors
+  }
+
+  return DEFAULT_HERO_ID;
+}
+
+function pickHeroDef(heroId: string): HeroDef {
+  return HERO_DEF_BY_ID.get(heroId) ?? HERO_DEF_BY_ID.get(DEFAULT_HERO_ID) ?? HERO_DEFS[0]!;
+}
+
+function pickHeroAsset(heroId: string): HeroAssetManifest {
+  return (
+    HERO_ASSET_MANIFEST.find((hero) => hero.heroId === heroId) ??
+    HERO_ASSET_MANIFEST.find((hero) => hero.heroId === DEFAULT_HERO_ID) ??
+    HERO_ASSET_MANIFEST[0]!
+  );
+}
+
+function getTeamTrailColor(teamId: number): number {
+  if (teamId === 1) return 0x7ce7ff; // ally/cyan
+  if (teamId === 2) return 0xffc36a; // enemy/amber
+  return 0xf2f5ff;
+}
+
+interface BulletTrailEffect {
+  origin: THREE.Vector3;
+  direction: THREE.Vector3;
+  speed: number;
+  maxDistance: number;
+  traveledDistance: number;
+  trailLength: number;
+  trail: THREE.Mesh<THREE.CylinderGeometry, THREE.MeshBasicMaterial>;
+  trailGeometry: THREE.CylinderGeometry;
+  trailMaterial: THREE.MeshBasicMaterial;
+  glowTrail: THREE.Mesh<THREE.CylinderGeometry, THREE.MeshBasicMaterial>;
+  glowTrailGeometry: THREE.CylinderGeometry;
+  glowTrailMaterial: THREE.MeshBasicMaterial;
+  impact: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
+  impactGeometry: THREE.SphereGeometry;
+  impactMaterial: THREE.MeshBasicMaterial;
+  ageMs: number;
+  lifeMs: number;
+}
+
+interface MuzzleFlashEffect {
+  flashCone: THREE.Mesh<THREE.ConeGeometry, THREE.MeshBasicMaterial>;
+  flashConeGeometry: THREE.ConeGeometry;
+  flashConeMaterial: THREE.MeshBasicMaterial;
+  flashGlow: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
+  flashGlowGeometry: THREE.SphereGeometry;
+  flashGlowMaterial: THREE.MeshBasicMaterial;
+  ageMs: number;
+  lifeMs: number;
+}
+
+interface DamageNumberEffect {
+  sprite: THREE.Sprite;
+  material: THREE.SpriteMaterial;
+  texture: THREE.CanvasTexture;
+  ageMs: number;
+  lifeMs: number;
+  velocityY: number;
+  drift: THREE.Vector3;
+  baseScale: number;
+}
+
+interface ImpactBurstEffect {
+  ring: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
+  ringGeometry: THREE.RingGeometry;
+  ringMaterial: THREE.MeshBasicMaterial;
+  ageMs: number;
+  lifeMs: number;
+}
+
+interface CombatEventPayload {
+  kind?: unknown;
+  attackerPlayerId?: unknown;
+  targetPlayerId?: unknown;
+  damage?: unknown;
+  critical?: unknown;
+  targetX?: unknown;
+  targetY?: unknown;
+  attackerX?: unknown;
+  attackerY?: unknown;
+}
 
 export class GameApp {
   private readonly config = createRuntimeConfig();
@@ -62,14 +184,9 @@ export class GameApp {
   private readonly netMetrics = new NetMetricsTracker();
   private readonly replay = new ReplayLogger();
   private readonly gltfLoader = createGltfLoader();
-  private readonly localHeroAsset: HeroAssetManifest =
-    HERO_ASSET_MANIFEST.find((hero) => hero.heroId === "whitecat_commando") ?? {
-      heroId: "whitecat_commando",
-      gltfPath: "/assets/heroes/cat-soldier-variant-regen-50k-webp2k-safe-nogun-anim-pack-mixamo-directrig-png.glb",
-      idleClip: "Idle",
-      walkClip: "Walk",
-      runClip: "Run",
-    };
+  private readonly selectedHeroId = resolvePreferredHeroId();
+  private readonly localHeroDef = pickHeroDef(this.selectedHeroId);
+  private readonly localHeroAsset = pickHeroAsset(this.selectedHeroId);
   private readonly localHeroAssetPath = this.localHeroAsset.gltfPath;
 
   private readonly remoteEntities = new Map<number, EntityId>();
@@ -82,6 +199,18 @@ export class GameApp {
   private lastInputSentAt = Number.NEGATIVE_INFINITY;
   private serverTimeOffsetMs = 0;
   private hasServerTimeOffset = false;
+  private readonly snapshotAmmoByPlayerId = new Map<number, number>();
+  private readonly bulletTrailEffects: BulletTrailEffect[] = [];
+  private readonly muzzleFlashEffects: MuzzleFlashEffect[] = [];
+  private readonly damageNumberEffects: DamageNumberEffect[] = [];
+  private readonly impactBurstEffects: ImpactBurstEffect[] = [];
+  private hitMarkerElement: HTMLDivElement | null = null;
+  private hitMarkerAgeMs = Number.POSITIVE_INFINITY;
+  private hitMarkerLifeMs = HIT_MARKER_LIFE_MS;
+  private damageOverlayElement: HTMLDivElement | null = null;
+  private damageOverlayAgeMs = Number.POSITIVE_INFINITY;
+  private damageOverlayLifeMs = DAMAGE_OVERLAY_LIFE_MS;
+  private stickyFacingAim: { x: number; y: number } | null = null;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -96,6 +225,8 @@ export class GameApp {
     createMainLights(this.sceneRoot.scene);
 
     this.input = new KeyboardMouseInput(canvas);
+    this.ensureHitMarkerElement();
+    this.ensureDamageOverlayElement();
 
     this.hasRealtimeServer = Boolean(options.wsUrl);
 
@@ -103,6 +234,7 @@ export class GameApp {
       url: options.wsUrl,
       reconnectMinMs: this.config.net.reconnectMinMs,
       reconnectMaxMs: this.config.net.reconnectMaxMs,
+      heroId: this.localHeroDef.id,
       onSnapshot: (snapshot) => this.onSnapshot(snapshot),
       onStateChange: (state) => useUiStore.getState().setHud({ reconnectState: state }),
       onEvent: (name, payload) => this.onSocketEvent(name, payload),
@@ -116,6 +248,16 @@ export class GameApp {
       networkPlayerId: 1,
       isLocal: true,
       color: 0x8ac0ff,
+    });
+
+    const localWeapon = WEAPON_DEF_BY_ID.get(this.localHeroDef.weaponId) ?? WEAPON_DEFS[0]!;
+    useUiStore.getState().setHud({
+      heroName: this.localHeroDef.displayName,
+      hp: this.localHeroDef.baseHp,
+      maxHp: this.localHeroDef.baseHp,
+      ammo: localWeapon.ammo,
+      maxAmmo: localWeapon.ammo,
+      reloading: false,
     });
 
     this.loadHeroModel(this.localPlayerEntityId).catch((error) => {
@@ -145,11 +287,17 @@ export class GameApp {
     cancelAnimationFrame(this.rafId);
     this.input.detach();
     this.socket.disconnect();
+    this.clearBulletEffects();
+    this.clearMuzzleFlashEffects();
+    this.clearDamageNumberEffects();
+    this.clearImpactBurstEffects();
+    this.removeHitMarkerElement();
+    this.removeDamageOverlayElement();
     this.renderer.dispose();
   }
 
   private setupSystems(): void {
-    this.world.addSystem(new InputSystem(this.config.simulation.playerSpeed));
+    this.world.addSystem(new InputSystem(this.localHeroDef.moveSpeed));
     this.world.addSystem(new MovementSystem());
     this.world.addSystem(new CollisionSystem());
     this.world.addSystem(new WeaponFireSystem());
@@ -178,6 +326,12 @@ export class GameApp {
     const estimatedServerNowMs = Date.now() + (this.hasServerTimeOffset ? this.serverTimeOffsetMs : 0);
     this.applyInterpolatedRemoteState(estimatedServerNowMs);
     this.syncRenderProxies(frameMs);
+    this.updateBulletTrailEffects(frameMs);
+    this.updateMuzzleFlashEffects(frameMs);
+    this.updateDamageNumberEffects(frameMs);
+    this.updateImpactBurstEffects(frameMs);
+    this.updateHitMarker(frameMs);
+    this.updateDamageTakenOverlay(frameMs);
 
     const localProxy = this.world.renderProxies.get(this.localPlayerEntityId);
     if (localProxy) {
@@ -240,6 +394,7 @@ export class GameApp {
     const rawInput = this.input.sample();
     const aim = resolveAimOnGround(this.sceneRoot.camera, rawInput.aimNdcX, rawInput.aimNdcY);
     const command = this.commands.create(nowMs, rawInput, aim);
+    this.applyFacingIntentToCommand(command, rawInput);
 
     const inputChanged = this.commands.shouldSend(command);
     const sendIntervalMs = 1000 / this.config.net.sendHz;
@@ -262,6 +417,8 @@ export class GameApp {
 
     this.replay.logInput(command);
 
+    const localWeaponBeforeAmmo = this.world.weapons.get(this.localPlayerEntityId)?.ammo ?? null;
+
     this.world.update({
       nowMs,
       dtMs,
@@ -270,24 +427,216 @@ export class GameApp {
       worldBounds: this.config.simulation.worldBounds,
     });
 
+    this.syncLocalFacingFromCommand(command, rawInput);
+
     const health = this.world.healths.get(this.localPlayerEntityId);
+    const weapon = this.world.weapons.get(this.localPlayerEntityId);
+
+    if (localWeaponBeforeAmmo !== null && weapon && weapon.ammo < localWeaponBeforeAmmo) {
+      const shotCount = Math.max(1, localWeaponBeforeAmmo - weapon.ammo);
+      this.spawnLocalShotTrails(shotCount);
+    }
     if (health) {
-      useUiStore.getState().setHud({ hp: health.current, maxHp: health.max });
+      useUiStore.getState().setHud({
+        hp: health.current,
+        maxHp: health.max,
+        ammo: weapon?.ammo ?? 0,
+      });
+    }
+  }
+
+  private applyFacingIntentToCommand(
+    command: { moveX: number; moveY: number; aimX: number; aimY: number },
+    rawInput: { preferMoveFacing: boolean; hasAimControl: boolean },
+  ): void {
+    const transform = this.world.transforms.get(this.localPlayerEntityId);
+    if (!transform) return;
+
+    const moveLen = Math.hypot(command.moveX, command.moveY);
+    const hasMoveInput = moveLen > 0.04;
+    const shouldFaceMove = hasMoveInput;
+
+    if (shouldFaceMove) {
+      const inv = 1 / Math.max(moveLen, 0.001);
+      const dirX = command.moveX * inv;
+      const dirY = command.moveY * inv;
+      const lookAhead = 6;
+
+      command.aimX = transform.x + dirX * lookAhead;
+      command.aimY = transform.z + dirY * lookAhead;
+      this.stickyFacingAim = { x: command.aimX, y: command.aimY };
+      return;
+    }
+
+    if (rawInput.hasAimControl) {
+      this.stickyFacingAim = { x: command.aimX, y: command.aimY };
+      return;
+    }
+
+    if (this.stickyFacingAim) {
+      command.aimX = this.stickyFacingAim.x;
+      command.aimY = this.stickyFacingAim.y;
+      return;
+    }
+
+    command.aimX = transform.x + Math.sin(transform.yaw) * 6;
+    command.aimY = transform.z + Math.cos(transform.yaw) * 6;
+    this.stickyFacingAim = { x: command.aimX, y: command.aimY };
+  }
+
+  private syncLocalFacingFromCommand(
+    command: { moveX: number; moveY: number; aimX: number; aimY: number },
+    rawInput: { preferMoveFacing: boolean; hasAimControl: boolean },
+  ): void {
+    const transform = this.world.transforms.get(this.localPlayerEntityId);
+    if (!transform) return;
+
+    const moveLen = Math.hypot(command.moveX, command.moveY);
+    const hasMoveInput = moveLen > 0.04;
+    const shouldFaceMove = hasMoveInput;
+
+    if (shouldFaceMove) {
+      transform.yaw = Math.atan2(command.moveX, command.moveY);
+      return;
+    }
+
+    // No move/aim control: keep last facing exactly.
+    if (!rawInput.hasAimControl && !hasMoveInput) {
+      return;
+    }
+
+    const aimDx = command.aimX - transform.x;
+    const aimDz = command.aimY - transform.z;
+    if (Math.hypot(aimDx, aimDz) > 0.001) {
+      transform.yaw = Math.atan2(aimDx, aimDz);
+      return;
+    }
+
+    if (hasMoveInput) {
+      transform.yaw = Math.atan2(command.moveX, command.moveY);
     }
   }
 
   private onSocketEvent(name: string, payload: unknown): void {
-    if (name !== "S2C_WELCOME") return;
+
     if (!payload || typeof payload !== "object") return;
 
-    const playerId = (payload as { playerId?: unknown }).playerId;
-    if (typeof playerId === "number" && Number.isFinite(playerId)) {
-      this.localNetworkPlayerId = playerId;
+    if (name === "S2C_WELCOME") {
+      const playerId = (payload as { playerId?: unknown }).playerId;
+      if (typeof playerId === "number" && Number.isFinite(playerId)) {
+        this.localNetworkPlayerId = playerId;
+      }
+
+      const serverTimeMs = (payload as { serverTimeMs?: unknown }).serverTimeMs;
+      if (typeof serverTimeMs === "number" && Number.isFinite(serverTimeMs)) {
+        this.updateServerTimeOffset(serverTimeMs);
+      }
+
+      const heroId = (payload as { heroId?: unknown }).heroId;
+      if (typeof heroId === "string" && heroId.trim().length > 0) {
+        const hero = pickHeroDef(heroId);
+        useUiStore.getState().setHud({ heroName: hero.displayName });
+      }
+      return;
     }
 
-    const serverTimeMs = (payload as { serverTimeMs?: unknown }).serverTimeMs;
-    if (typeof serverTimeMs === "number" && Number.isFinite(serverTimeMs)) {
-      this.updateServerTimeOffset(serverTimeMs);
+    if (name === "S2C_EVENT") {
+      this.handleServerEvent(payload as CombatEventPayload);
+    }
+  }
+
+  private handleServerEvent(payload: CombatEventPayload): void {
+    const kind = typeof payload.kind === "string" ? payload.kind : "";
+
+    if (kind === "hit-confirm") {
+      const attackerPlayerId =
+        typeof payload.attackerPlayerId === "number" && Number.isFinite(payload.attackerPlayerId)
+          ? payload.attackerPlayerId
+          : null;
+
+      if (attackerPlayerId !== null && attackerPlayerId !== this.localNetworkPlayerId) {
+        return;
+      }
+
+      const rawDamage =
+        typeof payload.damage === "number" && Number.isFinite(payload.damage)
+          ? Math.max(1, Math.round(payload.damage))
+          : null;
+      if (rawDamage === null) return;
+
+      const critical = Boolean(payload.critical);
+
+      let worldX: number | null = null;
+      let worldZ: number | null = null;
+
+      if (typeof payload.targetX === "number" && Number.isFinite(payload.targetX)) {
+        worldX = payload.targetX;
+      }
+      if (typeof payload.targetY === "number" && Number.isFinite(payload.targetY)) {
+        worldZ = payload.targetY;
+      }
+
+      if (worldX === null || worldZ === null) {
+        const targetPlayerId =
+          typeof payload.targetPlayerId === "number" && Number.isFinite(payload.targetPlayerId)
+            ? payload.targetPlayerId
+            : null;
+
+        if (targetPlayerId !== null) {
+          const entityId = this.remoteEntities.get(targetPlayerId);
+          if (entityId !== undefined) {
+            const transform = this.world.transforms.get(entityId);
+            if (transform) {
+              worldX = transform.x;
+              worldZ = transform.z;
+            }
+          }
+        }
+      }
+
+      this.triggerHitMarker(critical);
+
+      if (worldX !== null && worldZ !== null) {
+        this.spawnDamageNumber(worldX, worldZ, rawDamage, critical, "outgoing");
+      }
+      return;
+    }
+
+    if (kind === "damage-taken") {
+      const targetPlayerId =
+        typeof payload.targetPlayerId === "number" && Number.isFinite(payload.targetPlayerId)
+          ? payload.targetPlayerId
+          : null;
+      if (targetPlayerId !== null && targetPlayerId !== this.localNetworkPlayerId) {
+        return;
+      }
+
+      const rawDamage =
+        typeof payload.damage === "number" && Number.isFinite(payload.damage)
+          ? Math.max(1, Math.round(payload.damage))
+          : null;
+      if (rawDamage === null) return;
+
+      const critical = Boolean(payload.critical);
+      this.triggerDamageTakenOverlay(critical);
+
+      const localTransform = this.world.transforms.get(this.localPlayerEntityId);
+      if (localTransform) {
+        const fallbackX = localTransform.x;
+        const fallbackZ = localTransform.z;
+
+        const worldX =
+          typeof payload.targetX === "number" && Number.isFinite(payload.targetX)
+            ? payload.targetX
+            : fallbackX;
+        const worldZ =
+          typeof payload.targetY === "number" && Number.isFinite(payload.targetY)
+            ? payload.targetY
+            : fallbackZ;
+
+        this.spawnDamageNumber(worldX, worldZ, rawDamage, critical, "incoming");
+        this.spawnImpactBurst(worldX, worldZ, critical);
+      }
     }
   }
 
@@ -339,7 +688,7 @@ export class GameApp {
       },
       pendingCommands: pending,
       dtSeconds: this.config.simulation.fixedDtMs / 1000,
-      moveSpeed: this.config.simulation.playerSpeed,
+      moveSpeed: this.localHeroDef.moveSpeed,
       hardSnapThreshold: this.config.simulation.hardSnapThreshold,
       smoothCorrectionAlpha: this.config.simulation.smoothCorrectionAlpha,
     });
@@ -356,6 +705,52 @@ export class GameApp {
 
     velocity.x = reconciled.velocity.x;
     velocity.z = reconciled.velocity.y;
+
+    if (Number.isFinite(authoritative.rot)) {
+      const yawDelta = Math.atan2(
+        Math.sin(authoritative.rot - transform.yaw),
+        Math.cos(authoritative.rot - transform.yaw),
+      );
+      transform.yaw += yawDelta * 0.45;
+    }
+
+    const health = this.world.healths.get(this.localPlayerEntityId);
+    if (health) {
+      if (typeof authoritative.maxHp === "number" && Number.isFinite(authoritative.maxHp)) {
+        health.max = Math.max(1, authoritative.maxHp);
+      }
+      health.current = authoritative.hp;
+      health.shield = authoritative.shield;
+      useUiStore.getState().setHud({ hp: health.current, maxHp: health.max });
+    }
+
+    const weapon = this.world.weapons.get(this.localPlayerEntityId);
+    const nextAmmo =
+      typeof authoritative.ammo === "number" && Number.isFinite(authoritative.ammo)
+        ? Math.max(0, Math.round(authoritative.ammo))
+        : weapon?.ammo ?? 0;
+    const nextMaxAmmo =
+      typeof authoritative.maxAmmo === "number" && Number.isFinite(authoritative.maxAmmo)
+        ? Math.max(1, Math.round(authoritative.maxAmmo))
+        : weapon?.ammo ?? 0;
+
+    if (weapon) {
+      weapon.ammo = nextAmmo;
+    }
+
+    const nextHeroName =
+      typeof authoritative.heroName === "string" && authoritative.heroName.trim().length > 0
+        ? authoritative.heroName
+        : typeof authoritative.heroId === "string"
+          ? pickHeroDef(authoritative.heroId).displayName
+          : this.localHeroDef.displayName;
+
+    useUiStore.getState().setHud({
+      heroName: nextHeroName,
+      ammo: nextAmmo,
+      maxAmmo: nextMaxAmmo,
+      reloading: Boolean(authoritative.reloading),
+    });
   }
 
   private applyInterpolatedRemoteState(nowMs: number): void {
@@ -382,8 +777,22 @@ export class GameApp {
         velocity.z = player.vy;
       }
 
+      if (typeof player.ammo === "number" && Number.isFinite(player.ammo)) {
+        const nextAmmo = Math.max(0, Math.round(player.ammo));
+        const prevAmmo = this.snapshotAmmoByPlayerId.get(player.playerId);
+
+        if (typeof prevAmmo === "number" && nextAmmo < prevAmmo) {
+          this.spawnRemoteShotTrails(player, prevAmmo - nextAmmo);
+        }
+
+        this.snapshotAmmoByPlayerId.set(player.playerId, nextAmmo);
+      }
+
       const health = this.world.healths.get(entityId);
       if (health) {
+        if (typeof player.maxHp === "number" && Number.isFinite(player.maxHp)) {
+          health.max = Math.max(1, player.maxHp);
+        }
         health.current = player.hp;
         health.shield = player.shield;
       }
@@ -419,6 +828,7 @@ export class GameApp {
     if (!entityId) return;
 
     this.remoteEntities.delete(networkPlayerId);
+    this.snapshotAmmoByPlayerId.delete(networkPlayerId);
 
     const proxy = this.world.renderProxies.get(entityId);
     if (proxy) {
@@ -445,15 +855,25 @@ export class GameApp {
 
     const spawnX = args.isLocal ? 0 : ((args.networkPlayerId % 4) - 1.5) * 1.2;
     const spawnZ = args.isLocal ? 0 : 2.4;
+
+    const heroDef = args.isLocal
+      ? this.localHeroDef
+      : HERO_DEFS[(args.networkPlayerId - 1 + HERO_DEFS.length) % HERO_DEFS.length] ?? this.localHeroDef;
+    const weaponDef = WEAPON_DEF_BY_ID.get(heroDef.weaponId) ?? WEAPON_DEFS[0]!;
+
     this.world.transforms.set(entityId, { x: spawnX, y: 0, z: spawnZ, yaw: 0 });
     this.world.velocities.set(entityId, { x: 0, y: 0, z: 0 });
-    this.world.healths.set(entityId, { current: 100, max: 100, shield: 0 });
+    this.world.healths.set(entityId, {
+      current: heroDef.baseHp,
+      max: heroDef.baseHp,
+      shield: 0,
+    });
     this.world.teams.set(entityId, { id: args.isLocal ? 1 : 2 });
     this.world.weapons.set(entityId, {
-      weaponId: "assault_rifle",
-      cooldownMs: 100,
+      weaponId: weaponDef.id,
+      cooldownMs: Math.round(1000 / Math.max(1, weaponDef.fireRate)),
       lastFiredAtMs: -1,
-      ammo: 30,
+      ammo: weaponDef.ammo,
     });
     this.world.skills.set(entityId, {
       qCooldownEndMs: 0,
@@ -763,7 +1183,625 @@ export class GameApp {
     return new THREE.Vector3(anchorX, minY, anchorZ);
   }
 
+  private spawnLocalShotTrails(shotCount: number): void {
+    const transform = this.world.transforms.get(this.localPlayerEntityId);
+    const weapon = this.world.weapons.get(this.localPlayerEntityId);
+    const team = this.world.teams.get(this.localPlayerEntityId);
+    if (!transform || !weapon) return;
+
+    const weaponDef = WEAPON_DEF_BY_ID.get(weapon.weaponId) ?? WEAPON_DEFS[0]!;
+    const range = Math.max(4, weaponDef.range);
+
+    const dir = new THREE.Vector2(Math.sin(transform.yaw), Math.cos(transform.yaw));
+    if (dir.lengthSq() < 1e-6) {
+      dir.set(0, 1);
+    }
+
+    const origin = new THREE.Vector3(transform.x, BULLET_TRAIL_MUZZLE_HEIGHT, transform.z);
+    const trailColor = getTeamTrailColor(team?.id ?? 1);
+    for (let i = 0; i < shotCount; i += 1) {
+      this.spawnMuzzleFlash(origin, dir, trailColor);
+      this.spawnBulletTrail(origin, dir, range, trailColor);
+    }
+  }
+
+  private spawnRemoteShotTrails(player: NetworkPlayerState, shotCount: number): void {
+    const heroId = typeof player.heroId === "string" ? normalizeHeroId(player.heroId) : DEFAULT_HERO_ID;
+    const heroDef = pickHeroDef(heroId);
+    const weaponDef = WEAPON_DEF_BY_ID.get(heroDef.weaponId) ?? WEAPON_DEFS[0]!;
+    const range = Math.max(4, weaponDef.range);
+
+    const dir = new THREE.Vector2(Math.sin(player.rot), Math.cos(player.rot));
+    if (dir.lengthSq() < 1e-6) {
+      dir.set(0, 1);
+    }
+
+    const origin = new THREE.Vector3(player.x, BULLET_TRAIL_MUZZLE_HEIGHT, player.y);
+    const trailColor = getTeamTrailColor(player.team);
+    for (let i = 0; i < shotCount; i += 1) {
+      this.spawnMuzzleFlash(origin, dir, trailColor);
+      this.spawnBulletTrail(origin, dir, range, trailColor);
+    }
+  }
+
+  private spawnMuzzleFlash(origin: THREE.Vector3, directionXZ: THREE.Vector2, flashColor: number): void {
+    const dir2 = directionXZ.clone();
+    if (dir2.lengthSq() < 1e-6) {
+      return;
+    }
+
+    dir2.normalize();
+    const direction = new THREE.Vector3(dir2.x, 0, dir2.y).normalize();
+
+    const muzzleCenter = origin.clone().addScaledVector(direction, 0.34);
+
+    const flashConeGeometry = new THREE.ConeGeometry(
+      MUZZLE_FLASH_RADIUS,
+      MUZZLE_FLASH_LENGTH,
+      10,
+      1,
+      true,
+    );
+    const flashConeMaterial = new THREE.MeshBasicMaterial({
+      color: flashColor,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+    });
+
+    const flashCone = new THREE.Mesh(flashConeGeometry, flashConeMaterial);
+    flashCone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+    flashCone.position.copy(muzzleCenter).addScaledVector(direction, MUZZLE_FLASH_LENGTH * 0.45);
+    flashCone.renderOrder = 57;
+    flashCone.frustumCulled = false;
+
+    const flashGlowGeometry = new THREE.SphereGeometry(MUZZLE_FLASH_RADIUS * 0.9, 10, 10);
+    const flashGlowMaterial = new THREE.MeshBasicMaterial({
+      color: flashColor,
+      transparent: true,
+      opacity: 0.65,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+
+    const flashGlow = new THREE.Mesh(flashGlowGeometry, flashGlowMaterial);
+    flashGlow.position.copy(muzzleCenter);
+    flashGlow.renderOrder = 58;
+    flashGlow.frustumCulled = false;
+
+    this.sceneRoot.scene.add(flashCone);
+    this.sceneRoot.scene.add(flashGlow);
+
+    this.muzzleFlashEffects.push({
+      flashCone,
+      flashConeGeometry,
+      flashConeMaterial,
+      flashGlow,
+      flashGlowGeometry,
+      flashGlowMaterial,
+      ageMs: 0,
+      lifeMs: MUZZLE_FLASH_LIFE_MS,
+    });
+  }
+
+  private spawnBulletTrail(
+    origin: THREE.Vector3,
+    directionXZ: THREE.Vector2,
+    distance: number,
+    trailColor: number,
+  ): void {
+    const dir = directionXZ.clone();
+    if (dir.lengthSq() < 1e-6) {
+      return;
+    }
+
+    dir.normalize();
+
+    const spread = (Math.random() - 0.5) * 0.015;
+    const cos = Math.cos(spread);
+    const sin = Math.sin(spread);
+    const dx = dir.x * cos - dir.y * sin;
+    const dz = dir.x * sin + dir.y * cos;
+
+    const direction = new THREE.Vector3(dx, 0, dz).normalize();
+    const maxDistance = Math.max(2.6, Math.min(distance, 11 + Math.random() * 2.2));
+    const speed = BULLET_PROJECTILE_SPEED * (0.95 + Math.random() * 0.12);
+    const trailLength = BULLET_TRAIL_LENGTH * (0.92 + Math.random() * 0.2);
+
+    const trailGeometry = new THREE.CylinderGeometry(
+      BULLET_TRAIL_RADIUS * 0.74,
+      BULLET_TRAIL_RADIUS,
+      trailLength,
+      12,
+      1,
+      true,
+    );
+    const trailMaterial = new THREE.MeshBasicMaterial({
+      color: trailColor,
+      transparent: true,
+      opacity: 0.97,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+    });
+
+    const trail = new THREE.Mesh(trailGeometry, trailMaterial);
+    trail.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+    trail.renderOrder = 50;
+    trail.frustumCulled = false;
+
+    const glowTrailGeometry = new THREE.CylinderGeometry(
+      BULLET_TRAIL_RADIUS * 1.95,
+      BULLET_TRAIL_RADIUS * 2.2,
+      trailLength,
+      12,
+      1,
+      true,
+    );
+    const glowTrailMaterial = new THREE.MeshBasicMaterial({
+      color: trailColor,
+      transparent: true,
+      opacity: 0.42,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+    });
+
+    const glowTrail = new THREE.Mesh(glowTrailGeometry, glowTrailMaterial);
+    glowTrail.quaternion.copy(trail.quaternion);
+    glowTrail.renderOrder = 49;
+    glowTrail.frustumCulled = false;
+
+    const impactGeometry = new THREE.SphereGeometry(BULLET_IMPACT_RADIUS, 10, 10);
+    const impactMaterial = new THREE.MeshBasicMaterial({
+      color: trailColor,
+      transparent: true,
+      opacity: 0.96,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+
+    const impact = new THREE.Mesh(impactGeometry, impactMaterial);
+    impact.renderOrder = 51;
+
+    this.sceneRoot.scene.add(glowTrail);
+    this.sceneRoot.scene.add(trail);
+    this.sceneRoot.scene.add(impact);
+
+    const startOffset = Math.min(0.24, maxDistance * 0.1);
+    const lifeMs = Math.max(BULLET_TRAIL_LIFE_MS, (maxDistance / speed) * 1000 + 120);
+
+    const effect: BulletTrailEffect = {
+      origin: origin.clone(),
+      direction,
+      speed,
+      maxDistance,
+      traveledDistance: startOffset,
+      trailLength,
+      trail,
+      trailGeometry,
+      trailMaterial,
+      glowTrail,
+      glowTrailGeometry,
+      glowTrailMaterial,
+      impact,
+      impactGeometry,
+      impactMaterial,
+      ageMs: 0,
+      lifeMs,
+    };
+
+    this.bulletTrailEffects.push(effect);
+  }
+
+  private updateBulletTrailEffects(frameMs: number): void {
+    const dtSec = Math.max(0, frameMs) / 1000;
+
+    for (let i = this.bulletTrailEffects.length - 1; i >= 0; i -= 1) {
+      const effect = this.bulletTrailEffects[i]!;
+      effect.ageMs += frameMs;
+      effect.traveledDistance = Math.min(
+        effect.maxDistance,
+        effect.traveledDistance + effect.speed * dtSec,
+      );
+
+      const headDistance = effect.traveledDistance;
+      const tailDistance = Math.max(0, headDistance - effect.trailLength);
+      const visibleLength = Math.max(0.06, headDistance - tailDistance);
+
+      const headPos = effect.origin
+        .clone()
+        .addScaledVector(effect.direction, headDistance);
+      const tailPos = effect.origin
+        .clone()
+        .addScaledVector(effect.direction, tailDistance);
+      const center = headPos.clone().add(tailPos).multiplyScalar(0.5);
+
+      const lengthScale = visibleLength / effect.trailLength;
+      const widthScale = 1 + Math.min(1, headDistance / effect.maxDistance) * 0.25;
+
+      effect.trail.position.copy(center);
+      effect.trail.scale.set(widthScale, lengthScale, widthScale);
+
+      effect.glowTrail.position.copy(center);
+      effect.glowTrail.scale.set(widthScale * 1.35, lengthScale, widthScale * 1.35);
+
+      effect.impact.position.copy(headPos);
+      const tipPulse = 1 + 0.18 * Math.sin(effect.ageMs * 0.045);
+      effect.impact.scale.setScalar(tipPulse);
+
+      const progress = Math.min(1, headDistance / effect.maxDistance);
+      const ageT = Math.min(1, effect.ageMs / effect.lifeMs);
+      const fadeByProgress = progress < 0.86 ? 1 : Math.max(0, 1 - (progress - 0.86) / 0.14);
+      const fadeByAge = ageT < 0.82 ? 1 : Math.max(0, 1 - (ageT - 0.82) / 0.18);
+      const fade = Math.min(fadeByProgress, fadeByAge);
+
+      effect.trailMaterial.opacity = 0.97 * fade;
+      effect.glowTrailMaterial.opacity = 0.42 * fade;
+      effect.impactMaterial.opacity = 0.95 * fade;
+
+      if (fade <= 0.01 || (headDistance >= effect.maxDistance && effect.ageMs > effect.lifeMs * 0.9)) {
+        this.sceneRoot.scene.remove(effect.trail);
+        this.sceneRoot.scene.remove(effect.glowTrail);
+        this.sceneRoot.scene.remove(effect.impact);
+        effect.trailGeometry.dispose();
+        effect.trailMaterial.dispose();
+        effect.glowTrailGeometry.dispose();
+        effect.glowTrailMaterial.dispose();
+        effect.impactGeometry.dispose();
+        effect.impactMaterial.dispose();
+        this.bulletTrailEffects.splice(i, 1);
+      }
+    }
+  }
+
+  private updateMuzzleFlashEffects(frameMs: number): void {
+    for (let i = this.muzzleFlashEffects.length - 1; i >= 0; i -= 1) {
+      const effect = this.muzzleFlashEffects[i]!;
+      effect.ageMs += frameMs;
+      const t = Math.min(1, effect.ageMs / effect.lifeMs);
+      const fade = 1 - t;
+
+      effect.flashConeMaterial.opacity = 0.95 * fade;
+      effect.flashGlowMaterial.opacity = 0.65 * fade;
+
+      const coneScale = 1 + t * 0.55;
+      effect.flashCone.scale.set(1 + t * 0.2, coneScale, 1 + t * 0.2);
+
+      const glowScale = 0.85 + t * 1.15;
+      effect.flashGlow.scale.setScalar(glowScale);
+
+      if (t >= 1 || fade <= 0.01) {
+        this.sceneRoot.scene.remove(effect.flashCone);
+        this.sceneRoot.scene.remove(effect.flashGlow);
+        effect.flashConeGeometry.dispose();
+        effect.flashConeMaterial.dispose();
+        effect.flashGlowGeometry.dispose();
+        effect.flashGlowMaterial.dispose();
+        this.muzzleFlashEffects.splice(i, 1);
+      }
+    }
+  }
+
+  private clearBulletEffects(): void {
+    for (const effect of this.bulletTrailEffects) {
+      this.sceneRoot.scene.remove(effect.trail);
+      this.sceneRoot.scene.remove(effect.glowTrail);
+      this.sceneRoot.scene.remove(effect.impact);
+      effect.trailGeometry.dispose();
+      effect.trailMaterial.dispose();
+      effect.glowTrailGeometry.dispose();
+      effect.glowTrailMaterial.dispose();
+      effect.impactGeometry.dispose();
+      effect.impactMaterial.dispose();
+    }
+
+    this.bulletTrailEffects.length = 0;
+  }
+
+  private clearMuzzleFlashEffects(): void {
+    for (const effect of this.muzzleFlashEffects) {
+      this.sceneRoot.scene.remove(effect.flashCone);
+      this.sceneRoot.scene.remove(effect.flashGlow);
+      effect.flashConeGeometry.dispose();
+      effect.flashConeMaterial.dispose();
+      effect.flashGlowGeometry.dispose();
+      effect.flashGlowMaterial.dispose();
+    }
+
+    this.muzzleFlashEffects.length = 0;
+  }
+
+  private spawnDamageNumber(
+    worldX: number,
+    worldZ: number,
+    damage: number,
+    critical: boolean,
+    mode: "outgoing" | "incoming",
+  ): void {
+    if (typeof document === "undefined") return;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 300;
+    canvas.height = 136;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const isIncoming = mode === "incoming";
+    const text = isIncoming ? `-${damage}` : critical ? `CRIT ${damage}` : String(damage);
+
+    const fill = isIncoming ? (critical ? "#ff9f9f" : "#ff6a6a") : critical ? "#ffe77d" : "#ffffff";
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = critical ? "900 64px Inter, Pretendard, sans-serif" : "800 58px Inter, Pretendard, sans-serif";
+    ctx.lineWidth = critical ? 12 : 10;
+    ctx.strokeStyle = isIncoming ? "rgba(43,0,0,0.82)" : "rgba(0,0,0,0.78)";
+    ctx.fillStyle = fill;
+    ctx.strokeText(text, canvas.width / 2, canvas.height / 2);
+    ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.needsUpdate = true;
+
+    const material = new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      opacity: 1,
+    });
+
+    const sprite = new THREE.Sprite(material);
+    const baseScale = isIncoming ? (critical ? 1.4 : 1.18) : critical ? 1.35 : 1.05;
+    sprite.scale.set(baseScale, baseScale * 0.5, 1);
+    sprite.position.set(
+      worldX + (Math.random() - 0.5) * (isIncoming ? 0.12 : 0.2),
+      BULLET_TRAIL_MUZZLE_HEIGHT + (isIncoming ? 1.0 : 0.78),
+      worldZ + (Math.random() - 0.5) * (isIncoming ? 0.12 : 0.2),
+    );
+    sprite.renderOrder = 60;
+
+    this.sceneRoot.scene.add(sprite);
+
+    this.damageNumberEffects.push({
+      sprite,
+      material,
+      texture,
+      ageMs: 0,
+      lifeMs: isIncoming ? DAMAGE_TEXT_LIFE_MS + 70 : DAMAGE_TEXT_LIFE_MS,
+      velocityY: DAMAGE_TEXT_FLOAT_SPEED * (isIncoming ? 1.08 : 1) * (0.9 + Math.random() * 0.3),
+      drift: new THREE.Vector3((Math.random() - 0.5) * 0.2, 0, (Math.random() - 0.5) * 0.2),
+      baseScale,
+    });
+  }
+
+  private updateDamageNumberEffects(frameMs: number): void {
+    const dtSec = Math.max(0, frameMs) / 1000;
+
+    for (let i = this.damageNumberEffects.length - 1; i >= 0; i -= 1) {
+      const effect = this.damageNumberEffects[i]!;
+      effect.ageMs += frameMs;
+
+      effect.sprite.position.y += effect.velocityY * dtSec;
+      effect.sprite.position.x += effect.drift.x * dtSec;
+      effect.sprite.position.z += effect.drift.z * dtSec;
+
+      const t = Math.min(1, effect.ageMs / effect.lifeMs);
+      const fade = 1 - t;
+      effect.material.opacity = fade;
+
+      const scale = effect.baseScale * (1 + t * 0.28);
+      effect.sprite.scale.set(scale, scale * 0.52, 1);
+
+      if (t >= 1 || fade <= 0.01) {
+        this.sceneRoot.scene.remove(effect.sprite);
+        effect.material.dispose();
+        effect.texture.dispose();
+        this.damageNumberEffects.splice(i, 1);
+      }
+    }
+  }
+
+  private clearDamageNumberEffects(): void {
+    for (const effect of this.damageNumberEffects) {
+      this.sceneRoot.scene.remove(effect.sprite);
+      effect.material.dispose();
+      effect.texture.dispose();
+    }
+
+    this.damageNumberEffects.length = 0;
+  }
+
+  private ensureHitMarkerElement(): void {
+    if (this.hitMarkerElement || typeof document === "undefined") return;
+
+    const parent = this.renderer.renderer.domElement.parentElement;
+    if (!parent) return;
+
+    const marker = document.createElement("div");
+    marker.textContent = "✕";
+    marker.setAttribute("aria-hidden", "true");
+    marker.style.position = "absolute";
+    marker.style.left = "50%";
+    marker.style.top = "50%";
+    marker.style.transform = "translate(-50%, -50%) scale(0.72)";
+    marker.style.opacity = "0";
+    marker.style.pointerEvents = "none";
+    marker.style.userSelect = "none";
+    marker.style.fontSize = "42px";
+    marker.style.fontWeight = "900";
+    marker.style.lineHeight = "1";
+    marker.style.color = "rgba(255,255,255,0.95)";
+    marker.style.textShadow = "0 0 9px rgba(255,255,255,0.72), 0 0 18px rgba(255,255,255,0.35)";
+    marker.style.zIndex = "16";
+
+    parent.appendChild(marker);
+    this.hitMarkerElement = marker;
+  }
+
+  private removeHitMarkerElement(): void {
+    if (this.hitMarkerElement?.parentElement) {
+      this.hitMarkerElement.parentElement.removeChild(this.hitMarkerElement);
+    }
+    this.hitMarkerElement = null;
+    this.hitMarkerAgeMs = Number.POSITIVE_INFINITY;
+  }
+
+  private triggerHitMarker(critical: boolean): void {
+    this.ensureHitMarkerElement();
+    if (!this.hitMarkerElement) return;
+
+    this.hitMarkerLifeMs = critical ? HIT_MARKER_LIFE_MS + 40 : HIT_MARKER_LIFE_MS;
+    this.hitMarkerAgeMs = 0;
+    this.hitMarkerElement.style.opacity = "1";
+    this.hitMarkerElement.style.transform = "translate(-50%, -50%) scale(0.72)";
+
+    if (critical) {
+      this.hitMarkerElement.style.color = "rgba(255, 233, 140, 0.98)";
+      this.hitMarkerElement.style.textShadow = "0 0 10px rgba(255,231,125,0.95), 0 0 22px rgba(255,201,90,0.56)";
+    } else {
+      this.hitMarkerElement.style.color = "rgba(255,255,255,0.95)";
+      this.hitMarkerElement.style.textShadow = "0 0 9px rgba(255,255,255,0.72), 0 0 18px rgba(255,255,255,0.35)";
+    }
+  }
+
+  private updateHitMarker(frameMs: number): void {
+    if (!this.hitMarkerElement) return;
+    if (!Number.isFinite(this.hitMarkerAgeMs)) return;
+
+    this.hitMarkerAgeMs += frameMs;
+    const t = Math.min(1, this.hitMarkerAgeMs / this.hitMarkerLifeMs);
+    const fade = 1 - t;
+    const scale = 0.72 + t * 0.32;
+
+    this.hitMarkerElement.style.opacity = `${fade}`;
+    this.hitMarkerElement.style.transform = `translate(-50%, -50%) scale(${scale})`;
+
+    if (t >= 1 || fade <= 0.01) {
+      this.hitMarkerElement.style.opacity = "0";
+      this.hitMarkerAgeMs = Number.POSITIVE_INFINITY;
+    }
+  }
+
+  private spawnImpactBurst(worldX: number, worldZ: number, critical: boolean): void {
+    const innerRadius = critical ? 0.26 : 0.22;
+    const outerRadius = critical ? 0.49 : 0.42;
+    const ringGeometry = new THREE.RingGeometry(innerRadius, outerRadius, 28);
+    const ringMaterial = new THREE.MeshBasicMaterial({
+      color: critical ? 0xffb0b0 : 0xff6f6f,
+      transparent: true,
+      opacity: 0.92,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+    });
+
+    const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(worldX, 0.06, worldZ);
+    ring.renderOrder = 59;
+    ring.frustumCulled = false;
+
+    this.sceneRoot.scene.add(ring);
+
+    this.impactBurstEffects.push({
+      ring,
+      ringGeometry,
+      ringMaterial,
+      ageMs: 0,
+      lifeMs: critical ? 260 : 210,
+    });
+  }
+
+  private updateImpactBurstEffects(frameMs: number): void {
+    for (let i = this.impactBurstEffects.length - 1; i >= 0; i -= 1) {
+      const effect = this.impactBurstEffects[i]!;
+      effect.ageMs += frameMs;
+      const t = Math.min(1, effect.ageMs / effect.lifeMs);
+      const fade = 1 - t;
+
+      effect.ringMaterial.opacity = 0.92 * fade;
+      const scale = 1 + t * 1.8;
+      effect.ring.scale.setScalar(scale);
+
+      if (t >= 1 || fade <= 0.01) {
+        this.sceneRoot.scene.remove(effect.ring);
+        effect.ringGeometry.dispose();
+        effect.ringMaterial.dispose();
+        this.impactBurstEffects.splice(i, 1);
+      }
+    }
+  }
+
+  private clearImpactBurstEffects(): void {
+    for (const effect of this.impactBurstEffects) {
+      this.sceneRoot.scene.remove(effect.ring);
+      effect.ringGeometry.dispose();
+      effect.ringMaterial.dispose();
+    }
+
+    this.impactBurstEffects.length = 0;
+  }
+
+  private ensureDamageOverlayElement(): void {
+    if (this.damageOverlayElement || typeof document === "undefined") return;
+
+    const parent = this.renderer.renderer.domElement.parentElement;
+    if (!parent) return;
+
+    const overlay = document.createElement("div");
+    overlay.setAttribute("aria-hidden", "true");
+    overlay.style.position = "absolute";
+    overlay.style.inset = "0";
+    overlay.style.pointerEvents = "none";
+    overlay.style.opacity = "0";
+    overlay.style.background =
+      "radial-gradient(circle at center, rgba(255,40,40,0.0) 38%, rgba(255,54,54,0.25) 68%, rgba(180,0,0,0.48) 100%)";
+    overlay.style.mixBlendMode = "screen";
+    overlay.style.zIndex = "14";
+
+    parent.appendChild(overlay);
+    this.damageOverlayElement = overlay;
+  }
+
+  private removeDamageOverlayElement(): void {
+    if (this.damageOverlayElement?.parentElement) {
+      this.damageOverlayElement.parentElement.removeChild(this.damageOverlayElement);
+    }
+    this.damageOverlayElement = null;
+    this.damageOverlayAgeMs = Number.POSITIVE_INFINITY;
+  }
+
+  private triggerDamageTakenOverlay(critical: boolean): void {
+    this.ensureDamageOverlayElement();
+    if (!this.damageOverlayElement) return;
+
+    this.damageOverlayLifeMs = critical ? DAMAGE_OVERLAY_LIFE_MS + 80 : DAMAGE_OVERLAY_LIFE_MS;
+    this.damageOverlayAgeMs = 0;
+    this.damageOverlayElement.style.opacity = critical ? "0.9" : "0.72";
+  }
+
+  private updateDamageTakenOverlay(frameMs: number): void {
+    if (!this.damageOverlayElement) return;
+    if (!Number.isFinite(this.damageOverlayAgeMs)) return;
+
+    this.damageOverlayAgeMs += frameMs;
+    const t = Math.min(1, this.damageOverlayAgeMs / this.damageOverlayLifeMs);
+    const fade = 1 - t;
+    this.damageOverlayElement.style.opacity = `${fade * fade * 0.9}`;
+
+    if (t >= 1 || fade <= 0.01) {
+      this.damageOverlayElement.style.opacity = "0";
+      this.damageOverlayAgeMs = Number.POSITIVE_INFINITY;
+    }
+  }
+
   private syncCameraAspectToCanvas(): void {
+
     const canvas = this.renderer.renderer.domElement;
     const width = Math.max(1, canvas.clientWidth);
     const height = Math.max(1, canvas.clientHeight);

@@ -10,11 +10,17 @@ function lerpPlayer(a: NetworkPlayerState, b: NetworkPlayerState, t: number): Ne
     vx: lerp(a.vx, b.vx, t),
     vy: lerp(a.vy, b.vy, t),
     hp: t < 0.5 ? a.hp : b.hp,
+    maxHp: t < 0.5 ? a.maxHp : b.maxHp,
     shield: t < 0.5 ? a.shield : b.shield,
     alive: t < 0.5 ? a.alive : b.alive,
     lastProcessedInputSeq: Math.round(
       lerp(a.lastProcessedInputSeq, b.lastProcessedInputSeq, t),
     ),
+    heroId: t < 0.5 ? a.heroId : b.heroId,
+    heroName: t < 0.5 ? a.heroName : b.heroName,
+    ammo: t < 0.5 ? a.ammo : b.ammo,
+    maxAmmo: t < 0.5 ? a.maxAmmo : b.maxAmmo,
+    reloading: t < 0.5 ? a.reloading : b.reloading,
   };
 }
 

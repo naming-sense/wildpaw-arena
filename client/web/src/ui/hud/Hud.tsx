@@ -4,6 +4,10 @@ export function Hud(): JSX.Element {
   const {
     hp,
     maxHp,
+    heroName,
+    ammo,
+    maxAmmo,
+    reloading,
     kills,
     wave,
     fps,
@@ -17,7 +21,9 @@ export function Hud(): JSX.Element {
     <div className="hud">
       <div className="hud-row">
         <div className="hud-card">
+          <p>HERO: {heroName}</p>
           <p>HP: {Math.round(hp)} / {Math.round(maxHp)}</p>
+          <p>AMMO: {reloading ? "RELOAD" : `${Math.round(ammo)} / ${Math.round(maxAmmo)}`}</p>
           <p>KILLS: {kills}</p>
           <p>WAVE: {wave}</p>
         </div>

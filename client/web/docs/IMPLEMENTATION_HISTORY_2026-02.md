@@ -83,3 +83,48 @@ npm run test
 - Game: `http://<host>:4173/`
 - Model Lab: `http://<host>:4173/model-lab.html`
 - WS mock room: `ws://<host>:8080`
+
+## 9) 기획서 기반 전투 루프 + HUD/입력 확장
+
+- Hero/Weapon 밸런스 연동
+  - 서버가 `shared/data/hero_balance_mvp_v0.2.json`를 읽어 8히어로 프로필 적용
+  - 히어로별 HP/이속/사거리/데미지/탄창/재장전/치명/감쇠 반영
+- 서버 authoritative 발사/피격
+  - 조준/전방/측면 폭 기반 타겟 선택
+  - 거리 감쇠 + 패시브 + 크리티컬 포함 데미지 계산
+  - 사망/리스폰/재장전 루프 동작
+- 네트워크 스냅샷 확장
+  - `heroId/heroName/maxHp/ammo/maxAmmo/reloading` 동기화
+- 클라이언트 HUD 확장
+  - HERO/HP/MAXHP/AMMO/RELOAD 상태 표시
+  - 로컬 선택 hero를 `?hero=` + localStorage + HELLO payload로 전송
+
+## 10) 모바일 공격 UI 및 탭 입력 안정화
+
+- 모바일 전용 `공격` 버튼 UI(`AppShell`, `styles.css`) 추가
+- `keyboardMouse` 입력 파이프라인에서 fire 버튼 포인터 캡처 지원
+- 짧은 탭 누락 방지
+  - `touchFireTapQueued`로 최소 1 simulation tick 발사 보장
+
+## 11) 탄환/피격 VFX 고도화
+
+- 초기 흰색 트레일/임팩트에서 시작해, 이동형 projectile 트레일로 진화
+  - 각 샷이 독립 수명 주기로 이동/소멸(버튼 hold와 생명주기 분리)
+- 트레일 비주얼
+  - core + glow 이중 실린더(additive), 짧고 굵은 트레일
+  - 팀 컬러 분리(cyan/amber)
+- 머즐 플래시 추가
+  - 발사 순간 cone + glow 짧은 burst
+- 명중 피드백
+  - 공격자: 히트마커 + 데미지 숫자(critical 강조)
+  - 피격자: incoming 데미지 숫자 + red overlay + impact ring burst
+- 서버 이벤트 채널 확장
+  - `S2C_EVENT`(`hit-confirm`, `damage-taken`)로 피드백 동기화
+
+## 12) 바라보는 방향/조작감 동기화 수정
+
+- 2클라 테스트에서 로컬/원격 facing 불일치 수정
+  - command aim + authoritative rot 보정 연결
+- 조작감 요구사항 반영
+  - 이동 입력 중에는 "누른 방향"을 바라보도록 복원(터치/WASD)
+  - 입력 해제 시 마지막 바라보는 방향 유지(sticky facing)

@@ -7,6 +7,8 @@ export interface RawInputState {
   skillR: boolean;
   aimNdcX: number;
   aimNdcY: number;
+  preferMoveFacing: boolean;
+  hasAimControl: boolean;
 }
 
 const TOUCH_STICK_MAX_DISTANCE = 72;
@@ -27,6 +29,11 @@ export class KeyboardMouseInput {
   private touchMoveX = 0;
   private touchMoveY = 0;
 
+  private touchFire = false;
+  private touchFireTapQueued = false;
+  private touchFirePointerId: number | null = null;
+  private fireButtonEl: HTMLElement | null = null;
+
   constructor(private readonly canvas: HTMLCanvasElement) {}
 
   attach(): void {
@@ -36,6 +43,7 @@ export class KeyboardMouseInput {
     this.canvas.addEventListener("pointerdown", this.onPointerDown);
     window.addEventListener("pointerup", this.onPointerUp);
     window.addEventListener("pointercancel", this.onPointerUp);
+    this.bindFireButton();
   }
 
   detach(): void {
@@ -45,11 +53,15 @@ export class KeyboardMouseInput {
     this.canvas.removeEventListener("pointerdown", this.onPointerDown);
     window.removeEventListener("pointerup", this.onPointerUp);
     window.removeEventListener("pointercancel", this.onPointerUp);
+    this.unbindFireButton();
 
     this.touchMovePointerId = null;
     this.touchAimPointerId = null;
     this.touchMoveX = 0;
     this.touchMoveY = 0;
+    this.touchFire = false;
+    this.touchFireTapQueued = false;
+    this.touchFirePointerId = null;
   }
 
   sample(): RawInputState {
@@ -61,16 +73,55 @@ export class KeyboardMouseInput {
     const moveX = useKeyboard ? keyboardMoveX : this.touchMoveX;
     const moveY = useKeyboard ? keyboardMoveY : this.touchMoveY;
 
+    const fire = this.mouseDown || this.touchFire || this.touchFireTapQueued;
+    if (this.touchFireTapQueued) {
+      // Ensure short taps are visible for at least one simulation tick.
+      this.touchFireTapQueued = false;
+    }
+
+    const preferMoveFacing =
+      !useKeyboard &&
+      this.touchMovePointerId !== null &&
+      this.touchAimPointerId === null &&
+      Math.hypot(this.touchMoveX, this.touchMoveY) > 0.04;
+
+    const hasAimControl = this.touchAimPointerId !== null || this.mouseDown;
+
     return {
       moveX,
       moveY,
-      fire: this.mouseDown,
+      fire,
       skillQ: this.keys.has("KeyQ"),
       skillE: this.keys.has("KeyE"),
       skillR: this.keys.has("KeyR"),
       aimNdcX: this.aimNdcX,
       aimNdcY: this.aimNdcY,
+      preferMoveFacing,
+      hasAimControl,
     };
+  }
+
+  private bindFireButton(): void {
+    if (typeof document === "undefined") return;
+
+    const fireButton = document.querySelector<HTMLElement>("[data-fire-button]");
+    if (!fireButton) return;
+
+    this.fireButtonEl = fireButton;
+    fireButton.addEventListener("pointerdown", this.onFireButtonDown);
+    fireButton.addEventListener("pointerup", this.onFireButtonUp);
+    fireButton.addEventListener("pointercancel", this.onFireButtonUp);
+    fireButton.addEventListener("pointerleave", this.onFireButtonUp);
+  }
+
+  private unbindFireButton(): void {
+    if (!this.fireButtonEl) return;
+
+    this.fireButtonEl.removeEventListener("pointerdown", this.onFireButtonDown);
+    this.fireButtonEl.removeEventListener("pointerup", this.onFireButtonUp);
+    this.fireButtonEl.removeEventListener("pointercancel", this.onFireButtonUp);
+    this.fireButtonEl.removeEventListener("pointerleave", this.onFireButtonUp);
+    this.fireButtonEl = null;
   }
 
   private onKeyDown = (event: KeyboardEvent): void => {
@@ -107,7 +158,7 @@ export class KeyboardMouseInput {
   };
 
   private onPointerUp = (event: PointerEvent): void => {
-    if (event.pointerType === "touch") {
+    if (event.pointerType === "touch" || event.pointerType === "pen") {
       if (event.pointerId === this.touchMovePointerId) {
         this.touchMovePointerId = null;
         this.touchMoveX = 0;
@@ -115,6 +166,10 @@ export class KeyboardMouseInput {
       }
       if (event.pointerId === this.touchAimPointerId) {
         this.touchAimPointerId = null;
+      }
+      if (event.pointerId === this.touchFirePointerId) {
+        this.touchFire = false;
+        this.touchFirePointerId = null;
       }
       return;
     }
@@ -139,6 +194,47 @@ export class KeyboardMouseInput {
     }
 
     this.updateAimFromClient(event.clientX, event.clientY);
+  };
+
+  private onFireButtonDown = (event: PointerEvent): void => {
+    if (event.pointerType !== "touch" && event.pointerType !== "pen" && event.button !== 0) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    this.touchFire = true;
+    this.touchFireTapQueued = true;
+    this.touchFirePointerId = event.pointerId;
+
+    const target = event.currentTarget as HTMLElement | null;
+    if (target && typeof target.setPointerCapture === "function") {
+      try {
+        target.setPointerCapture(event.pointerId);
+      } catch {
+        // ignore capture failures
+      }
+    }
+  };
+
+  private onFireButtonUp = (event: PointerEvent): void => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (this.touchFirePointerId === null || event.pointerId === this.touchFirePointerId) {
+      this.touchFire = false;
+      this.touchFirePointerId = null;
+    }
+
+    const target = event.currentTarget as HTMLElement | null;
+    if (target && typeof target.hasPointerCapture === "function" && target.hasPointerCapture(event.pointerId)) {
+      try {
+        target.releasePointerCapture(event.pointerId);
+      } catch {
+        // ignore release failures
+      }
+    }
   };
 
   private updateTouchStickVector(): void {

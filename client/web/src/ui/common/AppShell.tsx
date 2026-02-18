@@ -50,10 +50,18 @@ export function AppShell(): JSX.Element {
       {initError ? <div className="overlay-panel">{initError}</div> : null}
       <button
         type="button"
-        style={{ position: "absolute", right: 12, bottom: 12, zIndex: 8 }}
+        className="debug-toggle-button"
         onClick={toggleDebug}
       >
         Debug
+      </button>
+      <button
+        type="button"
+        className="mobile-fire-button"
+        data-fire-button
+        aria-label="공격"
+      >
+        공격
       </button>
     </div>
   );
