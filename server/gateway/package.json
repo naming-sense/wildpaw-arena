@@ -1,0 +1,13 @@
+{
+  "name": "wildpaw-gateway-control",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "node ./src/control_gateway_server.mjs",
+    "smoke": "node ./scripts/smoke_control_flow.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}

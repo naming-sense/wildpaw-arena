@@ -468,3 +468,28 @@ P2:
 1. Gateway control API 구현과 본 문서 1:1 매핑
 2. 클라이언트 상태머신(AppFlowState)와 requestId/eventId 적용
 3. QA가 이벤트 리플레이로 흐름을 검증할 수 있도록 로그 표준화
+
+---
+
+## 18) 구현 매핑 (2026-02-18)
+
+본 계약서 기반의 실행 스캐폴드가 아래 경로에 추가되었다.
+
+- 서버: `server/gateway/src/control_gateway_server.mjs`
+- 실행/설명: `server/gateway/README.md`
+- 스모크: `server/gateway/scripts/smoke_control_flow.mjs`
+
+구현된 핵심 항목:
+- JSON Envelope(`event/eventId/requestId/sessionId/ts/payload`) 수신/검증
+- `eventId` 기반 응답 캐시(중복 요청 시 동일 응답 재전송)
+- Boot/Auth/Onboarding
+- Party/Custom Room(in-memory)
+- Queue/Match Found/Ready Check + timeout/penalty
+- Draft(turn 검증, `(matchId,turnSeq,accountId)` dedup, timeout autopick)
+- Match Assign + room connect retry/recovery
+- Match Ended + Rematch vote/state/start/cancel
+- 표준 에러 코드 매핑(`AUTH_INVALID_TOKEN`, `QUEUE_INVALID_MODE`, `DRAFT_INVALID_TURN` 등)
+
+주의:
+- 현재 구현은 **in-memory 스캐폴드**이며 영속 DB/분산 락/멀티 프로세스 동기화는 포함하지 않는다.
+- Room token은 스캐폴드용 단기 토큰이며, 실서비스에서는 서명/JWT + 검증 경로가 필요하다.

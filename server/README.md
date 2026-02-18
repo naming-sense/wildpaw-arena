@@ -23,8 +23,9 @@
   - 정원 초과 접속 시 `room.full` 이벤트 응답 후 연결 종료
   - Prometheus `/metrics` 노출
   - grid 기반 spatial interest filtering (snapshot + combat/projectile event)
-- `gateway/`: 인증/라우팅 계층 (TODO)
-- `matchmaker/`: 매칭 계층 (TODO)
+- `gateway/`: Control Channel 구현(인증/온보딩/파티/큐/레디체크/드래프트/매치할당)
+  - 상세: `gateway/README.md`
+- `matchmaker/`: 매칭 계층 (향후 분리 예정, 현재 gateway 내 인메모리 매처로 스캐폴드 구현)
 
 ## 빌드 (room)
 ```bash
@@ -51,6 +52,25 @@ cmake --build build -j
 - `metrics_port` (기본: `9100`)
 - `rules_json_path` (기본: `room/config/combat_rules.json`)
 - `team_size` (기본: `3`) → `maxPlayersPerRoom = team_size * 2`
+
+## 실행 (gateway control channel)
+```bash
+cd server/gateway
+npm install
+npm run start
+
+# 기본 ws endpoint
+# ws://127.0.0.1:7200
+```
+
+Gateway는 `20_게임플로우_API_이벤트_서버계약서.md` 기준으로
+다음 흐름을 in-memory 스캐폴드로 구현한다.
+- boot/auth/onboarding
+- party/custom room
+- queue/match found/ready check
+- draft(turn timeout/autopick)
+- match assign/room connect retry/recovery
+- match ended/rematch
 
 ## 전송 프로토콜
 - 스키마: `shared/protocol/fbs/wildpaw_protocol.fbs`
