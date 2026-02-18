@@ -84,11 +84,13 @@ function FlowRuntimeController(): null {
   const flowState = useAppFlowStore((state) => state.flowState);
   const bootRequestPending = useAppFlowStore((state) => state.bootRequestPending);
   const gatewayConnectionState = useAppFlowStore((state) => state.gatewayConnectionState);
+  const resumeOnboardingFromDraft = useAppFlowStore((state) => state.resumeOnboardingFromDraft);
   const systemNotice = useAppFlowStore((state) => state.systemNotice);
 
   const setGatewayConnectionState = useAppFlowStore((state) => state.setGatewayConnectionState);
   const applyGatewayEnvelope = useAppFlowStore((state) => state.applyGatewayEnvelope);
   const requestBootReady = useAppFlowStore((state) => state.requestBootReady);
+  const requestAuthGuest = useAppFlowStore((state) => state.requestAuthGuest);
   const requestPing = useAppFlowStore((state) => state.requestPing);
   const tickReadyCheckCountdown = useAppFlowStore((state) => state.tickReadyCheckCountdown);
   const tickDraftCountdown = useAppFlowStore((state) => state.tickDraftCountdown);
@@ -98,6 +100,7 @@ function FlowRuntimeController(): null {
   const realtimeReconnectState = useUiStore((state) => state.reconnectState);
 
   const gatewayClientRef = useRef<ControlGatewayClient | null>(null);
+  const autoGuestAuthTriedRef = useRef(false);
 
   useEffect(() => {
     const client = new ControlGatewayClient({
@@ -129,6 +132,19 @@ function FlowRuntimeController(): null {
 
     requestBootReady();
   }, [bootRequestPending, flowState, gatewayConnectionState, requestBootReady]);
+
+  useEffect(() => {
+    if (flowState !== "AUTH") {
+      autoGuestAuthTriedRef.current = false;
+      return;
+    }
+    if (!resumeOnboardingFromDraft) return;
+    if (gatewayConnectionState !== "Connected") return;
+    if (autoGuestAuthTriedRef.current) return;
+
+    autoGuestAuthTriedRef.current = true;
+    requestAuthGuest();
+  }, [flowState, gatewayConnectionState, requestAuthGuest, resumeOnboardingFromDraft]);
 
   useEffect(() => {
     if (flowState !== "READY_CHECK") return;
@@ -349,9 +365,9 @@ function OnboardingScreen(): JSX.Element {
           <span>약관/개인정보 처리방침에 동의합니다.</span>
         </label>
         <p className="flow-legal-links">
-          <a href="/legal/terms.html" target="_blank" rel="noreferrer">약관 보기</a>
+          <a href="/legal/terms.html">약관 보기</a>
           <span>·</span>
-          <a href="/legal/privacy.html" target="_blank" rel="noreferrer">개인정보 처리방침 보기</a>
+          <a href="/legal/privacy.html">개인정보 처리방침 보기</a>
         </p>
 
         <button type="submit" className="flow-button flow-button--primary" disabled={!canSubmit}>

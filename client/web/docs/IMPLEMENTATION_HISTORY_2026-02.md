@@ -197,3 +197,16 @@ npm run test
   - `onboardingStarterHeroIds[]` -> `onboardingStarterHeroId`로 상태 모델 개편
   - 온보딩 제출 시 서버 payload는 단일 선택을 배열 1개(`starterHeroIds: [id]`)로 전송
   - UI 문구를 "초반 기본 히어로 1명 설정"으로 명확화
+
+## 16) 법률 페이지 복귀 시 온보딩 유지 개선
+
+- 문제: 약관/개인정보 페이지에서 "게임으로 돌아가기" 클릭 시 앱이 초기 AUTH 화면으로 보였음.
+- 원인: 법률 페이지 이동이 SPA 상태를 끊어 메모리 상태가 초기화됨.
+- 개선:
+  - 온보딩 draft를 `sessionStorage`에 저장/복원(`nickname/terms/starterHero/resume`)
+  - AUTH 상태에서 draft resume 플래그가 있으면 자동 `C2S_AUTH_GUEST` 재요청 후 ONBOARDING 복귀
+  - 법률 링크를 새 탭이 아닌 동일 탭 이동으로 변경
+  - 법률 페이지 "게임으로 돌아가기"는 `history.back()` 우선 사용(히스토리 없을 때만 `/`)
+- 효과:
+  - 법률 페이지 왕복 후 다시 온보딩으로 자연스럽게 복귀
+  - 이미 입력한 온보딩 값도 유지 가능

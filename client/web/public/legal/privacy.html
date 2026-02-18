@@ -67,7 +67,9 @@
         </p>
       </section>
 
-      <p><a href="/">게임으로 돌아가기</a></p>
+      <p>
+        <a href="/" onclick="if (window.history.length > 1) { window.history.back(); return false; }">게임으로 돌아가기</a>
+      </p>
     </main>
   </body>
 </html>

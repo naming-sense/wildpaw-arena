@@ -119,7 +119,66 @@ function sendControlEvent(event: string, payload: unknown): boolean {
 }
 
 const DEVICE_ID_STORAGE_KEY = "wildpaw-control-device-id";
+const ONBOARDING_DRAFT_STORAGE_KEY = "wildpaw-onboarding-draft-v1";
 const DEFAULT_HERO_ID = "coral_cat";
+
+interface OnboardingDraftSnapshot {
+  nickname: string;
+  termsAccepted: boolean;
+  starterHeroId: string;
+  resume: boolean;
+}
+
+function readOnboardingDraft(): OnboardingDraftSnapshot | null {
+  if (typeof window === "undefined") return null;
+
+  try {
+    const raw = window.sessionStorage.getItem(ONBOARDING_DRAFT_STORAGE_KEY);
+    if (!raw) return null;
+
+    const parsed = JSON.parse(raw) as Partial<OnboardingDraftSnapshot> | null;
+    if (!parsed || typeof parsed !== "object") return null;
+
+    const nickname = typeof parsed.nickname === "string" ? parsed.nickname.slice(0, 24) : "";
+    const termsAccepted = Boolean(parsed.termsAccepted);
+    const starterHeroId =
+      typeof parsed.starterHeroId === "string" && parsed.starterHeroId.trim().length > 0
+        ? parsed.starterHeroId
+        : DEFAULT_HERO_ID;
+    const resume = Boolean(parsed.resume);
+
+    return {
+      nickname,
+      termsAccepted,
+      starterHeroId,
+      resume,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeOnboardingDraft(snapshot: OnboardingDraftSnapshot): void {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.sessionStorage.setItem(ONBOARDING_DRAFT_STORAGE_KEY, JSON.stringify(snapshot));
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function clearOnboardingDraft(): void {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.sessionStorage.removeItem(ONBOARDING_DRAFT_STORAGE_KEY);
+  } catch {
+    // ignore storage failures
+  }
+}
+
+const initialOnboardingDraft = readOnboardingDraft();
 
 export const MATCH_MODE_OPTIONS: MatchModeOption[] = [
   {
@@ -298,6 +357,7 @@ interface AppFlowStore {
   onboardingNickname: string;
   termsAccepted: boolean;
   onboardingStarterHeroId: string;
+  resumeOnboardingFromDraft: boolean;
 
   selectedModeId: MatchModeId;
   selectedHeroId: string;
@@ -363,9 +423,10 @@ export const useAppFlowStore = create<AppFlowStore>((set, get) => ({
   displayName: "Guest",
   isGuest: true,
 
-  onboardingNickname: "",
-  termsAccepted: false,
-  onboardingStarterHeroId: DEFAULT_HERO_ID,
+  onboardingNickname: initialOnboardingDraft?.nickname ?? "",
+  termsAccepted: initialOnboardingDraft?.termsAccepted ?? false,
+  onboardingStarterHeroId: initialOnboardingDraft?.starterHeroId ?? DEFAULT_HERO_ID,
+  resumeOnboardingFromDraft: initialOnboardingDraft?.resume ?? false,
 
   selectedModeId: "3v3_normal",
   selectedHeroId: DEFAULT_HERO_ID,
@@ -453,6 +514,17 @@ export const useAppFlowStore = create<AppFlowStore>((set, get) => ({
           const isFirstUser = Boolean(payload.isFirstUser);
           const flowState = isFirstUser ? "ONBOARDING" : "LOBBY";
 
+          if (isFirstUser) {
+            writeOnboardingDraft({
+              nickname: baseState.onboardingNickname,
+              termsAccepted: baseState.termsAccepted,
+              starterHeroId: baseState.onboardingStarterHeroId,
+              resume: true,
+            });
+          } else {
+            clearOnboardingDraft();
+          }
+
           return {
             ...baseState,
             accountId,
@@ -460,6 +532,7 @@ export const useAppFlowStore = create<AppFlowStore>((set, get) => ({
             isGuest: accountId?.startsWith("guest_") ?? true,
             previousFlowState: baseState.flowState,
             flowState,
+            resumeOnboardingFromDraft: isFirstUser,
             systemNotice: isFirstUser
               ? "온보딩을 진행해 주세요."
               : "로그인 완료. 로비로 이동합니다.",
@@ -475,11 +548,14 @@ export const useAppFlowStore = create<AppFlowStore>((set, get) => ({
 
         case "S2C_ONBOARDING_SAVED": {
           const nickname = typeof payload.nickname === "string" ? payload.nickname : baseState.displayName;
+          clearOnboardingDraft();
+
           return {
             ...baseState,
             displayName: nickname,
             previousFlowState: baseState.flowState,
             flowState: "LOBBY",
+            resumeOnboardingFromDraft: false,
             systemNotice: "온보딩 저장 완료",
           };
         }
@@ -962,25 +1038,56 @@ export const useAppFlowStore = create<AppFlowStore>((set, get) => ({
   },
 
   setOnboardingNickname: (nickname) => {
-    set((state) => ({
-      ...state,
-      onboardingNickname: nickname.slice(0, 24),
-    }));
+    set((state) => {
+      const nextNickname = nickname.slice(0, 24);
+      writeOnboardingDraft({
+        nickname: nextNickname,
+        termsAccepted: state.termsAccepted,
+        starterHeroId: state.onboardingStarterHeroId,
+        resume: true,
+      });
+
+      return {
+        ...state,
+        onboardingNickname: nextNickname,
+        resumeOnboardingFromDraft: true,
+      };
+    });
   },
 
   setTermsAccepted: (accepted) => {
-    set((state) => ({
-      ...state,
-      termsAccepted: accepted,
-    }));
+    set((state) => {
+      writeOnboardingDraft({
+        nickname: state.onboardingNickname,
+        termsAccepted: accepted,
+        starterHeroId: state.onboardingStarterHeroId,
+        resume: true,
+      });
+
+      return {
+        ...state,
+        termsAccepted: accepted,
+        resumeOnboardingFromDraft: true,
+      };
+    });
   },
 
   setStarterHero: (heroId) => {
-    set((state) => ({
-      ...state,
-      onboardingStarterHeroId: heroId,
-      selectedHeroId: heroId,
-    }));
+    set((state) => {
+      writeOnboardingDraft({
+        nickname: state.onboardingNickname,
+        termsAccepted: state.termsAccepted,
+        starterHeroId: heroId,
+        resume: true,
+      });
+
+      return {
+        ...state,
+        onboardingStarterHeroId: heroId,
+        selectedHeroId: heroId,
+        resumeOnboardingFromDraft: true,
+      };
+    });
   },
 
   requestSubmitOnboarding: () => {
