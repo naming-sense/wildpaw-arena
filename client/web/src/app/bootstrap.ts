@@ -3,6 +3,7 @@ import { GameApp } from "./gameApp";
 interface BootstrapOptions {
   wsUrl?: string;
   heroId?: string;
+  roomToken?: string;
 }
 
 function resolveDefaultWsUrl(): string | undefined {
@@ -15,6 +16,7 @@ export async function bootstrap(canvas: HTMLCanvasElement, options: BootstrapOpt
   const app = new GameApp(canvas, {
     wsUrl: options.wsUrl ?? import.meta.env.VITE_WS_URL ?? resolveDefaultWsUrl(),
     heroId: options.heroId,
+    roomToken: options.roomToken,
   });
 
   await app.start();

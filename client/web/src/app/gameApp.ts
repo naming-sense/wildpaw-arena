@@ -37,6 +37,7 @@ import type { GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 interface GameAppOptions {
   wsUrl?: string;
   heroId?: string;
+  roomToken?: string;
 }
 
 const HERO_MOVE_ANIM_THRESHOLD = 0.15;
@@ -180,6 +181,7 @@ export class GameApp {
 
   private readonly socket: RealtimeSocketClient;
   private readonly hasRealtimeServer: boolean;
+  private readonly roomToken: string;
   private readonly interpolationBuffer = new SnapshotInterpolationBuffer(
     this.config.net.interpolationDelayMs,
     this.config.net.maxExtrapolationMs,
@@ -239,6 +241,7 @@ export class GameApp {
     this.localHeroAssetPath = this.localHeroAsset.gltfPath;
 
     this.hasRealtimeServer = Boolean(options.wsUrl);
+    this.roomToken = options.roomToken?.trim() ? options.roomToken : "dev-room";
 
     this.socket = new RealtimeSocketClient({
       url: options.wsUrl,
@@ -283,7 +286,7 @@ export class GameApp {
     this.input.attach();
 
     if (this.hasRealtimeServer) {
-      this.socket.connect();
+      this.socket.connect(this.roomToken);
     } else {
       useUiStore.getState().setHud({ reconnectState: LOCAL_MODE_STATE, pingMs: 0, jitterMs: 0 });
     }

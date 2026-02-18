@@ -1,18 +1,33 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { HERO_DEFS, HERO_DEF_BY_ID } from "../../gameplay/hero/heroDefs";
-import { LobbyView } from "../lobby/LobbyView";
+import { ControlGatewayClient } from "../../net/controlGatewayClient";
 import { useUiStore } from "../store/useUiStore";
 import {
+  bindGatewayTransport,
   MATCH_MODE_OPTIONS,
   type AppFlowState,
   type MatchLoadingPhase,
   useAppFlowStore,
 } from "../store/useAppFlowStore";
 
+function resolveControlWsUrl(): string | undefined {
+  const envUrl = import.meta.env.VITE_CONTROL_WS_URL as string | undefined;
+  if (envUrl && envUrl.trim().length > 0) {
+    return envUrl;
+  }
+
+  if (typeof window === "undefined") {
+    return undefined;
+  }
+
+  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+  return `${protocol}://${window.location.hostname}:7200`;
+}
+
 function formatDuration(totalSec: number): string {
-  const safeTotal = Math.max(0, Math.floor(totalSec));
-  const minute = Math.floor(safeTotal / 60);
-  const second = safeTotal % 60;
+  const safe = Math.max(0, Math.floor(totalSec));
+  const minute = Math.floor(safe / 60);
+  const second = safe % 60;
   return `${String(minute).padStart(2, "0")}:${String(second).padStart(2, "0")}`;
 }
 
@@ -21,9 +36,9 @@ function getBootLabel(phase: string): string {
     case "CHECK_VERSION":
       return "버전 확인 중";
     case "PROBE_REGION":
-      return "리전 핑 측정 중";
+      return "리전 상태 확인 중";
     case "RESTORE_SESSION":
-      return "세션 복구 중";
+      return "세션 준비 중";
     case "DONE":
       return "부트 완료";
     case "ERROR":
@@ -54,130 +69,117 @@ function getPingTier(pingMs: number): "good" | "normal" | "warn" {
   return "warn";
 }
 
+function getGatewayTier(state: string): "good" | "normal" | "warn" {
+  if (state === "Connected") return "good";
+  if (state === "Connecting" || state === "Reconnecting") return "normal";
+  return "warn";
+}
+
+function getCurrentTurnToken(turnOrder: string[], turnSeq: number): string {
+  if (turnOrder.length === 0) return "teamA_pick";
+  return turnOrder[(turnSeq - 1) % turnOrder.length] ?? turnOrder[0] ?? "teamA_pick";
+}
+
 function FlowRuntimeController(): null {
   const flowState = useAppFlowStore((state) => state.flowState);
-  const selectedModeId = useAppFlowStore((state) => state.selectedModeId);
+  const bootRequestPending = useAppFlowStore((state) => state.bootRequestPending);
+  const gatewayConnectionState = useAppFlowStore((state) => state.gatewayConnectionState);
   const systemNotice = useAppFlowStore((state) => state.systemNotice);
 
-  const setBootStep = useAppFlowStore((state) => state.setBootStep);
-  const completeBoot = useAppFlowStore((state) => state.completeBoot);
-  const failBoot = useAppFlowStore((state) => state.failBoot);
-  const queueTick = useAppFlowStore((state) => state.queueTick);
-  const queueMatchFound = useAppFlowStore((state) => state.queueMatchFound);
-  const readyCheckTick = useAppFlowStore((state) => state.readyCheckTick);
-  const readyCheckTimeout = useAppFlowStore((state) => state.readyCheckTimeout);
-  const draftTick = useAppFlowStore((state) => state.draftTick);
+  const setGatewayConnectionState = useAppFlowStore((state) => state.setGatewayConnectionState);
+  const applyGatewayEnvelope = useAppFlowStore((state) => state.applyGatewayEnvelope);
+  const requestBootReady = useAppFlowStore((state) => state.requestBootReady);
+  const requestPing = useAppFlowStore((state) => state.requestPing);
+  const tickReadyCheckCountdown = useAppFlowStore((state) => state.tickReadyCheckCountdown);
+  const tickDraftCountdown = useAppFlowStore((state) => state.tickDraftCountdown);
   const clearSystemNotice = useAppFlowStore((state) => state.clearSystemNotice);
-  const setReconnectingActive = useAppFlowStore((state) => state.setReconnectingActive);
+  const setRealtimeConnectionState = useAppFlowStore((state) => state.setRealtimeConnectionState);
 
-  const reconnectState = useUiStore((state) => state.reconnectState);
+  const realtimeReconnectState = useUiStore((state) => state.reconnectState);
+
+  const gatewayClientRef = useRef<ControlGatewayClient | null>(null);
+
+  useEffect(() => {
+    const client = new ControlGatewayClient({
+      url: resolveControlWsUrl(),
+      reconnectMinMs: 500,
+      reconnectMaxMs: 4_000,
+      onStateChange: setGatewayConnectionState,
+      onEnvelope: applyGatewayEnvelope,
+    });
+
+    gatewayClientRef.current = client;
+    bindGatewayTransport({
+      send: (event, payload) => client.send(event, payload),
+    });
+
+    client.connect();
+
+    return () => {
+      bindGatewayTransport(null);
+      client.disconnect();
+      gatewayClientRef.current = null;
+    };
+  }, [applyGatewayEnvelope, setGatewayConnectionState]);
 
   useEffect(() => {
     if (flowState !== "BOOT") return;
+    if (gatewayConnectionState !== "Connected") return;
+    if (bootRequestPending) return;
 
-    setBootStep("CHECK_VERSION", 24);
-
-    const versionTimer = window.setTimeout(() => {
-      setBootStep("PROBE_REGION", 57);
-    }, 350);
-
-    const regionTimer = window.setTimeout(() => {
-      setBootStep("RESTORE_SESSION", 84);
-    }, 780);
-
-    const completeTimer = window.setTimeout(() => {
-      try {
-        completeBoot();
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        failBoot(`부트 중 오류가 발생했어요: ${message}`);
-      }
-    }, 1_140);
-
-    return () => {
-      window.clearTimeout(versionTimer);
-      window.clearTimeout(regionTimer);
-      window.clearTimeout(completeTimer);
-    };
-  }, [completeBoot, failBoot, flowState, setBootStep]);
-
-  useEffect(() => {
-    if (flowState !== "QUEUEING") return;
-
-    const mode = MATCH_MODE_OPTIONS.find((option) => option.id === selectedModeId);
-    const baseDelayMs = Math.max(3_000, (mode?.estimatedQueueSec ?? 7) * 1000);
-    const matchFoundDelayMs = baseDelayMs + Math.floor(Math.random() * 1_300);
-
-    const interval = window.setInterval(() => {
-      queueTick();
-    }, 1_000);
-
-    const matchFoundTimer = window.setTimeout(() => {
-      const latest = useAppFlowStore.getState();
-      if (latest.flowState === "QUEUEING") {
-        queueMatchFound();
-      }
-    }, matchFoundDelayMs);
-
-    return () => {
-      window.clearInterval(interval);
-      window.clearTimeout(matchFoundTimer);
-    };
-  }, [flowState, queueMatchFound, queueTick, selectedModeId]);
+    requestBootReady();
+  }, [bootRequestPending, flowState, gatewayConnectionState, requestBootReady]);
 
   useEffect(() => {
     if (flowState !== "READY_CHECK") return;
 
-    const interval = window.setInterval(() => {
-      const nowMs = Date.now();
-      const latest = useAppFlowStore.getState();
-      if (latest.flowState !== "READY_CHECK") return;
-
-      readyCheckTick(nowMs);
-      const next = useAppFlowStore.getState();
-      if (next.flowState === "READY_CHECK" && next.readyCheck.remainingMs <= 0) {
-        readyCheckTimeout();
-      }
-    }, 110);
+    const timer = window.setInterval(() => {
+      tickReadyCheckCountdown(Date.now());
+    }, 100);
 
     return () => {
-      window.clearInterval(interval);
+      window.clearInterval(timer);
     };
-  }, [flowState, readyCheckTick, readyCheckTimeout]);
+  }, [flowState, tickReadyCheckCountdown]);
 
   useEffect(() => {
     if (flowState !== "DRAFT") return;
 
-    const interval = window.setInterval(() => {
-      const latest = useAppFlowStore.getState();
-      if (latest.flowState !== "DRAFT") return;
-      draftTick();
+    const timer = window.setInterval(() => {
+      tickDraftCountdown();
     }, 1_000);
 
     return () => {
-      window.clearInterval(interval);
+      window.clearInterval(timer);
     };
-  }, [draftTick, flowState]);
+  }, [flowState, tickDraftCountdown]);
+
+  useEffect(() => {
+    if (gatewayConnectionState !== "Connected") return;
+
+    const timer = window.setInterval(() => {
+      requestPing();
+    }, 1_000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [gatewayConnectionState, requestPing]);
+
+  useEffect(() => {
+    setRealtimeConnectionState(realtimeReconnectState);
+  }, [realtimeReconnectState, setRealtimeConnectionState]);
 
   useEffect(() => {
     if (!systemNotice) return;
     const timer = window.setTimeout(() => {
       clearSystemNotice();
     }, 3_200);
+
     return () => {
       window.clearTimeout(timer);
     };
   }, [clearSystemNotice, systemNotice]);
-
-  useEffect(() => {
-    const normalized = reconnectState.trim().toLowerCase();
-    const reconnecting =
-      normalized.includes("reconnect") ||
-      normalized.includes("disconnect") ||
-      normalized.includes("connecting");
-
-    setReconnectingActive(reconnecting);
-  }, [reconnectState, setReconnectingActive]);
 
   return null;
 }
@@ -185,10 +187,12 @@ function FlowRuntimeController(): null {
 interface LobbyTopBarProps {
   displayName: string;
   pingMs: number;
+  gatewayState: string;
 }
 
-function LobbyTopBar({ displayName, pingMs }: LobbyTopBarProps): JSX.Element {
+function LobbyTopBar({ displayName, pingMs, gatewayState }: LobbyTopBarProps): JSX.Element {
   const pingTier = getPingTier(pingMs);
+  const gatewayTier = getGatewayTier(gatewayState);
 
   return (
     <header className="flow-topbar" aria-label="글로벌 상태 바">
@@ -206,6 +210,7 @@ function LobbyTopBar({ displayName, pingMs }: LobbyTopBarProps): JSX.Element {
         <span className="flow-chip">PAW 12,450</span>
         <span className="flow-chip">GEM 380</span>
         <span className={`flow-chip flow-chip--${pingTier}`}>PING {pingMs.toFixed(0)}ms</span>
+        <span className={`flow-chip flow-chip--${gatewayTier}`}>GW {gatewayState}</span>
       </div>
     </header>
   );
@@ -226,6 +231,8 @@ function BottomNav(): JSX.Element {
 function BootScreen(): JSX.Element {
   const bootPhase = useAppFlowStore((state) => state.bootPhase);
   const bootProgressPct = useAppFlowStore((state) => state.bootProgressPct);
+  const gatewayConnectionState = useAppFlowStore((state) => state.gatewayConnectionState);
+  const requestBootReady = useAppFlowStore((state) => state.requestBootReady);
 
   return (
     <section className="flow-screen flow-screen--centered" aria-label="부트 화면">
@@ -235,25 +242,34 @@ function BootScreen(): JSX.Element {
         <div className="flow-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={bootProgressPct}>
           <span style={{ width: `${bootProgressPct}%` }} />
         </div>
-        <p className="flow-muted">{bootProgressPct}%</p>
+        <p className="flow-muted">{bootProgressPct}% · Gateway {gatewayConnectionState}</p>
+
+        <button
+          type="button"
+          className="flow-button"
+          onClick={requestBootReady}
+          disabled={gatewayConnectionState !== "Connected"}
+        >
+          부트 재시도
+        </button>
       </div>
     </section>
   );
 }
 
 function AuthScreen(): JSX.Element {
-  const signInAsGuest = useAppFlowStore((state) => state.signInAsGuest);
-  const signInWithProvider = useAppFlowStore((state) => state.signInWithProvider);
+  const requestAuthGuest = useAppFlowStore((state) => state.requestAuthGuest);
+  const requestAuthProvider = useAppFlowStore((state) => state.requestAuthProvider);
 
   return (
     <section className="flow-screen flow-screen--centered" aria-label="인증 화면">
       <div className="flow-card flow-card--compact">
         <h2 className="flow-title">로그인</h2>
-        <p className="flow-subtitle">게스트로 바로 시작하거나 계정을 연결해 주세요.</p>
+        <p className="flow-subtitle">게스트/계정 로그인 중 선택해 주세요.</p>
         <div className="flow-stack">
-          <button type="button" className="flow-button" onClick={() => signInWithProvider("google")}>Google 로그인</button>
-          <button type="button" className="flow-button" onClick={() => signInWithProvider("apple")}>Apple 로그인</button>
-          <button type="button" className="flow-button flow-button--primary" onClick={signInAsGuest}>게스트 시작</button>
+          <button type="button" className="flow-button" onClick={() => requestAuthProvider("google")}>Google 로그인</button>
+          <button type="button" className="flow-button" onClick={() => requestAuthProvider("apple")}>Apple 로그인</button>
+          <button type="button" className="flow-button flow-button--primary" onClick={requestAuthGuest}>게스트 시작</button>
         </div>
       </div>
     </section>
@@ -268,10 +284,10 @@ function OnboardingScreen(): JSX.Element {
   const setOnboardingNickname = useAppFlowStore((state) => state.setOnboardingNickname);
   const setTermsAccepted = useAppFlowStore((state) => state.setTermsAccepted);
   const toggleStarterHero = useAppFlowStore((state) => state.toggleStarterHero);
-  const completeOnboarding = useAppFlowStore((state) => state.completeOnboarding);
+  const requestSubmitOnboarding = useAppFlowStore((state) => state.requestSubmitOnboarding);
 
-  const trimmed = onboardingNickname.trim();
-  const nicknameValid = trimmed.length >= 2 && trimmed.length <= 12;
+  const trimmedNickname = onboardingNickname.trim();
+  const nicknameValid = trimmedNickname.length >= 2 && trimmedNickname.length <= 12;
   const canSubmit = nicknameValid && termsAccepted && starterHeroIds.length > 0;
 
   return (
@@ -280,7 +296,7 @@ function OnboardingScreen(): JSX.Element {
         className="flow-card flow-card--wide"
         onSubmit={(event) => {
           event.preventDefault();
-          completeOnboarding();
+          requestSubmitOnboarding();
         }}
       >
         <h2 className="flow-title">온보딩</h2>
@@ -339,10 +355,11 @@ function LobbyScreen(): JSX.Element {
   const selectedModeId = useAppFlowStore((state) => state.selectedModeId);
   const selectedHeroId = useAppFlowStore((state) => state.selectedHeroId);
   const isGuest = useAppFlowStore((state) => state.isGuest);
+  const party = useAppFlowStore((state) => state.party);
 
   const setSelectedMode = useAppFlowStore((state) => state.setSelectedMode);
   const setSelectedHero = useAppFlowStore((state) => state.setSelectedHero);
-  const queueJoin = useAppFlowStore((state) => state.queueJoin);
+  const requestQueueJoin = useAppFlowStore((state) => state.requestQueueJoin);
 
   return (
     <section className="flow-screen flow-screen--lobby" aria-label="로비 화면">
@@ -372,12 +389,13 @@ function LobbyScreen(): JSX.Element {
           <button
             type="button"
             className="flow-button flow-button--primary"
-            onClick={queueJoin}
+            onClick={requestQueueJoin}
             disabled={selectedModeId === "3v3_rank" && isGuest}
             aria-label="선택된 모드로 큐 진입"
           >
             빠른 시작
           </button>
+
           {selectedModeId === "3v3_rank" && isGuest ? (
             <p className="flow-muted">게스트 계정은 랭크 모드를 시작할 수 없습니다.</p>
           ) : null}
@@ -407,11 +425,18 @@ function LobbyScreen(): JSX.Element {
         <aside className="flow-card flow-card--narrow">
           <h3>파티</h3>
           <ul className="flow-party-list">
-            <li className="is-leader">나 (리더)</li>
-            <li className="is-empty">빈 슬롯</li>
-            <li className="is-empty">빈 슬롯</li>
+            {party.members.length > 0
+              ? party.members.map((member) => (
+                <li key={member.accountId} className={member.accountId === party.leaderId ? "is-leader" : ""}>
+                  {member.accountId}
+                  {member.ready ? " · READY" : " · NOT READY"}
+                </li>
+              ))
+              : [<li key="empty-1" className="is-empty">빈 슬롯</li>, <li key="empty-2" className="is-empty">빈 슬롯</li>, <li key="empty-3" className="is-empty">빈 슬롯</li>]}
           </ul>
-          <button type="button" className="flow-button">친구 초대 (준비중)</button>
+          <button type="button" className="flow-button" disabled>
+            친구 초대 (연동 예정)
+          </button>
         </aside>
       </div>
     </section>
@@ -420,7 +445,7 @@ function LobbyScreen(): JSX.Element {
 
 function QueueScreen(): JSX.Element {
   const queue = useAppFlowStore((state) => state.queue);
-  const queueCancel = useAppFlowStore((state) => state.queueCancel);
+  const requestQueueCancel = useAppFlowStore((state) => state.requestQueueCancel);
 
   return (
     <section className="flow-screen flow-screen--centered" aria-label="매칭 대기 화면">
@@ -443,7 +468,7 @@ function QueueScreen(): JSX.Element {
           </div>
         </dl>
 
-        <button type="button" className="flow-button" onClick={queueCancel}>
+        <button type="button" className="flow-button" onClick={requestQueueCancel}>
           큐 취소
         </button>
       </div>
@@ -453,8 +478,7 @@ function QueueScreen(): JSX.Element {
 
 function ReadyCheckModal(): JSX.Element {
   const readyCheck = useAppFlowStore((state) => state.readyCheck);
-  const readyCheckAccept = useAppFlowStore((state) => state.readyCheckAccept);
-  const readyCheckDecline = useAppFlowStore((state) => state.readyCheckDecline);
+  const requestMatchAccept = useAppFlowStore((state) => state.requestMatchAccept);
 
   const remainSec = Math.max(0, Math.ceil(readyCheck.remainingMs / 1000));
 
@@ -463,11 +487,17 @@ function ReadyCheckModal(): JSX.Element {
       <section className="flow-modal" role="dialog" aria-modal="true" aria-labelledby="ready-check-title">
         <h3 id="ready-check-title">매치를 찾았습니다!</h3>
         <p>{remainSec}초 안에 수락해 주세요.</p>
+        <p className="flow-muted">수락 상태: {readyCheck.acceptState}</p>
         <div className="flow-stack flow-stack--row">
-          <button type="button" className="flow-button flow-button--primary" onClick={readyCheckAccept}>
+          <button
+            type="button"
+            className="flow-button flow-button--primary"
+            onClick={() => requestMatchAccept(true)}
+            disabled={readyCheck.acceptState === "pending" || readyCheck.acceptState === "accepted"}
+          >
             수락
           </button>
-          <button type="button" className="flow-button" onClick={readyCheckDecline}>
+          <button type="button" className="flow-button" onClick={() => requestMatchAccept(false)}>
             거절
           </button>
         </div>
@@ -480,12 +510,12 @@ function DraftScreen(): JSX.Element {
   const selectedHeroId = useAppFlowStore((state) => state.selectedHeroId);
   const draft = useAppFlowStore((state) => state.draft);
 
-  const draftHoverHero = useAppFlowStore((state) => state.draftHoverHero);
-  const draftLockHero = useAppFlowStore((state) => state.draftLockHero);
+  const setDraftHoverHero = useAppFlowStore((state) => state.setDraftHoverHero);
+  const requestDraftCommit = useAppFlowStore((state) => state.requestDraftCommit);
 
   const focusedHeroId = draft.myHoverHeroId ?? selectedHeroId;
   const focusedHero = HERO_DEF_BY_ID.get(focusedHeroId);
-  const canLock = Boolean(focusedHeroId);
+  const canCommit = Boolean(focusedHeroId) && !draft.myPendingAction;
 
   const warnings: string[] = [];
   if (focusedHero && focusedHero.role !== "Vanguard") {
@@ -495,26 +525,35 @@ function DraftScreen(): JSX.Element {
     warnings.push("회복/유틸 역할이 부족할 수 있어요.");
   }
 
+  const turnToken = getCurrentTurnToken(draft.turnOrder, draft.turnSeq);
+  const actionLabel = turnToken.toLowerCase().includes("ban") ? "BAN" : "PICK";
+
   return (
     <section className="flow-screen flow-screen--draft" aria-label="드래프트 화면">
       <div className="flow-card flow-card--wide">
         <header className="flow-draft-header">
-          <h2>드래프트</h2>
+          <h2>드래프트 · 턴 {draft.turnSeq}</h2>
           <strong className={draft.remainingSec <= 5 ? "flow-text-warn" : ""}>{draft.remainingSec}s</strong>
         </header>
+
+        <p className="flow-muted">현재 단계: {turnToken}</p>
 
         <div className="flow-draft-grid">
           {HERO_DEFS.map((hero) => {
             const selected = hero.id === focusedHeroId;
-            const locked = draft.myLockedHeroId === hero.id;
+            const banned = draft.teamA.bans.includes(hero.id) || draft.teamB.bans.includes(hero.id);
+            const picked = draft.teamA.picks.includes(hero.id) || draft.teamB.picks.includes(hero.id);
+            const disabled = banned || picked;
+
             return (
               <button
                 key={hero.id}
                 type="button"
-                className={`flow-hero-card flow-hero-card--draft${selected ? " is-selected" : ""}${locked ? " is-locked" : ""}`}
-                onClick={() => draftHoverHero(hero.id)}
+                className={`flow-hero-card flow-hero-card--draft${selected ? " is-selected" : ""}${disabled ? " is-locked" : ""}`}
+                onClick={() => setDraftHoverHero(hero.id)}
                 aria-pressed={selected}
-                aria-disabled={locked}
+                aria-disabled={disabled}
+                disabled={disabled}
               >
                 <strong>{hero.displayName}</strong>
                 <span>{hero.role}</span>
@@ -530,8 +569,8 @@ function DraftScreen(): JSX.Element {
               <p key={warning} className="flow-text-warn">{warning}</p>
             ))}
           </div>
-          <button type="button" className="flow-button flow-button--primary" disabled={!canLock} onClick={draftLockHero}>
-            Lock In
+          <button type="button" className="flow-button flow-button--primary" disabled={!canCommit} onClick={requestDraftCommit}>
+            {actionLabel} 확정
           </button>
         </div>
       </div>
@@ -550,7 +589,8 @@ function MatchLoadingScreen(): JSX.Element {
         <div className="flow-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={loading.progressPct}>
           <span style={{ width: `${loading.progressPct}%` }} />
         </div>
-        <p className="flow-muted">재시도: {loading.retryCount} · {loading.progressPct}%</p>
+        <p className="flow-muted">재시도 {loading.retryCount} · {loading.progressPct}%</p>
+        <p className="flow-muted">룸: {loading.roomRegion ?? "-"} · {loading.mapId ?? "-"}</p>
       </div>
     </section>
   );
@@ -558,9 +598,9 @@ function MatchLoadingScreen(): JSX.Element {
 
 function ResultScreen(): JSX.Element {
   const result = useAppFlowStore((state) => state.result);
-  const queueJoin = useAppFlowStore((state) => state.queueJoin);
-  const rematchVote = useAppFlowStore((state) => state.rematchVote);
-  const backToLobby = useAppFlowStore((state) => state.backToLobby);
+  const requestQueueJoin = useAppFlowStore((state) => state.requestQueueJoin);
+  const requestRematchVote = useAppFlowStore((state) => state.requestRematchVote);
+  const backToLobbyLocal = useAppFlowStore((state) => state.backToLobbyLocal);
 
   return (
     <section className="flow-screen flow-screen--centered" aria-label="결과 화면">
@@ -578,15 +618,25 @@ function ResultScreen(): JSX.Element {
             <dd>+{result.xp}</dd>
           </div>
           <div>
-            <dt>MVP 확률</dt>
-            <dd>높음</dd>
+            <dt>PAW</dt>
+            <dd>+{result.pawCoin}</dd>
           </div>
         </dl>
 
+        {result.rematchVotes.length > 0 ? (
+          <div className="flow-stack">
+            {result.rematchVotes.map((voteRow) => (
+              <p key={voteRow.accountId} className="flow-muted">
+                {voteRow.accountId}: {voteRow.vote === null ? "대기" : voteRow.vote ? "찬성" : "거절"}
+              </p>
+            ))}
+          </div>
+        ) : null}
+
         <div className="flow-stack flow-stack--row">
-          <button type="button" className="flow-button flow-button--primary" onClick={rematchVote}>리매치</button>
-          <button type="button" className="flow-button" onClick={queueJoin}>다음 경기</button>
-          <button type="button" className="flow-button" onClick={() => backToLobby()}>로비</button>
+          <button type="button" className="flow-button flow-button--primary" onClick={() => requestRematchVote(true)}>리매치</button>
+          <button type="button" className="flow-button" onClick={requestQueueJoin}>다음 경기</button>
+          <button type="button" className="flow-button" onClick={() => backToLobbyLocal()}>로비</button>
         </div>
       </div>
     </section>
@@ -601,7 +651,7 @@ function ReconnectingOverlay(): JSX.Element {
       <section className="flow-modal" role="dialog" aria-modal="true" aria-labelledby="reconnecting-title">
         <h3 id="reconnecting-title">연결 복구 중</h3>
         <p>{reconnectState}</p>
-        <p className="flow-muted">네트워크를 복구하면 자동으로 전투에 재합류합니다.</p>
+        <p className="flow-muted">네트워크가 복구되면 자동으로 전투에 재합류합니다.</p>
       </section>
     </div>
   );
@@ -646,20 +696,28 @@ export function AppFlowLayer(): JSX.Element {
   const flowState = useAppFlowStore((state) => state.flowState);
   const displayName = useAppFlowStore((state) => state.displayName);
   const systemNotice = useAppFlowStore((state) => state.systemNotice);
+  const gatewayConnectionState = useAppFlowStore((state) => state.gatewayConnectionState);
+
   const pingMs = useUiStore((state) => state.pingMs);
 
-  const showTopBar = flowState === "LOBBY" || flowState === "PARTY" || flowState === "QUEUEING" || flowState === "RESULT";
-  const showBottomNav = flowState === "LOBBY" || flowState === "PARTY" || flowState === "QUEUEING";
+  const showTopBar =
+    flowState === "LOBBY" ||
+    flowState === "PARTY" ||
+    flowState === "QUEUEING" ||
+    flowState === "RESULT";
+  const showBottomNav =
+    flowState === "LOBBY" ||
+    flowState === "PARTY" ||
+    flowState === "QUEUEING";
 
   return (
     <>
       <FlowRuntimeController />
 
-      {showTopBar ? <LobbyTopBar displayName={displayName} pingMs={pingMs} /> : null}
+      {showTopBar ? <LobbyTopBar displayName={displayName} pingMs={pingMs} gatewayState={gatewayConnectionState} /> : null}
       {showBottomNav ? <BottomNav /> : null}
 
       <FlowContent flowState={flowState} />
-      <LobbyView />
 
       {systemNotice ? <div className="flow-toast" role="status" aria-live="polite">{systemNotice}</div> : null}
     </>

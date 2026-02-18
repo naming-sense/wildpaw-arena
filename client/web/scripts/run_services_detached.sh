@@ -6,8 +6,11 @@ RUN_DIR="$ROOT_DIR/.run"
 LOG_DIR="$RUN_DIR/logs"
 WEB_PID_FILE="$RUN_DIR/web.pid"
 WS_PID_FILE="$RUN_DIR/ws.pid"
+GATEWAY_PID_FILE="$RUN_DIR/gateway.pid"
 WEB_PORT=4173
 WS_PORT=8080
+GATEWAY_PORT=7200
+GATEWAY_DIR="$(cd "$ROOT_DIR/../../server/gateway" && pwd)"
 
 mkdir -p "$RUN_DIR" "$LOG_DIR"
 
@@ -103,6 +106,39 @@ start_ws() {
   echo "[ws] started pid=$pid"
 }
 
+ensure_gateway_dependencies() {
+  if [[ -d "$GATEWAY_DIR/node_modules/ws" ]]; then
+    return
+  fi
+
+  echo "[gateway] installing dependencies..."
+  (cd "$GATEWAY_DIR" && npm install >/dev/null)
+}
+
+start_gateway() {
+  local pid
+  pid="$(port_pid "$GATEWAY_PORT")"
+  if [[ -n "$pid" ]]; then
+    echo "[gateway] already running (pid=$pid, port=$GATEWAY_PORT)"
+    echo "$pid" > "$GATEWAY_PID_FILE"
+    return
+  fi
+
+  ensure_gateway_dependencies
+
+  nohup bash -lc "cd '$GATEWAY_DIR' && ROOM_ENDPOINT=\"ws://127.0.0.1:$WS_PORT\" ROOM_REGION=KR exec npm run start" \
+    >"$LOG_DIR/gateway.log" 2>&1 &
+
+  if ! wait_port "$GATEWAY_PORT" 35; then
+    echo "[gateway] failed to start (port $GATEWAY_PORT not opened)" >&2
+    return 1
+  fi
+
+  pid="$(port_pid "$GATEWAY_PORT")"
+  echo "$pid" > "$GATEWAY_PID_FILE"
+  echo "[gateway] started pid=$pid"
+}
+
 status_one() {
   local port="$1" file="$2" name="$3"
   local pid
@@ -121,6 +157,8 @@ show_logs() {
   tail -n 120 "$LOG_DIR/web.log" 2>/dev/null || true
   echo "--- ws.log ---"
   tail -n 120 "$LOG_DIR/ws.log" 2>/dev/null || true
+  echo "--- gateway.log ---"
+  tail -n 120 "$LOG_DIR/gateway.log" 2>/dev/null || true
 }
 
 cmd="${1:-start}"
@@ -128,11 +166,13 @@ case "$cmd" in
   start)
     start_web
     start_ws
+    start_gateway
     ;;
   stop)
     kill_port "$WEB_PORT" "web"
     kill_port "$WS_PORT" "ws"
-    rm -f "$WEB_PID_FILE" "$WS_PID_FILE"
+    kill_port "$GATEWAY_PORT" "gateway"
+    rm -f "$WEB_PID_FILE" "$WS_PID_FILE" "$GATEWAY_PID_FILE"
     ;;
   restart)
     "$0" stop
@@ -141,6 +181,7 @@ case "$cmd" in
   status)
     status_one "$WEB_PORT" "$WEB_PID_FILE" "web"
     status_one "$WS_PORT" "$WS_PID_FILE" "ws"
+    status_one "$GATEWAY_PORT" "$GATEWAY_PID_FILE" "gateway"
     ;;
   logs)
     show_logs

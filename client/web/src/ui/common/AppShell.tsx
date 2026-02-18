@@ -8,52 +8,53 @@ import { useAppFlowStore } from "../store/useAppFlowStore";
 import { useUiStore } from "../store/useUiStore";
 import { DebugPanel } from "./DebugPanel";
 
-function isMatchRuntimeFlow(flowState: string): boolean {
+function isRuntimeFlow(flowState: string): boolean {
   return flowState === "MATCH_LOADING" || flowState === "IN_MATCH" || flowState === "RECONNECTING";
 }
 
 export function AppShell(): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const appRef = useRef<GameApp | null>(null);
+  const loadingAttemptKeyRef = useRef<string | null>(null);
+
   const [initError, setInitError] = useState<string | null>(null);
 
   const flowState = useAppFlowStore((state) => state.flowState);
   const selectedHeroId = useAppFlowStore((state) => state.selectedHeroId);
-  const setMatchLoadingPhase = useAppFlowStore((state) => state.setMatchLoadingPhase);
-  const setMatchLoadingProgress = useAppFlowStore((state) => state.setMatchLoadingProgress);
-  const bumpMatchLoadingRetry = useAppFlowStore((state) => state.bumpMatchLoadingRetry);
-  const enterInMatch = useAppFlowStore((state) => state.enterInMatch);
-  const backToLobby = useAppFlowStore((state) => state.backToLobby);
-  const finishMatch = useAppFlowStore((state) => state.finishMatch);
+  const loading = useAppFlowStore((state) => state.loading);
+
+  const setLoadingVisual = useAppFlowStore((state) => state.setLoadingVisual);
+  const bumpLoadingRetry = useAppFlowStore((state) => state.bumpLoadingRetry);
+  const reportRoomConnectResult = useAppFlowStore((state) => state.reportRoomConnectResult);
 
   const toggleDebug = useUiStore((state) => state.toggleDebug);
 
   useEffect(() => {
     if (flowState !== "MATCH_LOADING") return;
     if (!canvasRef.current) return;
+    if (!loading.matchId || !loading.roomEndpoint || !loading.roomToken) return;
+
+    const loadingAttemptKey = `${loading.assignmentVersion}:${loading.matchId}:${loading.roomEndpoint}:${loading.roomToken}`;
+    if (loadingAttemptKeyRef.current === loadingAttemptKey) {
+      return;
+    }
+    loadingAttemptKeyRef.current = loadingAttemptKey;
 
     if (appRef.current) {
-      enterInMatch();
-      return;
+      appRef.current.stop();
+      appRef.current = null;
     }
 
     let cancelled = false;
     setInitError(null);
 
-    setMatchLoadingPhase("ALLOCATING_ROOM");
-    setMatchLoadingProgress(12);
+    setLoadingVisual("CONNECTING_ROOM", Math.max(loading.progressPct, 38));
 
-    const t1 = window.setTimeout(() => {
-      setMatchLoadingPhase("CONNECTING_ROOM");
-      setMatchLoadingProgress(48);
-    }, 280);
-
-    const t2 = window.setTimeout(() => {
-      setMatchLoadingPhase("SYNCING_WORLD");
-      setMatchLoadingProgress(82);
-    }, 820);
-
-    bootstrap(canvasRef.current, { heroId: selectedHeroId })
+    bootstrap(canvasRef.current, {
+      wsUrl: loading.roomEndpoint,
+      heroId: selectedHeroId,
+      roomToken: loading.roomToken,
+    })
       .then((app) => {
         if (cancelled) {
           app.stop();
@@ -61,52 +62,54 @@ export function AppShell(): JSX.Element {
         }
 
         appRef.current = app;
-        setMatchLoadingPhase("READY");
-        setMatchLoadingProgress(100);
+        setLoadingVisual("SYNCING_WORLD", 94);
 
         window.setTimeout(() => {
-          if (!cancelled) {
-            enterInMatch();
-          }
-        }, 120);
+          if (cancelled) return;
+          setLoadingVisual("READY", 100);
+          reportRoomConnectResult("OK");
+        }, 80);
       })
       .catch((error: unknown) => {
-        console.error("[AppShell] bootstrap failed", error);
         if (cancelled) return;
 
-        bumpMatchLoadingRetry();
+        console.error("[AppShell] bootstrap failed", error);
+        bumpLoadingRetry();
+        reportRoomConnectResult("FAIL");
 
         if (error instanceof Error && error.message === WEBGL_UNSUPPORTED_ERROR) {
           setInitError("현재 브라우저에서 WebGL을 사용할 수 없어요. 텔레그램 내장 브라우저 대신 Safari/Chrome으로 열어주세요.");
-        } else {
-          setInitError("게임 초기화 중 오류가 발생했어요. 페이지를 새로고침하거나 외부 브라우저에서 다시 열어주세요.");
+          return;
         }
 
-        backToLobby("매치 로딩 실패: 로비로 복귀했습니다.");
+        setInitError("룸 서버 연결 중 오류가 발생했어요. 토큰 재할당/복구를 기다립니다.");
       });
 
     return () => {
       cancelled = true;
-      window.clearTimeout(t1);
-      window.clearTimeout(t2);
     };
   }, [
-    backToLobby,
-    bumpMatchLoadingRetry,
-    enterInMatch,
+    bumpLoadingRetry,
     flowState,
+    loading.assignmentVersion,
+    loading.matchId,
+    loading.progressPct,
+    loading.roomEndpoint,
+    loading.roomToken,
+    reportRoomConnectResult,
     selectedHeroId,
-    setMatchLoadingPhase,
-    setMatchLoadingProgress,
+    setLoadingVisual,
   ]);
 
   useEffect(() => {
-    if (isMatchRuntimeFlow(flowState)) return;
+    if (isRuntimeFlow(flowState)) return;
 
     if (appRef.current) {
       appRef.current.stop();
       appRef.current = null;
     }
+
+    loadingAttemptKeyRef.current = null;
   }, [flowState]);
 
   useEffect(() => {
@@ -118,37 +121,26 @@ export function AppShell(): JSX.Element {
     };
   }, []);
 
-  const showRuntimeUi = isMatchRuntimeFlow(flowState);
-  const showMatchUi = flowState === "IN_MATCH" || flowState === "RECONNECTING";
-  const showCanvas = showRuntimeUi;
+  const showRuntimeUi = isRuntimeFlow(flowState);
+  const showMatchHud = flowState === "IN_MATCH" || flowState === "RECONNECTING";
 
   return (
     <div className="app-shell">
       <canvas
         ref={canvasRef}
-        className={`game-canvas${showCanvas ? "" : " game-canvas--hidden"}`}
+        className={`game-canvas${showRuntimeUi ? "" : " game-canvas--hidden"}`}
       />
 
-      {showMatchUi ? <Hud /> : null}
-      {showMatchUi ? <DebugPanel /> : null}
+      {showMatchHud ? <Hud /> : null}
+      {showMatchHud ? <DebugPanel /> : null}
 
-      {showMatchUi ? (
+      {showMatchHud ? (
         <button
           type="button"
           className="debug-toggle-button"
           onClick={toggleDebug}
         >
           Debug
-        </button>
-      ) : null}
-
-      {flowState === "IN_MATCH" ? (
-        <button
-          type="button"
-          className="match-end-button"
-          onClick={() => finishMatch()}
-        >
-          전투 종료(테스트)
         </button>
       ) : null}
 

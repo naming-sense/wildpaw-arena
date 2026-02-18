@@ -150,3 +150,33 @@ npm run test
   - `npm run build` ✅
   - `npm run test` ✅
   - detached 재시작(web 4173 / ws 8080) ✅
+
+## 14) Gateway Control Channel 실연동 (20 계약서 기반)
+
+- 클라이언트 control transport 추가
+  - `src/net/controlGatewayClient.ts`
+  - control WS(기본 `ws://<host>:7200`) 연결/재연결/Envelope 송수신
+- AppFlow store를 이벤트 기반으로 재구성
+  - `src/ui/store/useAppFlowStore.ts`
+  - `bindGatewayTransport` + `applyGatewayEnvelope` 추가
+  - 서버 이벤트(`S2C_BOOT_ACK`, `S2C_AUTH_OK`, `S2C_QUEUE_STATUS`, `S2C_MATCH_FOUND`, `S2C_DRAFT_*`, `S2C_MATCH_ASSIGN`, `S2C_MATCH_ENDED`, `S2C_REMATCH_*`, `S2C_ERROR`)를 상태 전이에 직접 반영
+  - UI 액션이 `C2S_*` 요청을 실제 전송(`BOOT_READY`, `AUTH`, `ONBOARDING_COMPLETE`, `QUEUE_JOIN/CANCEL`, `MATCH_ACCEPT`, `DRAFT_ACTION`, `ROOM_CONNECT_RESULT`, `REMATCH_VOTE`)
+- AppFlow layer 런타임 변경
+  - `src/ui/flow/AppFlowLayer.tsx`
+  - 부트 자동요청/핑 heartbeat/ready-check countdown/draft countdown을 서버 이벤트와 결합
+  - TopBar에 GW 연결 상태 배지 추가
+- AppShell 로딩/전투 시작 경계 변경
+  - `src/ui/common/AppShell.tsx`
+  - `S2C_MATCH_ASSIGN`의 `room.endpoint`/`roomToken`으로 실제 room 접속
+  - 접속 성공 시 `C2S_ROOM_CONNECT_RESULT(OK)` 보고, 실패 시 `FAIL` 보고(재할당/복구 흐름 연결)
+- runtime 옵션 확장
+  - `src/app/bootstrap.ts`, `src/app/gameApp.ts`
+  - `roomToken` 전달/사용 지원
+- 운영 스크립트 확장
+  - `scripts/run_services_detached.sh`
+  - web/ws와 함께 gateway(7200) 시작/중지/상태/로그 통합
+  - gateway 시작 시 `ROOM_ENDPOINT=ws://127.0.0.1:8080` 자동 주입
+- 검증
+  - client: `npm run build`, `npm run test` 통과
+  - gateway: `server/gateway npm run smoke` 통과(`matchAssignCount=6`, `errors=[]`)
+  - detached 상태: web/ws/gateway 3서비스 정상 기동 확인
