@@ -180,3 +180,20 @@ npm run test
   - client: `npm run build`, `npm run test` 통과
   - gateway: `server/gateway npm run smoke` 통과(`matchAssignCount=6`, `errors=[]`)
   - detached 상태: web/ws/gateway 3서비스 정상 기동 확인
+
+## 15) 온보딩/인증 UX 보완 (피드백 반영)
+
+- 소셜 로그인 버튼 처리
+  - `Google/Apple 로그인`을 비활성화하고 `준비중` 텍스트 명시
+  - 인증 화면에 현재 지원 범위(게스트 로그인) 안내 문구 추가
+  - store `requestAuthProvider`도 실제 전송 대신 준비중 안내 토스트로 안전 처리
+- 약관/개인정보 확인 경로 추가
+  - 온보딩 체크박스 아래에 `약관 보기`, `개인정보 처리방침 보기` 링크 추가
+  - 정적 페이지 추가:
+    - `public/legal/terms.html`
+    - `public/legal/privacy.html`
+- 스타터 히어로 선택 정책 단순화
+  - 다중 선택 -> 단일 선택(1명)으로 변경
+  - `onboardingStarterHeroIds[]` -> `onboardingStarterHeroId`로 상태 모델 개편
+  - 온보딩 제출 시 서버 payload는 단일 선택을 배열 1개(`starterHeroIds: [id]`)로 전송
+  - UI 문구를 "초반 기본 히어로 1명 설정"으로 명확화

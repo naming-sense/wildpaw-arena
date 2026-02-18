@@ -506,7 +506,21 @@ body,
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 4px;
+}
+
+.flow-legal-links {
+  margin: 0 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(236, 240, 255, 0.72);
+  font-size: 13px;
+}
+
+.flow-legal-links a {
+  color: #9ec8ff;
+  text-decoration: underline;
 }
 
 .flow-chip-grid {

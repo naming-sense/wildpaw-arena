@@ -259,7 +259,6 @@ function BootScreen(): JSX.Element {
 
 function AuthScreen(): JSX.Element {
   const requestAuthGuest = useAppFlowStore((state) => state.requestAuthGuest);
-  const requestAuthProvider = useAppFlowStore((state) => state.requestAuthProvider);
 
   return (
     <section className="flow-screen flow-screen--centered" aria-label="인증 화면">
@@ -267,10 +266,15 @@ function AuthScreen(): JSX.Element {
         <h2 className="flow-title">로그인</h2>
         <p className="flow-subtitle">게스트/계정 로그인 중 선택해 주세요.</p>
         <div className="flow-stack">
-          <button type="button" className="flow-button" onClick={() => requestAuthProvider("google")}>Google 로그인</button>
-          <button type="button" className="flow-button" onClick={() => requestAuthProvider("apple")}>Apple 로그인</button>
+          <button type="button" className="flow-button" disabled aria-disabled="true">
+            Google 로그인 (준비중)
+          </button>
+          <button type="button" className="flow-button" disabled aria-disabled="true">
+            Apple 로그인 (준비중)
+          </button>
           <button type="button" className="flow-button flow-button--primary" onClick={requestAuthGuest}>게스트 시작</button>
         </div>
+        <p className="flow-muted">소셜 로그인은 현재 준비 중입니다. 지금은 게스트 시작으로 이용해 주세요.</p>
       </div>
     </section>
   );
@@ -279,16 +283,16 @@ function AuthScreen(): JSX.Element {
 function OnboardingScreen(): JSX.Element {
   const onboardingNickname = useAppFlowStore((state) => state.onboardingNickname);
   const termsAccepted = useAppFlowStore((state) => state.termsAccepted);
-  const starterHeroIds = useAppFlowStore((state) => state.onboardingStarterHeroIds);
+  const starterHeroId = useAppFlowStore((state) => state.onboardingStarterHeroId);
 
   const setOnboardingNickname = useAppFlowStore((state) => state.setOnboardingNickname);
   const setTermsAccepted = useAppFlowStore((state) => state.setTermsAccepted);
-  const toggleStarterHero = useAppFlowStore((state) => state.toggleStarterHero);
+  const setStarterHero = useAppFlowStore((state) => state.setStarterHero);
   const requestSubmitOnboarding = useAppFlowStore((state) => state.requestSubmitOnboarding);
 
   const trimmedNickname = onboardingNickname.trim();
   const nicknameValid = trimmedNickname.length >= 2 && trimmedNickname.length <= 12;
-  const canSubmit = nicknameValid && termsAccepted && starterHeroIds.length > 0;
+  const canSubmit = nicknameValid && termsAccepted && starterHeroId.trim().length > 0;
 
   return (
     <section className="flow-screen flow-screen--centered" aria-label="온보딩 화면">
@@ -314,17 +318,19 @@ function OnboardingScreen(): JSX.Element {
         </label>
 
         <fieldset className="flow-fieldset">
-          <legend>스타터 히어로 선택 (1개 이상)</legend>
-          <div className="flow-chip-grid">
+          <legend>스타터 히어로 선택 (1명)</legend>
+          <p className="flow-muted">여기서 고른 히어로 1명이 초반 기본 히어로로 설정됩니다.</p>
+          <div className="flow-chip-grid" role="radiogroup" aria-label="스타터 히어로 선택">
             {HERO_DEFS.slice(0, 6).map((hero) => {
-              const selected = starterHeroIds.includes(hero.id);
+              const selected = starterHeroId === hero.id;
               return (
                 <button
                   key={hero.id}
                   type="button"
+                  role="radio"
+                  aria-checked={selected}
                   className={`flow-select-chip${selected ? " is-selected" : ""}`}
-                  onClick={() => toggleStarterHero(hero.id)}
-                  aria-pressed={selected}
+                  onClick={() => setStarterHero(hero.id)}
                 >
                   <strong>{hero.displayName}</strong>
                   <span>{hero.role}</span>
@@ -342,6 +348,11 @@ function OnboardingScreen(): JSX.Element {
           />
           <span>약관/개인정보 처리방침에 동의합니다.</span>
         </label>
+        <p className="flow-legal-links">
+          <a href="/legal/terms.html" target="_blank" rel="noreferrer">약관 보기</a>
+          <span>·</span>
+          <a href="/legal/privacy.html" target="_blank" rel="noreferrer">개인정보 처리방침 보기</a>
+        </p>
 
         <button type="submit" className="flow-button flow-button--primary" disabled={!canSubmit}>
           온보딩 완료

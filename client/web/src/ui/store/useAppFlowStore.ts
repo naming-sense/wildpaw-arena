@@ -297,7 +297,7 @@ interface AppFlowStore {
 
   onboardingNickname: string;
   termsAccepted: boolean;
-  onboardingStarterHeroIds: string[];
+  onboardingStarterHeroId: string;
 
   selectedModeId: MatchModeId;
   selectedHeroId: string;
@@ -321,7 +321,7 @@ interface AppFlowStore {
 
   setOnboardingNickname: (nickname: string) => void;
   setTermsAccepted: (accepted: boolean) => void;
-  toggleStarterHero: (heroId: string) => void;
+  setStarterHero: (heroId: string) => void;
   requestSubmitOnboarding: () => void;
 
   setSelectedMode: (modeId: MatchModeId) => void;
@@ -365,7 +365,7 @@ export const useAppFlowStore = create<AppFlowStore>((set, get) => ({
 
   onboardingNickname: "",
   termsAccepted: false,
-  onboardingStarterHeroIds: [DEFAULT_HERO_ID],
+  onboardingStarterHeroId: DEFAULT_HERO_ID,
 
   selectedModeId: "3v3_normal",
   selectedHeroId: DEFAULT_HERO_ID,
@@ -954,17 +954,11 @@ export const useAppFlowStore = create<AppFlowStore>((set, get) => ({
     const state = get();
     if (state.flowState !== "AUTH") return;
 
-    const sent = sendControlEvent("C2S_AUTH_LOGIN", {
-      provider,
-      idToken: `mock-${provider}-${Date.now()}`,
-    });
-
-    if (!sent) {
-      set((prev) => ({
-        ...prev,
-        systemNotice: "Gateway 연결이 끊겨 로그인 요청을 보낼 수 없어요.",
-      }));
-    }
+    const providerName = provider === "google" ? "Google" : "Apple";
+    set((prev) => ({
+      ...prev,
+      systemNotice: `${providerName} 로그인은 준비 중입니다. 현재는 게스트 시작만 지원합니다.`,
+    }));
   },
 
   setOnboardingNickname: (nickname) => {
@@ -981,19 +975,12 @@ export const useAppFlowStore = create<AppFlowStore>((set, get) => ({
     }));
   },
 
-  toggleStarterHero: (heroId) => {
-    set((state) => {
-      const exists = state.onboardingStarterHeroIds.includes(heroId);
-      const next = exists
-        ? state.onboardingStarterHeroIds.filter((id) => id !== heroId)
-        : [...state.onboardingStarterHeroIds, heroId];
-
-      return {
-        ...state,
-        onboardingStarterHeroIds: next,
-        selectedHeroId: next[0] ?? state.selectedHeroId,
-      };
-    });
+  setStarterHero: (heroId) => {
+    set((state) => ({
+      ...state,
+      onboardingStarterHeroId: heroId,
+      selectedHeroId: heroId,
+    }));
   },
 
   requestSubmitOnboarding: () => {
@@ -1002,7 +989,7 @@ export const useAppFlowStore = create<AppFlowStore>((set, get) => ({
 
     const nickname = state.onboardingNickname.trim();
     const nicknameValid = nickname.length >= 2 && nickname.length <= 12;
-    const hasStarter = state.onboardingStarterHeroIds.length > 0;
+    const hasStarter = state.onboardingStarterHeroId.trim().length > 0;
 
     if (!nicknameValid || !state.termsAccepted || !hasStarter) {
       set((prev) => ({
@@ -1015,7 +1002,7 @@ export const useAppFlowStore = create<AppFlowStore>((set, get) => ({
     const sent = sendControlEvent("C2S_ONBOARDING_COMPLETE", {
       nickname,
       tutorialDone: true,
-      starterHeroIds: state.onboardingStarterHeroIds,
+      starterHeroIds: [state.onboardingStarterHeroId],
       acceptedTermsVersion: "2026-02",
     });
 
