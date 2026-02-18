@@ -65,6 +65,8 @@ export class KeyboardMouseInput {
   }
 
   sample(): RawInputState {
+    this.ensureFireButtonBinding();
+
     const keyboardMoveX = (this.keys.has("KeyD") ? 1 : 0) - (this.keys.has("KeyA") ? 1 : 0);
     // World forward is -Z in this camera setup, so invert keyboard Y mapping.
     const keyboardMoveY = (this.keys.has("KeyS") ? 1 : 0) - (this.keys.has("KeyW") ? 1 : 0);
@@ -99,6 +101,17 @@ export class KeyboardMouseInput {
       preferMoveFacing,
       hasAimControl,
     };
+  }
+
+  private ensureFireButtonBinding(): void {
+    if (typeof document === "undefined") return;
+
+    if (this.fireButtonEl && !this.fireButtonEl.isConnected) {
+      this.unbindFireButton();
+    }
+
+    if (this.fireButtonEl) return;
+    this.bindFireButton();
   }
 
   private bindFireButton(): void {

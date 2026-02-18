@@ -118,8 +118,9 @@ export function AppShell(): JSX.Element {
     };
   }, []);
 
+  const showRuntimeUi = isMatchRuntimeFlow(flowState);
   const showMatchUi = flowState === "IN_MATCH" || flowState === "RECONNECTING";
-  const showCanvas = isMatchRuntimeFlow(flowState);
+  const showCanvas = showRuntimeUi;
 
   return (
     <div className="app-shell">
@@ -151,7 +152,7 @@ export function AppShell(): JSX.Element {
         </button>
       ) : null}
 
-      {showMatchUi ? (
+      {showRuntimeUi ? (
         <button
           type="button"
           className="mobile-fire-button"
