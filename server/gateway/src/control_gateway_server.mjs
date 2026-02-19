@@ -1523,6 +1523,14 @@ function finishDraftAndAssign(match) {
       roomConnectTimeoutSec: MATCH_ASSIGN_CONNECT_TIMEOUT_SEC,
     });
 
+    // 클라이언트가 C2S_ROOM_CONNECT_RESULT(OK)를 보내지 못해도 UI가 MATCH_LOADING에 고착되지 않도록
+    // 1차 확인 이벤트를 서버에서 선제 송신한다.
+    sendPush(session, "S2C_ROOM_CONNECT_CONFIRMED", {
+      matchId: match.matchId,
+      status: "OK",
+      source: "ASSIGN_AUTO",
+    });
+
     setFlowState(session, FLOW_STATES.IN_MATCH);
   }
 
@@ -2443,6 +2451,10 @@ function handleRoomConnectResult(ctx) {
   const status = String(ctx.payload?.status ?? "").toUpperCase();
   const match = matches.get(matchId);
 
+  console.log(
+    `[gateway][room.connect.result] account=${ctx.session.accountId} session=${ctx.session.sessionId} match=${matchId} status=${status} flow=${ctx.session.flowState}`,
+  );
+
   if (!match) {
     sendError(ctx, ERROR_CODES.MATCH_ASSIGN_EXPIRED, "match assign expired");
     return;
@@ -2458,6 +2470,7 @@ function handleRoomConnectResult(ctx) {
     sendFromRequestContext(ctx, "S2C_ROOM_CONNECT_CONFIRMED", {
       matchId,
       status: "OK",
+      source: "CLIENT_REPORT",
     });
     return;
   }
