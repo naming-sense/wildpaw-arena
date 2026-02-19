@@ -856,6 +856,11 @@ export class GameApp {
         velocity.z = player.vy;
       }
 
+      const team = this.world.teams.get(entityId);
+      if (team) {
+        team.id = player.team === 2 ? 2 : 1;
+      }
+
       if (typeof player.ammo === "number" && Number.isFinite(player.ammo)) {
         const nextAmmo = Math.max(0, Math.round(player.ammo));
         const prevAmmo = this.snapshotAmmoByPlayerId.get(player.playerId);

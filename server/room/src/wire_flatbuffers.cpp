@@ -191,6 +191,7 @@ std::vector<std::uint8_t> encodeSnapshotEnvelope(
     std::uint32_t serverTick,
     std::uint64_t serverTimeMs,
     std::span<const PlayerState> players,
+    std::span<const std::uint32_t> removedPlayerIds,
     const EnvelopeMeta& meta) {
   flatbuffers::FlatBufferBuilder builder(1024);
 
@@ -208,16 +209,24 @@ std::vector<std::uint8_t> encodeSnapshotEnvelope(
         player.lastProcessedInputSeq, player.ammo, player.maxAmmo,
         player.reloading, player.reloadRemainingTicks, player.skillQCooldownTicks,
         player.skillECooldownTicks, player.skillRCooldownTicks,
-        toProtocolSkillSlot(player.castingSkill), player.castRemainingTicks);
+        toProtocolSkillSlot(player.castingSkill), player.castRemainingTicks,
+        player.teamId, player.teamSlot);
     playerOffsets.push_back(playerState);
   }
 
+  std::vector<std::uint32_t> removedIdsCopy;
+  removedIdsCopy.reserve(removedPlayerIds.size());
+  for (const auto playerId : removedPlayerIds) {
+    removedIdsCopy.push_back(playerId);
+  }
+
   const auto playersVector = builder.CreateVector(playerOffsets);
+  const auto removedVector = builder.CreateVector(removedIdsCopy);
   const auto kind = isDelta ? wildpaw::protocol::SnapshotKind::Delta
                             : wildpaw::protocol::SnapshotKind::Base;
 
   const auto payload = wildpaw::protocol::CreateSnapshotPayload(
-      builder, kind, serverTick, serverTimeMs, playersVector);
+      builder, kind, serverTick, serverTimeMs, playersVector, removedVector);
 
   const auto envelope = wildpaw::protocol::CreateEnvelope(
       builder, meta.seq, meta.ack, meta.ackBits,

@@ -362,7 +362,9 @@ struct PlayerState FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
     VT_SKILL_E_COOLDOWN_TICKS = 26,
     VT_SKILL_R_COOLDOWN_TICKS = 28,
     VT_CASTING_SKILL = 30,
-    VT_CAST_REMAINING_TICKS = 32
+    VT_CAST_REMAINING_TICKS = 32,
+    VT_TEAM_ID = 34,
+    VT_TEAM_SLOT = 36
   };
   uint32_t player_id() const {
     return GetField<uint32_t>(VT_PLAYER_ID, 0);
@@ -409,6 +411,12 @@ struct PlayerState FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   uint32_t cast_remaining_ticks() const {
     return GetField<uint32_t>(VT_CAST_REMAINING_TICKS, 0);
   }
+  uint8_t team_id() const {
+    return GetField<uint8_t>(VT_TEAM_ID, 0);
+  }
+  uint16_t team_slot() const {
+    return GetField<uint16_t>(VT_TEAM_SLOT, 0);
+  }
   bool Verify(flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyField<uint32_t>(verifier, VT_PLAYER_ID, 4) &&
@@ -428,6 +436,8 @@ struct PlayerState FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
            VerifyField<uint32_t>(verifier, VT_SKILL_R_COOLDOWN_TICKS, 4) &&
            VerifyField<uint8_t>(verifier, VT_CASTING_SKILL, 1) &&
            VerifyField<uint32_t>(verifier, VT_CAST_REMAINING_TICKS, 4) &&
+           VerifyField<uint8_t>(verifier, VT_TEAM_ID, 1) &&
+           VerifyField<uint16_t>(verifier, VT_TEAM_SLOT, 2) &&
            verifier.EndTable();
   }
 };
@@ -481,6 +491,12 @@ struct PlayerStateBuilder {
   void add_cast_remaining_ticks(uint32_t cast_remaining_ticks) {
     fbb_.AddElement<uint32_t>(PlayerState::VT_CAST_REMAINING_TICKS, cast_remaining_ticks, 0);
   }
+  void add_team_id(uint8_t team_id) {
+    fbb_.AddElement<uint8_t>(PlayerState::VT_TEAM_ID, team_id, 0);
+  }
+  void add_team_slot(uint16_t team_slot) {
+    fbb_.AddElement<uint16_t>(PlayerState::VT_TEAM_SLOT, team_slot, 0);
+  }
   explicit PlayerStateBuilder(flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
     start_ = fbb_.StartTable();
@@ -508,7 +524,9 @@ inline flatbuffers::Offset<PlayerState> CreatePlayerState(
     uint32_t skill_e_cooldown_ticks = 0,
     uint32_t skill_r_cooldown_ticks = 0,
     wildpaw::protocol::SkillSlot casting_skill = wildpaw::protocol::SkillSlot::None,
-    uint32_t cast_remaining_ticks = 0) {
+    uint32_t cast_remaining_ticks = 0,
+    uint8_t team_id = 0,
+    uint16_t team_slot = 0) {
   PlayerStateBuilder builder_(_fbb);
   builder_.add_cast_remaining_ticks(cast_remaining_ticks);
   builder_.add_skill_r_cooldown_ticks(skill_r_cooldown_ticks);
@@ -519,9 +537,11 @@ inline flatbuffers::Offset<PlayerState> CreatePlayerState(
   builder_.add_velocity(velocity);
   builder_.add_position(position);
   builder_.add_player_id(player_id);
+  builder_.add_team_slot(team_slot);
   builder_.add_max_ammo(max_ammo);
   builder_.add_ammo(ammo);
   builder_.add_hp(hp);
+  builder_.add_team_id(team_id);
   builder_.add_casting_skill(casting_skill);
   builder_.add_is_reloading(is_reloading);
   builder_.add_alive(alive);
@@ -962,7 +982,8 @@ struct SnapshotPayload FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
     VT_KIND = 4,
     VT_SERVER_TICK = 6,
     VT_SERVER_TIME_MS = 8,
-    VT_PLAYERS = 10
+    VT_PLAYERS = 10,
+    VT_REMOVED_PLAYER_IDS = 12
   };
   wildpaw::protocol::SnapshotKind kind() const {
     return static_cast<wildpaw::protocol::SnapshotKind>(GetField<uint8_t>(VT_KIND, 0));
@@ -976,6 +997,9 @@ struct SnapshotPayload FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   const flatbuffers::Vector<flatbuffers::Offset<wildpaw::protocol::PlayerState>> *players() const {
     return GetPointer<const flatbuffers::Vector<flatbuffers::Offset<wildpaw::protocol::PlayerState>> *>(VT_PLAYERS);
   }
+  const flatbuffers::Vector<uint32_t> *removed_player_ids() const {
+    return GetPointer<const flatbuffers::Vector<uint32_t> *>(VT_REMOVED_PLAYER_IDS);
+  }
   bool Verify(flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyField<uint8_t>(verifier, VT_KIND, 1) &&
@@ -984,6 +1008,8 @@ struct SnapshotPayload FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
            VerifyOffset(verifier, VT_PLAYERS) &&
            verifier.VerifyVector(players()) &&
            verifier.VerifyVectorOfTables(players()) &&
+           VerifyOffset(verifier, VT_REMOVED_PLAYER_IDS) &&
+           verifier.VerifyVector(removed_player_ids()) &&
            verifier.EndTable();
   }
 };
@@ -1004,6 +1030,9 @@ struct SnapshotPayloadBuilder {
   void add_players(flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<wildpaw::protocol::PlayerState>>> players) {
     fbb_.AddOffset(SnapshotPayload::VT_PLAYERS, players);
   }
+  void add_removed_player_ids(flatbuffers::Offset<flatbuffers::Vector<uint32_t>> removed_player_ids) {
+    fbb_.AddOffset(SnapshotPayload::VT_REMOVED_PLAYER_IDS, removed_player_ids);
+  }
   explicit SnapshotPayloadBuilder(flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
     start_ = fbb_.StartTable();
@@ -1020,9 +1049,11 @@ inline flatbuffers::Offset<SnapshotPayload> CreateSnapshotPayload(
     wildpaw::protocol::SnapshotKind kind = wildpaw::protocol::SnapshotKind::Base,
     uint32_t server_tick = 0,
     uint64_t server_time_ms = 0,
-    flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<wildpaw::protocol::PlayerState>>> players = 0) {
+    flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<wildpaw::protocol::PlayerState>>> players = 0,
+    flatbuffers::Offset<flatbuffers::Vector<uint32_t>> removed_player_ids = 0) {
   SnapshotPayloadBuilder builder_(_fbb);
   builder_.add_server_time_ms(server_time_ms);
+  builder_.add_removed_player_ids(removed_player_ids);
   builder_.add_players(players);
   builder_.add_server_tick(server_tick);
   builder_.add_kind(kind);
@@ -1034,14 +1065,17 @@ inline flatbuffers::Offset<SnapshotPayload> CreateSnapshotPayloadDirect(
     wildpaw::protocol::SnapshotKind kind = wildpaw::protocol::SnapshotKind::Base,
     uint32_t server_tick = 0,
     uint64_t server_time_ms = 0,
-    const std::vector<flatbuffers::Offset<wildpaw::protocol::PlayerState>> *players = nullptr) {
+    const std::vector<flatbuffers::Offset<wildpaw::protocol::PlayerState>> *players = nullptr,
+    const std::vector<uint32_t> *removed_player_ids = nullptr) {
   auto players__ = players ? _fbb.CreateVector<flatbuffers::Offset<wildpaw::protocol::PlayerState>>(*players) : 0;
+  auto removed_player_ids__ = removed_player_ids ? _fbb.CreateVector<uint32_t>(*removed_player_ids) : 0;
   return wildpaw::protocol::CreateSnapshotPayload(
       _fbb,
       kind,
       server_tick,
       server_time_ms,
-      players__);
+      players__,
+      removed_player_ids__);
 }
 
 struct CombatEventPayload FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {

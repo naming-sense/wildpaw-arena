@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 #include "room/combat_rule_table.hpp"
 
@@ -10,7 +11,7 @@ namespace wildpaw::room {
 
 namespace {
 constexpr float kPlayerSpeedMps = 4.0f;
-constexpr float kWorldBoundary = 50.0f;
+constexpr float kPlayerCollisionRadius = 0.45f;
 
 float distSq(const Vec2& a, const Vec2& b) {
   const float dx = a.x - b.x;
@@ -22,14 +23,76 @@ Vec2 directionFromRadian(float radian) {
   return Vec2{.x = std::cos(radian), .y = std::sin(radian)};
 }
 
+bool segmentIntersectsAabb2D(float x0,
+                             float y0,
+                             float x1,
+                             float y1,
+                             const StaticCollider& collider,
+                             float padding = 0.0f) {
+  const float minX = collider.minX - padding;
+  const float maxX = collider.maxX + padding;
+  const float minY = collider.minY - padding;
+  const float maxY = collider.maxY + padding;
+
+  const float dx = x1 - x0;
+  const float dy = y1 - y0;
+
+  float tMin = 0.0f;
+  float tMax = 1.0f;
+
+  if (std::abs(dx) < 1e-7f) {
+    if (x0 < minX || x0 > maxX) {
+      return false;
+    }
+  } else {
+    const float invDx = 1.0f / dx;
+    float t1 = (minX - x0) * invDx;
+    float t2 = (maxX - x0) * invDx;
+    if (t1 > t2) {
+      std::swap(t1, t2);
+    }
+
+    tMin = std::max(tMin, t1);
+    tMax = std::min(tMax, t2);
+    if (tMin > tMax) {
+      return false;
+    }
+  }
+
+  if (std::abs(dy) < 1e-7f) {
+    if (y0 < minY || y0 > maxY) {
+      return false;
+    }
+  } else {
+    const float invDy = 1.0f / dy;
+    float t1 = (minY - y0) * invDy;
+    float t2 = (maxY - y0) * invDy;
+    if (t1 > t2) {
+      std::swap(t1, t2);
+    }
+
+    tMin = std::max(tMin, t1);
+    tMax = std::min(tMax, t2);
+    if (tMin > tMax) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 }  // namespace
 
 RoomSimulation::RoomSimulation(std::uint32_t tickRate)
     : tickRate_(tickRate), inputBuffer_(256) {}
 
-void RoomSimulation::addPlayer(std::uint32_t playerId) {
+void RoomSimulation::addPlayer(std::uint32_t playerId,
+                               std::uint8_t teamId,
+                               std::uint16_t teamSlot) {
   PlayerState state;
   state.playerId = playerId;
+  state.teamId = teamId;
+  state.teamSlot = teamSlot;
 
   // 단순 스폰 분산: 초기 중첩을 피하기 위해 원형 배치.
   const float ringRadius = 3.0f;
@@ -84,6 +147,20 @@ bool RoomSimulation::setPlayerProfile(std::uint32_t playerId,
   player.skillRCooldownTicks = 0;
 
   return true;
+}
+
+void RoomSimulation::setMapBounds(float minX,
+                                  float maxX,
+                                  float minY,
+                                  float maxY) {
+  worldMinX_ = std::min(minX, maxX);
+  worldMaxX_ = std::max(minX, maxX);
+  worldMinY_ = std::min(minY, maxY);
+  worldMaxY_ = std::max(minY, maxY);
+}
+
+void RoomSimulation::setStaticColliders(std::vector<StaticCollider> colliders) {
+  staticColliders_ = std::move(colliders);
 }
 
 void RoomSimulation::removePlayer(std::uint32_t playerId) {
@@ -162,10 +239,44 @@ void RoomSimulation::applyMovement() {
     player.position.x += player.velocity.x * dt;
     player.position.y += player.velocity.y * dt;
 
-    player.position.x =
-        std::clamp(player.position.x, -kWorldBoundary, kWorldBoundary);
-    player.position.y =
-        std::clamp(player.position.y, -kWorldBoundary, kWorldBoundary);
+    player.position.x = std::clamp(player.position.x, worldMinX_, worldMaxX_);
+    player.position.y = std::clamp(player.position.y, worldMinY_, worldMaxY_);
+
+    for (const auto& collider : staticColliders_) {
+      if (!collider.blocksMovement) {
+        continue;
+      }
+
+      const float minX = collider.minX - kPlayerCollisionRadius;
+      const float maxX = collider.maxX + kPlayerCollisionRadius;
+      const float minY = collider.minY - kPlayerCollisionRadius;
+      const float maxY = collider.maxY + kPlayerCollisionRadius;
+
+      const bool insideX = player.position.x > minX && player.position.x < maxX;
+      const bool insideY = player.position.y > minY && player.position.y < maxY;
+      if (!insideX || !insideY) {
+        continue;
+      }
+
+      const float leftDist = std::abs(player.position.x - minX);
+      const float rightDist = std::abs(maxX - player.position.x);
+      const float downDist = std::abs(player.position.y - minY);
+      const float upDist = std::abs(maxY - player.position.y);
+
+      const float minDist = std::min({leftDist, rightDist, downDist, upDist});
+      if (minDist == leftDist) {
+        player.position.x = minX;
+      } else if (minDist == rightDist) {
+        player.position.x = maxX;
+      } else if (minDist == downDist) {
+        player.position.y = minY;
+      } else {
+        player.position.y = maxY;
+      }
+    }
+
+    player.position.x = std::clamp(player.position.x, worldMinX_, worldMaxX_);
+    player.position.y = std::clamp(player.position.y, worldMinY_, worldMaxY_);
   }
 }
 
@@ -181,7 +292,8 @@ void RoomSimulation::processCombat() {
     PlayerState* bestTarget = nullptr;
 
     for (auto& [targetId, target] : players_) {
-      if (targetId == source.playerId || !target.alive) {
+      if (targetId == source.playerId || !target.alive ||
+          (source.teamId != 0 && target.teamId == source.teamId)) {
         continue;
       }
 
@@ -209,7 +321,8 @@ void RoomSimulation::processCombat() {
     PlayerState* bestTarget = nullptr;
 
     for (auto& [targetId, target] : players_) {
-      if (targetId == source.playerId || !target.alive) {
+      if (targetId == source.playerId || !target.alive ||
+          (source.teamId != 0 && target.teamId == source.teamId)) {
         continue;
       }
 
@@ -223,6 +336,24 @@ void RoomSimulation::processCombat() {
 
       const float lateral = std::abs(toX * direction.y - toY * direction.x);
       if (lateral > kShotHitRadiusMeters) {
+        continue;
+      }
+
+      bool blockedBySight = false;
+      for (const auto& collider : staticColliders_) {
+        if (!collider.blocksLineOfSight && !collider.blocksProjectile) {
+          continue;
+        }
+
+        if (segmentIntersectsAabb2D(source.position.x, source.position.y,
+                                    target.position.x, target.position.y,
+                                    collider, 0.02f)) {
+          blockedBySight = true;
+          break;
+        }
+      }
+
+      if (blockedBySight) {
         continue;
       }
 
@@ -270,6 +401,10 @@ void RoomSimulation::processCombat() {
                               SkillSlot skillSlot,
                               bool critical) {
     if (!source.alive || !target.alive || damage == 0) {
+      return;
+    }
+
+    if (source.teamId != 0 && source.teamId == target.teamId) {
       return;
     }
 
@@ -338,7 +473,8 @@ void RoomSimulation::processCombat() {
       const float radiusSq = rule.radiusMeters * rule.radiusMeters;
 
       for (auto& [targetId, target] : players_) {
-        if (targetId == source.playerId || !target.alive) {
+        if (targetId == source.playerId || !target.alive ||
+            (source.teamId != 0 && target.teamId == source.teamId)) {
           continue;
         }
 

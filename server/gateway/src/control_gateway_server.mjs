@@ -48,6 +48,8 @@ const ROOM_ENDPOINT =
   process.env.ROOM_ENDPOINT ?? "ws://127.0.0.1:7001";
 const ROOM_REGION = process.env.ROOM_REGION ?? "KR";
 const ROOM_TOKEN_TTL_SEC = Number(process.env.ROOM_TOKEN_TTL_SEC ?? 45);
+const ROOM_TOKEN_SECRET =
+  process.env.WILDPAW_ROOM_TOKEN_SECRET ?? "dev-room-secret";
 
 const FLOW_STATES = {
   BOOT: "BOOT",
@@ -188,6 +190,26 @@ function nowMs() {
 
 function hashShort(raw) {
   return createHash("sha1").update(String(raw)).digest("hex").slice(0, 10);
+}
+
+function fnv1a32(raw) {
+  let hash = 0x811c9dc5;
+  const text = String(raw);
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i) & 0xff;
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
+function toHex8(value) {
+  return (value >>> 0).toString(16).padStart(8, "0");
+}
+
+function signRoomToken(matchId, mapId, expiresAtMs) {
+  return toHex8(
+    fnv1a32(`${matchId}:${mapId}:${expiresAtMs}:${ROOM_TOKEN_SECRET}`),
+  );
 }
 
 function compareSemver(a, b) {
@@ -1349,6 +1371,7 @@ function createDraftMatch(candidate) {
     matchEndHandle: null,
     rematchVotes: new Map(),
     roomAssignRetryBySessionId: new Map(),
+    mapId: null,
     quality: candidate.quality ?? null,
   };
 
@@ -1479,11 +1502,12 @@ function handleDraftTimeoutAutopick(matchId) {
   advanceDraftTurn(match);
 }
 
-function assignRoomToken(matchId, sessionId) {
-  const tokenRaw = `${matchId}:${sessionId}:${nowMs()}:${Math.random()}`;
+function assignRoomToken(matchId, mapId) {
+  const expiresAtMs = nowMs() + ROOM_TOKEN_TTL_SEC * 1000;
+  const signature = signRoomToken(matchId, mapId, expiresAtMs);
   return {
-    token: `rt_${hashShort(tokenRaw)}`,
-    expiresAtMs: nowMs() + ROOM_TOKEN_TTL_SEC * 1000,
+    token: `rt1:${matchId}:${mapId}:${expiresAtMs}:${signature}`,
+    expiresAtMs,
   };
 }
 
@@ -1498,12 +1522,13 @@ function finishDraftAndAssign(match) {
   }
 
   const mapId = randomFrom(["NJD_CR_01", "HMY_SZ_01"]) ?? "NJD_CR_01";
+  match.mapId = mapId;
 
   for (const sessionId of match.participantSessionIds) {
     const session = sessionsBySessionId.get(sessionId);
     if (!session) continue;
 
-    const token = assignRoomToken(match.matchId, sessionId);
+    const token = assignRoomToken(match.matchId, mapId);
     const teamInfo = session.teamInfo ?? { teamId: 1, slot: 1 };
     const roomEndpoint = resolveRoomEndpointForSession(session);
 
@@ -2478,7 +2503,7 @@ function handleRoomConnectResult(ctx) {
   match.roomAssignRetryBySessionId.set(ctx.session.sessionId, nextRetry);
 
   if (nextRetry <= 1) {
-    const token = assignRoomToken(matchId, ctx.session.sessionId);
+    const token = assignRoomToken(matchId, match.mapId ?? "NJD_CR_01");
     const roomEndpoint = resolveRoomEndpointForSession(ctx.session);
     sendFromRequestContext(ctx, "S2C_MATCH_ASSIGN_RETRY", {
       matchId,
@@ -2824,5 +2849,6 @@ wss.on("close", () => {
  * @property {NodeJS.Timeout | null} matchEndHandle
  * @property {Map<string, boolean>} rematchVotes
  * @property {Map<string, number>} roomAssignRetryBySessionId
+ * @property {string | null} mapId
  * @property {any | null} quality
  */

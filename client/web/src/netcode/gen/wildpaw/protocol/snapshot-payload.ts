@@ -49,8 +49,23 @@ playersLength():number {
   return offset ? this.bb!.__vector_len(this.bb_pos + offset) : 0;
 }
 
+removedPlayerIds(index: number):number|null {
+  const offset = this.bb!.__offset(this.bb_pos, 12);
+  return offset ? this.bb!.readUint32(this.bb!.__vector(this.bb_pos + offset) + index * 4) : 0;
+}
+
+removedPlayerIdsLength():number {
+  const offset = this.bb!.__offset(this.bb_pos, 12);
+  return offset ? this.bb!.__vector_len(this.bb_pos + offset) : 0;
+}
+
+removedPlayerIdsArray():Uint32Array|null {
+  const offset = this.bb!.__offset(this.bb_pos, 12);
+  return offset ? new Uint32Array(this.bb!.bytes().buffer, this.bb!.bytes().byteOffset + this.bb!.__vector(this.bb_pos + offset), this.bb!.__vector_len(this.bb_pos + offset)) : null;
+}
+
 static startSnapshotPayload(builder:flatbuffers.Builder) {
-  builder.startObject(4);
+  builder.startObject(5);
 }
 
 static addKind(builder:flatbuffers.Builder, kind:SnapshotKind) {
@@ -81,17 +96,39 @@ static startPlayersVector(builder:flatbuffers.Builder, numElems:number) {
   builder.startVector(4, numElems, 4);
 }
 
+static addRemovedPlayerIds(builder:flatbuffers.Builder, removedPlayerIdsOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(4, removedPlayerIdsOffset, 0);
+}
+
+static createRemovedPlayerIdsVector(builder:flatbuffers.Builder, data:number[]|Uint32Array):flatbuffers.Offset;
+/**
+ * @deprecated This Uint8Array overload will be removed in the future.
+ */
+static createRemovedPlayerIdsVector(builder:flatbuffers.Builder, data:number[]|Uint8Array):flatbuffers.Offset;
+static createRemovedPlayerIdsVector(builder:flatbuffers.Builder, data:number[]|Uint32Array|Uint8Array):flatbuffers.Offset {
+  builder.startVector(4, data.length, 4);
+  for (let i = data.length - 1; i >= 0; i--) {
+    builder.addInt32(data[i]!);
+  }
+  return builder.endVector();
+}
+
+static startRemovedPlayerIdsVector(builder:flatbuffers.Builder, numElems:number) {
+  builder.startVector(4, numElems, 4);
+}
+
 static endSnapshotPayload(builder:flatbuffers.Builder):flatbuffers.Offset {
   const offset = builder.endObject();
   return offset;
 }
 
-static createSnapshotPayload(builder:flatbuffers.Builder, kind:SnapshotKind, serverTick:number, serverTimeMs:bigint, playersOffset:flatbuffers.Offset):flatbuffers.Offset {
+static createSnapshotPayload(builder:flatbuffers.Builder, kind:SnapshotKind, serverTick:number, serverTimeMs:bigint, playersOffset:flatbuffers.Offset, removedPlayerIdsOffset:flatbuffers.Offset):flatbuffers.Offset {
   SnapshotPayload.startSnapshotPayload(builder);
   SnapshotPayload.addKind(builder, kind);
   SnapshotPayload.addServerTick(builder, serverTick);
   SnapshotPayload.addServerTimeMs(builder, serverTimeMs);
   SnapshotPayload.addPlayers(builder, playersOffset);
+  SnapshotPayload.addRemovedPlayerIds(builder, removedPlayerIdsOffset);
   return SnapshotPayload.endSnapshotPayload(builder);
 }
 }

@@ -11,6 +11,7 @@ namespace wildpaw::room {
 struct SnapshotDelta {
   std::uint32_t serverTick{0};
   std::vector<PlayerState> changedPlayers;
+  std::vector<std::uint32_t> removedPlayerIds;
 };
 
 class SnapshotBuilder {

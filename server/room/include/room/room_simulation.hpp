@@ -43,6 +43,9 @@ struct PlayerState {
   bool alive{true};
   std::uint32_t lastProcessedInputSeq{0};
 
+  std::uint8_t teamId{0};
+  std::uint16_t teamSlot{0};
+
   // 플레이어 룰 프로필 id(서버 내부용)
   std::string profileId{"ranger"};
 
@@ -86,14 +89,29 @@ struct WorldSnapshot {
   std::vector<PlayerState> players;
 };
 
+struct StaticCollider {
+  float minX{0.0f};
+  float maxX{0.0f};
+  float minY{0.0f};
+  float maxY{0.0f};
+  bool blocksMovement{false};
+  bool blocksProjectile{false};
+  bool blocksLineOfSight{false};
+};
+
 class RoomSimulation {
  public:
   explicit RoomSimulation(std::uint32_t tickRate = 30);
 
-  void addPlayer(std::uint32_t playerId);
+  void addPlayer(std::uint32_t playerId,
+                 std::uint8_t teamId = 0,
+                 std::uint16_t teamSlot = 0);
   void removePlayer(std::uint32_t playerId);
   void pushInput(std::uint32_t playerId, const InputFrame& frame);
   bool setPlayerProfile(std::uint32_t playerId, std::string_view profileId);
+
+  void setMapBounds(float minX, float maxX, float minY, float maxY);
+  void setStaticColliders(std::vector<StaticCollider> colliders);
 
   WorldSnapshot tick();
   [[nodiscard]] WorldSnapshot snapshot() const;
@@ -120,6 +138,12 @@ class RoomSimulation {
   std::uint32_t tickRate_{30};
   std::uint32_t tick_{0};
   std::uint32_t nextProjectileId_{1};
+
+  float worldMinX_{-50.0f};
+  float worldMaxX_{50.0f};
+  float worldMinY_{-50.0f};
+  float worldMaxY_{50.0f};
+  std::vector<StaticCollider> staticColliders_;
 
   InputBuffer inputBuffer_;
   std::unordered_map<std::uint32_t, PlayerState> players_;

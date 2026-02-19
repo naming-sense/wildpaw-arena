@@ -1,6 +1,7 @@
 #include "room/snapshot_builder.hpp"
 
 #include <cmath>
+#include <unordered_set>
 
 namespace wildpaw::room {
 
@@ -35,10 +36,21 @@ SnapshotDelta SnapshotBuilder::buildDelta(const WorldSnapshot& snapshot) {
   SnapshotDelta delta;
   delta.serverTick = snapshot.serverTick;
 
+  std::unordered_set<std::uint32_t> currentPlayerIds;
+  currentPlayerIds.reserve(snapshot.players.size());
+
   for (const auto& player : snapshot.players) {
+    currentPlayerIds.insert(player.playerId);
+
     auto found = lastPlayers_.find(player.playerId);
     if (found == lastPlayers_.end() || changedEnough(found->second, player)) {
       delta.changedPlayers.push_back(player);
+    }
+  }
+
+  for (const auto& [playerId, _] : lastPlayers_) {
+    if (!currentPlayerIds.contains(playerId)) {
+      delta.removedPlayerIds.push_back(playerId);
     }
   }
 

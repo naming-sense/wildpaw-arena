@@ -2,6 +2,8 @@
 #include <boost/beast.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/websocket.hpp>
+#include <boost/property_tree/json_parser.hpp>
+#include <boost/property_tree/ptree.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -9,6 +11,8 @@
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
@@ -203,6 +207,241 @@ bool shouldSendProjectileEvent(
   return false;
 }
 
+std::uint32_t fnv1a32(std::string_view input) {
+  std::uint32_t hash = 2166136261u;
+  for (const unsigned char ch : input) {
+    hash ^= static_cast<std::uint32_t>(ch);
+    hash *= 16777619u;
+  }
+  return hash;
+}
+
+std::string toHex8(std::uint32_t value) {
+  constexpr char kHex[] = "0123456789abcdef";
+  std::string out(8, '0');
+  for (int i = 7; i >= 0; --i) {
+    out[static_cast<std::size_t>(i)] = kHex[value & 0x0Fu];
+    value >>= 4;
+  }
+  return out;
+}
+
+std::string toLowerAscii(std::string input) {
+  for (char& ch : input) {
+    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+  }
+  return input;
+}
+
+std::string signRoomToken(std::string_view matchId,
+                          std::string_view mapId,
+                          std::uint64_t expiresAtMs,
+                          std::string_view secret) {
+  std::ostringstream payload;
+  payload << matchId << ':' << mapId << ':' << expiresAtMs << ':' << secret;
+  return toHex8(fnv1a32(payload.str()));
+}
+
+struct ParsedRoomToken {
+  bool ok{false};
+  std::string error;
+  std::string matchId;
+  std::string mapId;
+  std::uint64_t expiresAtMs{0};
+};
+
+ParsedRoomToken parseRoomToken(std::string_view token,
+                               std::string_view tokenSecret,
+                               std::uint64_t nowMs) {
+  ParsedRoomToken parsed;
+
+  constexpr std::string_view kPrefix = "rt1:";
+  if (!token.starts_with(kPrefix)) {
+    if (token == "dev-room") {
+      parsed.ok = true;
+      parsed.matchId = "dev-room";
+      parsed.mapId = "NJD_CR_01";
+      parsed.expiresAtMs = nowMs + 24ull * 60ull * 60ull * 1000ull;
+      return parsed;
+    }
+
+    parsed.error = "invalid token version";
+    return parsed;
+  }
+
+  const auto firstSep = token.find(':');
+  const auto secondSep = token.find(':', firstSep + 1);
+  const auto thirdSep = token.find(':', secondSep + 1);
+  const auto fourthSep = token.find(':', thirdSep + 1);
+
+  if (firstSep == std::string_view::npos ||
+      secondSep == std::string_view::npos ||
+      thirdSep == std::string_view::npos ||
+      fourthSep == std::string_view::npos) {
+    parsed.error = "invalid token format";
+    return parsed;
+  }
+
+  parsed.matchId = std::string{token.substr(firstSep + 1, secondSep - firstSep - 1)};
+  parsed.mapId = std::string{token.substr(secondSep + 1, thirdSep - secondSep - 1)};
+
+  const auto expiresView = token.substr(thirdSep + 1, fourthSep - thirdSep - 1);
+  const auto sigView = token.substr(fourthSep + 1);
+
+  if (parsed.matchId.empty() || parsed.mapId.empty() || expiresView.empty() ||
+      sigView.empty()) {
+    parsed.error = "missing token fields";
+    return parsed;
+  }
+
+  std::uint64_t expiresAtMs = 0;
+  {
+    const auto* begin = expiresView.data();
+    const auto* end = expiresView.data() + expiresView.size();
+    const auto [ptr, ec] = std::from_chars(begin, end, expiresAtMs);
+    if (ec != std::errc{} || ptr != end) {
+      parsed.error = "invalid token expiry";
+      return parsed;
+    }
+  }
+
+  if (expiresAtMs <= nowMs) {
+    parsed.error = "token expired";
+    return parsed;
+  }
+
+  const auto expectedSig = signRoomToken(parsed.matchId, parsed.mapId,
+                                         expiresAtMs, tokenSecret);
+  if (sigView != expectedSig) {
+    parsed.error = "token signature mismatch";
+    return parsed;
+  }
+
+  parsed.ok = true;
+  parsed.expiresAtMs = expiresAtMs;
+  return parsed;
+}
+
+struct PrefabRuntimeSpec {
+  float sizeX{0.0f};
+  float sizeY{0.0f};
+  bool blocksMovement{false};
+  bool blocksProjectile{false};
+  bool blocksLineOfSight{false};
+};
+
+const std::unordered_map<std::string, PrefabRuntimeSpec>& prefabSpecs() {
+  static const std::unordered_map<std::string, PrefabRuntimeSpec> kSpecs = {
+      {"COV_L_2x1", PrefabRuntimeSpec{2.0f, 1.0f, true, true, false}},
+      {"COV_H_3x1", PrefabRuntimeSpec{3.0f, 1.0f, true, true, true}},
+      {"WALL_6", PrefabRuntimeSpec{6.0f, 0.8f, true, true, true}},
+      {"BUSH_S", PrefabRuntimeSpec{3.0f, 3.0f, false, false, false}},
+      {"BUSH_M", PrefabRuntimeSpec{5.0f, 5.0f, false, false, false}},
+      {"BUSH_L", PrefabRuntimeSpec{7.0f, 7.0f, false, false, false}},
+      {"RAMP_10", PrefabRuntimeSpec{2.8f, 10.0f, false, false, false}},
+      {"PAD_JUMP", PrefabRuntimeSpec{2.0f, 2.0f, false, false, false}},
+      {"OBJ_CORE", PrefabRuntimeSpec{4.0f, 4.0f, false, false, false}},
+      {"OBJ_ZONE", PrefabRuntimeSpec{9.0f, 9.0f, false, false, false}},
+      {"OBJ_PAYLOAD_PATH", PrefabRuntimeSpec{1.0f, 1.0f, false, false, false}},
+  };
+
+  return kSpecs;
+}
+
+wildpaw::room::StaticCollider createRuntimeCollider(float centerX,
+                                                     float centerY,
+                                                     float sizeX,
+                                                     float sizeY,
+                                                     float rotDeg,
+                                                     bool blocksMovement,
+                                                     bool blocksProjectile,
+                                                     bool blocksLineOfSight) {
+  const float halfX = std::max(0.01f, sizeX * 0.5f);
+  const float halfY = std::max(0.01f, sizeY * 0.5f);
+
+  const float theta = rotDeg * 3.1415926535f / 180.0f;
+  const float cosT = std::cos(theta);
+  const float sinT = std::sin(theta);
+
+  const float extentX = std::abs(cosT) * halfX + std::abs(sinT) * halfY;
+  const float extentY = std::abs(sinT) * halfX + std::abs(cosT) * halfY;
+
+  return wildpaw::room::StaticCollider{
+      .minX = centerX - extentX,
+      .maxX = centerX + extentX,
+      .minY = centerY - extentY,
+      .maxY = centerY + extentY,
+      .blocksMovement = blocksMovement,
+      .blocksProjectile = blocksProjectile,
+      .blocksLineOfSight = blocksLineOfSight,
+  };
+}
+
+struct LoadedMapRuntimeConfig {
+  float minX{-50.0f};
+  float maxX{50.0f};
+  float minY{-50.0f};
+  float maxY{50.0f};
+  std::vector<wildpaw::room::StaticCollider> colliders;
+};
+
+std::optional<LoadedMapRuntimeConfig> loadMapRuntimeConfig(
+    const std::filesystem::path& mapDataRoot,
+    std::string_view mapId,
+    std::string* errorMessage = nullptr) {
+  try {
+    const auto mapFileName = toLowerAscii(std::string{mapId}) + ".json";
+    const auto mapPath = mapDataRoot / mapFileName;
+
+    boost::property_tree::ptree root;
+    boost::property_tree::read_json(mapPath.string(), root);
+
+    LoadedMapRuntimeConfig config;
+
+    const float width = root.get<float>("size.width", 100.0f);
+    const float height = root.get<float>("size.height", 100.0f);
+    const float originX = root.get<float>("origin.x", 0.0f);
+    const float originY = root.get<float>("origin.y", 0.0f);
+
+    config.minX = originX - width * 0.5f;
+    config.maxX = originX + width * 0.5f;
+    config.minY = originY - height * 0.5f;
+    config.maxY = originY + height * 0.5f;
+
+    if (const auto prefabsNode = root.get_child_optional("prefabs")) {
+      const auto& specs = prefabSpecs();
+
+      for (const auto& [_, prefabNode] : *prefabsNode) {
+        const auto code = prefabNode.get<std::string>("prefabCode", "");
+        if (code.empty()) {
+          continue;
+        }
+
+        const auto found = specs.find(code);
+        if (found == specs.end()) {
+          continue;
+        }
+
+        const auto& spec = found->second;
+        const float x = prefabNode.get<float>("x", 0.0f);
+        const float y = prefabNode.get<float>("y", 0.0f);
+        const float rotDeg = prefabNode.get<float>("rotDeg", 0.0f);
+
+        config.colliders.push_back(createRuntimeCollider(
+            x, y, spec.sizeX, spec.sizeY, rotDeg, spec.blocksMovement,
+            spec.blocksProjectile, spec.blocksLineOfSight));
+      }
+    }
+
+    return config;
+  } catch (const std::exception& ex) {
+    if (errorMessage != nullptr) {
+      *errorMessage = ex.what();
+    }
+    return std::nullopt;
+  }
+}
+
 }  // namespace
 
 class RoomServer;
@@ -320,6 +559,9 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
     invalidProfileSelectTotal_.fetch_add(1, std::memory_order_relaxed);
   }
 
+  [[nodiscard]] bool isReady() const { return ready_; }
+  void markReady() { ready_ = true; }
+
   void requestClose(std::string_view reason);
 
  private:
@@ -391,6 +633,7 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
   bool closed_{false};
   bool closeRequested_{false};
   bool closing_{false};
+  bool ready_{false};
   std::string closeReason_;
 };
 
@@ -400,7 +643,9 @@ class RoomServer {
              const tcp::endpoint& endpoint,
              std::uint16_t tickRate,
              std::uint16_t teamSize,
-             std::string rulesPath)
+             std::string rulesPath,
+             std::filesystem::path mapDataRootPath,
+             std::string roomTokenSecret)
       : io_(io),
         acceptor_(net::make_strand(io)),
         wsPort_(endpoint.port()),
@@ -408,7 +653,9 @@ class RoomServer {
         tickIntervalMs_(std::max<int>(1, 1000 / static_cast<int>(tickRate))),
         teamSize_(normalizeTeamSize(teamSize)),
         maxPlayersPerRoom_(static_cast<std::size_t>(teamSize_) * 2u),
-        rulesPath_(std::move(rulesPath)) {
+        rulesPath_(std::move(rulesPath)),
+        mapDataRootPath_(std::move(mapDataRootPath)),
+        roomTokenSecret_(std::move(roomTokenSecret)) {
     beast::error_code ec;
 
     acceptor_.open(endpoint.protocol(), ec);
@@ -435,6 +682,12 @@ class RoomServer {
     if (std::filesystem::exists(rulesPath_, fsError)) {
       rulesLastWriteTime_ = std::filesystem::last_write_time(rulesPath_, fsError);
     }
+
+    if (roomTokenSecret_.empty()) {
+      roomTokenSecret_ = "dev-room-secret";
+    }
+
+    applyMapRuntimeConfig("NJD_CR_01");
   }
 
   ~RoomServer() { stop(); }
@@ -625,10 +878,23 @@ class RoomServer {
     out << "\"rooms\":1,";
     out << "\"teamSize\":" << teamSize_ << ',';
     out << "\"maxPlayersPerRoom\":" << maxPlayersPerRoom_ << ',';
+    std::string activeMatchId;
+    std::string activeMapId;
+    std::uint64_t activeRoomExpiresAtMs = 0;
+    {
+      std::lock_guard<std::mutex> lock(roomRuntimeMutex_);
+      activeMatchId = activeMatchId_;
+      activeMapId = activeMapId_;
+      activeRoomExpiresAtMs = activeRoomExpiresAtMs_;
+    }
+
     out << "\"teamOccupancy\":{";
     out << "\"team1\":" << teamOneCount << ',';
     out << "\"team2\":" << teamTwoCount;
     out << "},";
+    out << "\"activeMatchId\":\"" << jsonEscape(activeMatchId) << "\",";
+    out << "\"activeMapId\":\"" << jsonEscape(activeMapId) << "\",";
+    out << "\"activeRoomExpiresAtMs\":" << activeRoomExpiresAtMs << ',';
     out << "\"wsPort\":" << wsPort_ << ',';
     out << "\"tickRate\":" << simulation_.tickRate() << ',';
     out << "\"currentTick\":" << tickTotal_.load(std::memory_order_relaxed)
@@ -825,20 +1091,117 @@ class RoomServer {
     return true;
   }
 
-  bool onSessionReady(const std::shared_ptr<WsSession>& session) {
+  void applyMapRuntimeConfig(std::string_view mapId) {
+    const auto loaded = loadMapRuntimeConfig(mapDataRootPath_, mapId);
+    if (!loaded.has_value()) {
+      simulation_.setMapBounds(-50.0f, 50.0f, -50.0f, 50.0f);
+      simulation_.setStaticColliders({});
+      std::cerr << "[room] map runtime load failed mapId=" << mapId
+                << " path=" << mapDataRootPath_.string()
+                << " fallback=world-boundary-only\n";
+      return;
+    }
+
+    simulation_.setMapBounds(loaded->minX, loaded->maxX,
+                             loaded->minY, loaded->maxY);
+    simulation_.setStaticColliders(loaded->colliders);
+
+    std::cout << "[room] map runtime configured mapId=" << mapId
+              << " boundsX=[" << loaded->minX << "," << loaded->maxX << "]"
+              << " boundsY=[" << loaded->minY << "," << loaded->maxY << "]"
+              << " colliders=" << loaded->colliders.size() << '\n';
+  }
+
+  bool onSessionReady(const std::shared_ptr<WsSession>& session,
+                      std::string_view roomToken,
+                      std::string_view clientVersion) {
     const std::uint32_t playerId = session->playerId();
+
+    if (session->isReady()) {
+      sendEventWithPolicy(session, "hello.ack", "already-ready",
+                          WsSession::ReliableClass::Standard);
+      return true;
+    }
+
+    const auto parsedToken =
+        parseRoomToken(roomToken, roomTokenSecret_, unixTimeMs());
+    if (!parsedToken.ok) {
+      recordViolation(playerId, session->remoteEndpoint(), "room_token_invalid",
+                      parsedToken.error);
+
+      const auto invalidMeta = session->nextEnvelopeMeta();
+      auto invalidPayload = wildpaw::room::wire::encodeEventEnvelope(
+          "room.token.invalid", parsedToken.error, invalidMeta);
+      session->sendReliableBinary(invalidMeta.seq, std::move(invalidPayload),
+                                  WsSession::ReliableClass::Standard);
+      session->requestClose("room.token.invalid");
+      return false;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(roomRuntimeMutex_);
+      if (activeMatchId_.empty()) {
+        activeMatchId_ = parsedToken.matchId;
+        activeMapId_ = parsedToken.mapId;
+        activeRoomExpiresAtMs_ = parsedToken.expiresAtMs;
+        applyMapRuntimeConfig(activeMapId_);
+      } else {
+        if (parsedToken.matchId != activeMatchId_) {
+          std::ostringstream detail;
+          detail << "activeMatch=" << activeMatchId_
+                 << " incomingMatch=" << parsedToken.matchId;
+          const auto detailText = detail.str();
+          recordViolation(playerId, session->remoteEndpoint(), "room_token_mismatch",
+                          detailText);
+
+          const auto mismatchMeta = session->nextEnvelopeMeta();
+          auto mismatchPayload = wildpaw::room::wire::encodeEventEnvelope(
+              "room.match.mismatch", detailText, mismatchMeta);
+          session->sendReliableBinary(mismatchMeta.seq,
+                                      std::move(mismatchPayload),
+                                      WsSession::ReliableClass::Standard);
+          session->requestClose("room.match.mismatch");
+          return false;
+        }
+
+        if (!activeMapId_.empty() && parsedToken.mapId != activeMapId_) {
+          std::ostringstream detail;
+          detail << "activeMap=" << activeMapId_
+                 << " incomingMap=" << parsedToken.mapId;
+          const auto detailText = detail.str();
+          recordViolation(playerId, session->remoteEndpoint(), "room_map_mismatch",
+                          detailText);
+
+          const auto mismatchMeta = session->nextEnvelopeMeta();
+          auto mismatchPayload = wildpaw::room::wire::encodeEventEnvelope(
+              "room.map.mismatch", detailText, mismatchMeta);
+          session->sendReliableBinary(mismatchMeta.seq,
+                                      std::move(mismatchPayload),
+                                      WsSession::ReliableClass::Standard);
+          session->requestClose("room.map.mismatch");
+          return false;
+        }
+
+        activeRoomExpiresAtMs_ =
+            std::max(activeRoomExpiresAtMs_, parsedToken.expiresAtMs);
+      }
+    }
 
     TeamAssignment assignment;
     bool accepted = false;
 
     {
       std::lock_guard<std::mutex> lock(sessionsMutex_);
+      sessions_[playerId] = session;
 
-      if (sessions_.size() < maxPlayersPerRoom_) {
+      if (const auto found = teamAssignments_.find(playerId);
+          found != teamAssignments_.end()) {
+        assignment = found->second;
+        accepted = true;
+      } else if (teamAssignments_.size() < maxPlayersPerRoom_) {
         const auto reserved = allocateTeamAssignmentLocked();
         if (reserved.has_value()) {
           assignment = reserved.value();
-          sessions_[playerId] = session;
           teamAssignments_[playerId] = assignment;
           accepted = true;
         }
@@ -866,9 +1229,20 @@ class RoomServer {
     wildpaw::room::WorldSnapshot baseSnapshot;
     {
       std::lock_guard<std::mutex> lock(simulationMutex_);
-      simulation_.addPlayer(playerId);
+      simulation_.addPlayer(playerId, assignment.teamId, assignment.slot);
       baseSnapshot = simulation_.snapshot();
     }
+
+    session->markReady();
+
+    std::ostringstream helloAckMessage;
+    helloAckMessage << "{\"status\":\"ok\",\"matchId\":\""
+                    << jsonEscape(parsedToken.matchId)
+                    << "\",\"mapId\":\"" << jsonEscape(parsedToken.mapId)
+                    << "\",\"clientVersion\":\""
+                    << jsonEscape(std::string{clientVersion}) << "\"}";
+    sendEventWithPolicy(session, "hello.ack", helloAckMessage.str(),
+                        WsSession::ReliableClass::Standard);
 
     const auto welcomeMeta = session->nextEnvelopeMeta();
     auto welcomePayload = wildpaw::room::wire::encodeWelcomeEnvelope(
@@ -878,7 +1252,8 @@ class RoomServer {
 
     const auto baseMeta = session->nextEnvelopeMeta();
     auto basePayload = wildpaw::room::wire::encodeSnapshotEnvelope(
-        false, baseSnapshot.serverTick, unixTimeMs(), baseSnapshot.players, baseMeta);
+        false, baseSnapshot.serverTick, unixTimeMs(), baseSnapshot.players,
+        std::span<const std::uint32_t>{}, baseMeta);
     session->sendReliableBinary(baseMeta.seq, std::move(basePayload),
                                 WsSession::ReliableClass::Critical);
     snapshotBaseSentTotal_.fetch_add(1, std::memory_order_relaxed);
@@ -894,7 +1269,8 @@ class RoomServer {
               << " team=" << static_cast<int>(assignment.teamId)
               << " slot=" << assignment.slot
               << " activePlayers=" << activeSessionCount() << "/"
-              << maxPlayersPerRoom_ << '\n';
+              << maxPlayersPerRoom_ << " match=" << parsedToken.matchId
+              << " map=" << parsedToken.mapId << '\n';
 
     return true;
   }
@@ -918,10 +1294,18 @@ class RoomServer {
 
     session->noteClientEnvelope(decoded->meta);
 
+    if (!session->isReady() &&
+        decoded->type != wildpaw::room::wire::ClientMessageType::Hello) {
+      recordViolation(playerId, session->remoteEndpoint(), "pre_hello_message",
+                      "non-hello message before authentication");
+      sendEventWithPolicy(session, "warn", "hello-required",
+                          WsSession::ReliableClass::None);
+      return;
+    }
+
     switch (decoded->type) {
       case wildpaw::room::wire::ClientMessageType::Hello:
-        sendEventWithPolicy(session, "hello.ack", "ok",
-                            WsSession::ReliableClass::Standard);
+        onSessionReady(session, decoded->roomToken, decoded->clientVersion);
         return;
 
       case wildpaw::room::wire::ClientMessageType::Input:
@@ -962,15 +1346,23 @@ class RoomServer {
   }
 
   void onSessionClosed(std::uint32_t playerId) {
+    bool becameEmpty = false;
     {
       std::lock_guard<std::mutex> lock(sessionsMutex_);
       sessions_.erase(playerId);
       teamAssignments_.erase(playerId);
+      becameEmpty = teamAssignments_.empty();
     }
 
     {
       std::lock_guard<std::mutex> lock(simulationMutex_);
       simulation_.removePlayer(playerId);
+    }
+
+    if (becameEmpty) {
+      std::lock_guard<std::mutex> lock(roomRuntimeMutex_);
+      activeMatchId_.clear();
+      activeRoomExpiresAtMs_ = 0;
     }
 
     std::cout << "[room] player disconnected: " << playerId
@@ -1003,7 +1395,7 @@ class RoomServer {
 
   [[nodiscard]] std::size_t activeSessionCount() {
     std::lock_guard<std::mutex> lock(sessionsMutex_);
-    return sessions_.size();
+    return teamAssignments_.size();
   }
 
   [[nodiscard]] std::pair<std::size_t, std::size_t> currentTeamOccupancy() {
@@ -1027,7 +1419,7 @@ class RoomServer {
       return std::nullopt;
     }
 
-    if (sessions_.size() >= maxPlayersPerRoom_) {
+    if (teamAssignments_.size() >= maxPlayersPerRoom_) {
       return std::nullopt;
     }
 
@@ -1158,6 +1550,9 @@ class RoomServer {
     std::lock_guard<std::mutex> lock(sessionsMutex_);
     copy.reserve(sessions_.size());
     for (const auto& [playerId, session] : sessions_) {
+      if (!session || !session->isReady()) {
+        continue;
+      }
       copy.emplace_back(playerId, session);
     }
 
@@ -1191,6 +1586,12 @@ class RoomServer {
                                auto session = std::make_shared<WsSession>(
                                    std::move(socket), *this, playerId,
                                    std::move(remoteIp), remotePort);
+
+                               {
+                                 std::lock_guard<std::mutex> lock(sessionsMutex_);
+                                 sessions_[playerId] = session;
+                               }
+
                                session->start();
                              }
 
@@ -1288,7 +1689,8 @@ class RoomServer {
 
     const bool needInterestFiltering =
         !sessions.empty() &&
-        (!deltaSnapshot.changedPlayers.empty() || !combatEvents.empty() ||
+        (!deltaSnapshot.changedPlayers.empty() ||
+         !deltaSnapshot.removedPlayerIds.empty() || !combatEvents.empty() ||
          !projectileEvents.empty());
 
     std::unordered_map<std::uint32_t, std::unordered_set<std::uint32_t>>
@@ -1312,17 +1714,16 @@ class RoomServer {
 
       const auto& visibleIds = visibleFound->second;
 
-      if (!deltaSnapshot.changedPlayers.empty()) {
-        const auto visibleChanged =
-            selectVisibleChangedPlayers(deltaSnapshot, visibleIds);
+      const auto visibleChanged =
+          selectVisibleChangedPlayers(deltaSnapshot, visibleIds);
 
-        if (!visibleChanged.empty()) {
-          const auto meta = session->nextEnvelopeMeta();
-          auto payload = wildpaw::room::wire::encodeSnapshotEnvelope(
-              true, deltaSnapshot.serverTick, serverTimeMs, visibleChanged, meta);
-          session->sendBinary(std::move(payload));
-          snapshotDeltaSentTotal_.fetch_add(1, std::memory_order_relaxed);
-        }
+      if (!visibleChanged.empty() || !deltaSnapshot.removedPlayerIds.empty()) {
+        const auto meta = session->nextEnvelopeMeta();
+        auto payload = wildpaw::room::wire::encodeSnapshotEnvelope(
+            true, deltaSnapshot.serverTick, serverTimeMs, visibleChanged,
+            deltaSnapshot.removedPlayerIds, meta);
+        session->sendBinary(std::move(payload));
+        snapshotDeltaSentTotal_.fetch_add(1, std::memory_order_relaxed);
       }
 
       for (const auto& combatEvent : combatEvents) {
@@ -1391,8 +1792,16 @@ class RoomServer {
   std::size_t maxPlayersPerRoom_{6};
 
   std::string rulesPath_;
+  std::filesystem::path mapDataRootPath_;
+  std::string roomTokenSecret_;
+
   std::optional<std::filesystem::file_time_type> rulesLastWriteTime_;
   std::chrono::steady_clock::time_point nextRuleReloadCheckAt_{};
+
+  std::mutex roomRuntimeMutex_;
+  std::string activeMatchId_;
+  std::string activeMapId_;
+  std::uint64_t activeRoomExpiresAtMs_{0};
 
   std::atomic<bool> running_{false};
   std::jthread tickThread_;
@@ -1512,9 +1921,7 @@ void WsSession::start() {
       return;
     }
 
-    if (self->server_.onSessionReady(self)) {
-      self->doRead();
-    }
+    self->doRead();
   });
 }
 
@@ -2170,6 +2577,18 @@ int main(int argc, char* argv[]) {
         argc > 6 ? static_cast<std::uint16_t>(std::max(1, std::stoi(argv[6])))
                  : 3;
 
+    const std::filesystem::path mapDataRootPath =
+        argc > 7 ? std::filesystem::path{argv[7]}
+                 : std::filesystem::path{"../client/web/src/level/data/maps"};
+
+    const std::string roomTokenSecret = []() {
+      const char* env = std::getenv("WILDPAW_ROOM_TOKEN_SECRET");
+      if (env == nullptr || std::string_view{env}.empty()) {
+        return std::string{"dev-room-secret"};
+      }
+      return std::string{env};
+    }();
+
     std::string rulesError;
     if (!wildpaw::room::loadCombatRuleProfilesFromJson(rulesPath, &rulesError)) {
       std::cerr << "[room] combat rule load failed, fallback to built-in profiles: "
@@ -2188,7 +2607,8 @@ int main(int argc, char* argv[]) {
     auto workGuard = net::make_work_guard(io);
 
     RoomServer roomServer(io, tcp::endpoint(tcp::v4(), port), tickRate,
-                          teamSize, rulesPath);
+                          teamSize, rulesPath, mapDataRootPath,
+                          roomTokenSecret);
     MetricsServer metricsServer(
         io, tcp::endpoint(tcp::v4(), metricsPort),
         [&roomServer]() { return roomServer.renderPrometheusMetrics(); },
@@ -2228,6 +2648,8 @@ int main(int argc, char* argv[]) {
               << " rulesPath=" << rulesPath
               << " teamSize=" << teamSize
               << " maxPlayersPerRoom=" << (static_cast<std::uint32_t>(teamSize) * 2u)
+              << " mapDataRootPath=" << mapDataRootPath.string()
+              << " roomTokenAuth=" << (roomTokenSecret.empty() ? "off" : "on")
               << " defaultProfile="
               << wildpaw::room::defaultCombatRuleProfileId()
               << " adminAuth=" << (adminToken.empty() ? "off" : "on") << '\n';

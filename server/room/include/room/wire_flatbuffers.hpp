@@ -49,6 +49,7 @@ std::vector<std::uint8_t> encodeSnapshotEnvelope(
     std::uint32_t serverTick,
     std::uint64_t serverTimeMs,
     std::span<const PlayerState> players,
+    std::span<const std::uint32_t> removedPlayerIds,
     const EnvelopeMeta& meta);
 
 std::vector<std::uint8_t> encodeCombatEventEnvelope(const CombatEvent& event,

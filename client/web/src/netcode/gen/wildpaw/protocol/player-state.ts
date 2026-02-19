@@ -99,8 +99,18 @@ castRemainingTicks():number {
   return offset ? this.bb!.readUint32(this.bb_pos + offset) : 0;
 }
 
+teamId():number {
+  const offset = this.bb!.__offset(this.bb_pos, 34);
+  return offset ? this.bb!.readUint8(this.bb_pos + offset) : 0;
+}
+
+teamSlot():number {
+  const offset = this.bb!.__offset(this.bb_pos, 36);
+  return offset ? this.bb!.readUint16(this.bb_pos + offset) : 0;
+}
+
 static startPlayerState(builder:flatbuffers.Builder) {
-  builder.startObject(15);
+  builder.startObject(17);
 }
 
 static addPlayerId(builder:flatbuffers.Builder, playerId:number) {
@@ -161,6 +171,14 @@ static addCastingSkill(builder:flatbuffers.Builder, castingSkill:SkillSlot) {
 
 static addCastRemainingTicks(builder:flatbuffers.Builder, castRemainingTicks:number) {
   builder.addFieldInt32(14, castRemainingTicks, 0);
+}
+
+static addTeamId(builder:flatbuffers.Builder, teamId:number) {
+  builder.addFieldInt8(15, teamId, 0);
+}
+
+static addTeamSlot(builder:flatbuffers.Builder, teamSlot:number) {
+  builder.addFieldInt16(16, teamSlot, 0);
 }
 
 static endPlayerState(builder:flatbuffers.Builder):flatbuffers.Offset {

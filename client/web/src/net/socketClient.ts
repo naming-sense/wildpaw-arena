@@ -7,6 +7,7 @@ import { Envelope } from "../netcode/gen/wildpaw/protocol/envelope";
 import { EventPayload } from "../netcode/gen/wildpaw/protocol/event-payload";
 import { HelloPayload } from "../netcode/gen/wildpaw/protocol/hello-payload";
 import { MessagePayload } from "../netcode/gen/wildpaw/protocol/message-payload";
+import { SelectProfilePayload } from "../netcode/gen/wildpaw/protocol/select-profile-payload";
 import { PingPayload } from "../netcode/gen/wildpaw/protocol/ping-payload";
 import { ProjectileEventPayload } from "../netcode/gen/wildpaw/protocol/projectile-event-payload";
 import { SnapshotKind } from "../netcode/gen/wildpaw/protocol/snapshot-kind";
@@ -68,10 +69,29 @@ function getPreferredHeroId(explicit?: string): string {
   return "coral_cat";
 }
 
+function resolveServerProfileId(heroId: string): string {
+  switch (heroId) {
+    case "bruno_bear":
+    case "rockhorn_rhino":
+      return "bruiser";
+    case "lumifox":
+    case "coral_cat":
+      return "skirmisher";
+    default:
+      return "ranger";
+  }
+}
+
 class SequenceTracker {
   private nextLocalSeq = 1;
   private highestRemoteSeq = 0;
   private readonly remoteWindow: number[] = [];
+
+  reset(): void {
+    this.nextLocalSeq = 1;
+    this.highestRemoteSeq = 0;
+    this.remoteWindow.length = 0;
+  }
 
   nextOutgoingMeta(): { seq: number; ack: number; ackBits: number } {
     return {
@@ -137,6 +157,7 @@ export class RealtimeSocketClient {
   private state: ConnectionState = "Disconnected";
   private pingSentAt = 0;
   private keepAliveTimer: number | null = null;
+  private manualDisconnect = false;
   private readonly heroId: string;
 
   private lastRoomToken = "dev-room";
@@ -161,10 +182,19 @@ export class RealtimeSocketClient {
       return;
     }
 
+    if (this.reconnectTimer !== null) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    this.manualDisconnect = false;
     this.clearKeepAliveTimer();
     this.playerStateCache.clear();
     this.lastYawByPlayerId.clear();
     this.lastAckSeq = 0;
+    this.sequenceTracker.reset();
+    this.seenRemoteEnvelopeSeqs.length = 0;
+
     this.ws = new WebSocket(this.options.url);
     this.ws.binaryType = "arraybuffer";
 
@@ -172,6 +202,7 @@ export class RealtimeSocketClient {
       this.reconnectAttempt = 0;
       this.setState("Connected");
       this.sendHello(this.lastRoomToken);
+      this.sendSelectProfile(resolveServerProfileId(this.heroId));
       this.startKeepAlive();
     };
 
@@ -181,6 +212,10 @@ export class RealtimeSocketClient {
 
     this.ws.onclose = () => {
       this.clearKeepAliveTimer();
+      if (this.manualDisconnect) {
+        this.setState("Disconnected");
+        return;
+      }
       this.scheduleReconnect();
     };
 
@@ -195,8 +230,14 @@ export class RealtimeSocketClient {
       this.reconnectTimer = null;
     }
 
+    this.manualDisconnect = true;
     this.clearKeepAliveTimer();
-    this.ws?.close();
+
+    if (this.ws) {
+      this.ws.onclose = null;
+      this.ws.close();
+    }
+
     this.ws = null;
     this.setState("Disconnected");
   }
@@ -278,6 +319,22 @@ export class RealtimeSocketClient {
 
       return {
         payloadType: MessagePayload.HelloPayload,
+        payloadOffset,
+        meta,
+      };
+    });
+  }
+
+  private sendSelectProfile(profileId: string): boolean {
+    return this.sendBinary((builder, meta) => {
+      const profileIdOffset = builder.createString(profileId);
+      const payloadOffset = SelectProfilePayload.createSelectProfilePayload(
+        builder,
+        profileIdOffset,
+      );
+
+      return {
+        payloadType: MessagePayload.SelectProfilePayload,
         payloadOffset,
         meta,
       };
@@ -455,9 +512,14 @@ export class RealtimeSocketClient {
           const nextYaw = Math.hypot(vx, vy) > 0.001 ? Math.atan2(vx, vy) : previousYaw;
           this.lastYawByPlayerId.set(playerId, nextYaw);
 
+          const teamFromServer = player.teamId();
           const mapped: NetworkPlayerState = {
             playerId,
-            team: this.resolveTeamId(playerId),
+            team:
+              teamFromServer > 0
+                ? teamFromServer
+                : this.resolveTeamId(playerId),
+            teamSlot: player.teamSlot(),
             x: position?.x() ?? 0,
             y: position?.y() ?? 0,
             rot: nextYaw,
@@ -474,6 +536,7 @@ export class RealtimeSocketClient {
           };
 
           if (playerId === this.localNetworkPlayerId) {
+            this.localTeamId = mapped.team === 2 ? 2 : 1;
             this.lastAckSeq = Math.max(this.lastAckSeq, mapped.lastProcessedInputSeq);
           }
 
@@ -481,6 +544,16 @@ export class RealtimeSocketClient {
             state: mapped,
             updatedAtMs: serverTimeMs,
           });
+        }
+
+        for (let i = 0; i < snapshotPayload.removedPlayerIdsLength(); i += 1) {
+          const removedPlayerId = snapshotPayload.removedPlayerIds(i);
+          if (typeof removedPlayerId !== "number" || !Number.isFinite(removedPlayerId)) {
+            continue;
+          }
+
+          this.playerStateCache.delete(removedPlayerId);
+          this.lastYawByPlayerId.delete(removedPlayerId);
         }
 
         const localCached = this.playerStateCache.get(this.localNetworkPlayerId);

@@ -49,6 +49,9 @@ table PlayerState {
 
   casting_skill:SkillSlot = None;
   cast_remaining_ticks:uint;
+
+  team_id:ubyte = 0;
+  team_slot:ushort = 0;
 }
 
 table HelloPayload {
@@ -95,6 +98,7 @@ table SnapshotPayload {
   server_tick:uint;
   server_time_ms:ulong;
   players:[PlayerState];
+  removed_player_ids:[uint];
 }
 
 table CombatEventPayload {

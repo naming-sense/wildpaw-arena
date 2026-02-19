@@ -18,6 +18,7 @@ export interface InputCommand {
 export interface NetworkPlayerState {
   playerId: number;
   team: number;
+  teamSlot?: number;
   x: number;
   y: number;
   rot: number;
