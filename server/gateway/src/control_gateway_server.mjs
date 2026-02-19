@@ -15,6 +15,35 @@ const RECONNECT_WINDOW_SEC = Number(process.env.RECONNECT_WINDOW_SEC ?? 20);
 const QUEUE_PENALTY_SEC = Number(process.env.QUEUE_PENALTY_SEC ?? 30);
 const SIM_MATCH_DURATION_SEC = Number(process.env.SIM_MATCH_DURATION_SEC ?? 45);
 
+const MATCHMAKING_EXPANSION_STEPS = [
+  {
+    stage: 0,
+    minElapsedSec: 0,
+    maxPingMs: 95,
+    srRange: 140,
+    maxTeamSrDiff: 80,
+    strictRegion: true,
+  },
+  {
+    stage: 1,
+    minElapsedSec: 2,
+    maxPingMs: 130,
+    srRange: 420,
+    maxTeamSrDiff: 160,
+    strictRegion: false,
+  },
+  {
+    stage: 2,
+    minElapsedSec: 8,
+    maxPingMs: 220,
+    srRange: 900,
+    maxTeamSrDiff: 280,
+    strictRegion: false,
+  },
+];
+
+const MATCHMAKING_EXTREME_WAIT_SEC = 180;
+
 const ROOM_ENDPOINT =
   process.env.ROOM_ENDPOINT ?? "ws://127.0.0.1:7001";
 const ROOM_REGION = process.env.ROOM_REGION ?? "KR";
@@ -107,7 +136,7 @@ const sessionsBySessionId = new Map();
 /** @type {Map<string, Session>} */
 const sessionsByAccountId = new Map();
 
-/** @type {Map<string, {displayName: string, onboardingDone: boolean}>} */
+/** @type {Map<string, {displayName: string, onboardingDone: boolean, sr: number, rd: number, matchesPlayed: number}>} */
 const accountProfiles = new Map();
 /** @type {Map<string, number>} */
 const queuePenaltyUntilByAccount = new Map();
@@ -172,6 +201,51 @@ function compareSemver(a, b) {
   return 0;
 }
 
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function getQueueExpansion(elapsedSec) {
+  let picked = MATCHMAKING_EXPANSION_STEPS[0];
+
+  for (const step of MATCHMAKING_EXPANSION_STEPS) {
+    if (elapsedSec >= step.minElapsedSec) {
+      picked = step;
+    }
+  }
+
+  return picked;
+}
+
+function average(values) {
+  if (!Array.isArray(values) || values.length === 0) {
+    return 0;
+  }
+
+  const total = values.reduce((acc, value) => acc + value, 0);
+  return total / values.length;
+}
+
+function stdDev(values) {
+  if (!Array.isArray(values) || values.length <= 1) {
+    return 0;
+  }
+
+  const avg = average(values);
+  const variance = average(values.map((value) => (value - avg) ** 2));
+  return Math.sqrt(variance);
+}
+
+function deriveInitialSkill(accountId) {
+  const digest = createHash("sha1").update(String(accountId)).digest();
+  const seed = ((digest[0] ?? 0) << 8) | (digest[1] ?? 0);
+
+  const sr = 1200 + (seed % 900);
+  const rd = 280 + (seed % 120);
+
+  return { sr, rd };
+}
+
 function modeToTeamSize(modeId) {
   if (typeof modeId !== "string") return null;
   const match = modeId.match(/^(\d+)v\1/i);
@@ -179,6 +253,13 @@ function modeToTeamSize(modeId) {
   const size = Number(match[1]);
   if (!Number.isFinite(size) || size <= 0) return null;
   return size;
+}
+
+function partyBucketForSize(size, teamSize) {
+  if (size <= 1) return "solo";
+  if (size === 2) return "duo";
+  if (size >= teamSize) return teamSize === 5 ? "5-stack" : "full-party";
+  return `party-${size}`;
 }
 
 function setFlowState(session, nextState) {
@@ -438,6 +519,22 @@ function enqueueSession(session, payload, requestId, incomingEventId) {
     return false;
   }
 
+  const requestedPartyId =
+    typeof payload?.partyId === "string" && payload.partyId.length > 0
+      ? payload.partyId
+      : null;
+
+  if (requestedPartyId && session.partyId && requestedPartyId !== session.partyId) {
+    const ctx = {
+      session,
+      requestId,
+      incomingEventId,
+      incoming: { payload },
+    };
+    sendError(ctx, ERROR_CODES.BAD_REQUEST, "partyId mismatch with current session");
+    return false;
+  }
+
   const remainingPenalty = getPenaltyRemainingSec(session.accountId);
   if (remainingPenalty > 0) {
     const ctx = {
@@ -461,6 +558,12 @@ function enqueueSession(session, payload, requestId, incomingEventId) {
     return false;
   }
 
+  const pingCandidate = Number(
+    payload?.avgPingMs ?? payload?.pingMs ?? session.lastKnownPingMs ?? 80,
+  );
+  const avgPingMs = clamp(Number.isFinite(pingCandidate) ? pingCandidate : 80, 20, 500);
+  session.lastKnownPingMs = avgPingMs;
+
   const ticketId = makeId("qt", nextQueueTicketId++);
   const ticket = {
     queueTicketId: ticketId,
@@ -469,10 +572,13 @@ function enqueueSession(session, payload, requestId, incomingEventId) {
     requiredCount: teamSize * 2,
     accountId: session.accountId,
     sessionId: session.sessionId,
-    partyId: typeof payload?.partyId === "string" ? payload.partyId : null,
+    partyId: requestedPartyId ?? session.partyId ?? null,
     regionPreference:
       typeof payload?.regionPreference === "string" ? payload.regionPreference : "KR",
     inputDevice: typeof payload?.inputDevice === "string" ? payload.inputDevice : "kbm",
+    sr: Number.isFinite(session.hiddenSr) ? session.hiddenSr : 1500,
+    rd: Number.isFinite(session.hiddenRd) ? session.hiddenRd : 350,
+    avgPingMs,
     joinedAt: nowMs(),
   };
 
@@ -489,6 +595,13 @@ function enqueueSession(session, payload, requestId, incomingEventId) {
     queueTicketId: ticketId,
     modeId,
     joinedAt: ticket.joinedAt,
+    mmr: {
+      sr: Math.round(ticket.sr),
+      rd: Math.round(ticket.rd),
+    },
+    network: {
+      avgPingMs: Math.round(ticket.avgPingMs),
+    },
   }, requestId);
   sendRaw(session, joinedEnvelope);
   cacheResponse(session, incomingEventId, joinedEnvelope);
@@ -510,6 +623,7 @@ function pushQueueStatusAll() {
     }
 
     const elapsedSec = Math.max(0, Math.floor((now - ticket.joinedAt) / 1000));
+    const expansion = getQueueExpansion(elapsedSec);
     const estimatedWaitSec = Math.max(5, ticket.requiredCount * 4 - elapsedSec);
 
     sendPush(session, "S2C_QUEUE_STATUS", {
@@ -517,25 +631,347 @@ function pushQueueStatusAll() {
       elapsedSec,
       estimatedWaitSec,
       searchRange: {
-        maxPingMs: Math.min(180, 90 + elapsedSec * 2),
-        srRange: Math.min(450, 80 + elapsedSec * 8),
+        maxPingMs: expansion.maxPingMs,
+        srRange: expansion.srRange,
+      },
+      stage: expansion.stage,
+      mmr: {
+        sr: Math.round(ticket.sr),
+        rd: Math.round(ticket.rd),
+      },
+      network: {
+        avgPingMs: Math.round(ticket.avgPingMs),
+      },
+      queueHealth: {
+        extremeWait: elapsedSec >= MATCHMAKING_EXTREME_WAIT_SEC,
       },
     });
   }
 }
 
+function isActiveQueueTicket(ticket) {
+  if (!ticket) {
+    return false;
+  }
+
+  const session = sessionsBySessionId.get(ticket.sessionId);
+  if (!session) {
+    return false;
+  }
+
+  if (session.flowState !== FLOW_STATES.QUEUEING) {
+    return false;
+  }
+
+  if (session.activeMatchCandidateId) {
+    return false;
+  }
+
+  return true;
+}
+
+function buildQueueUnits(modeId, ticketIds, teamSize) {
+  const groupByKey = new Map();
+
+  for (const ticketId of ticketIds) {
+    const ticket = queueTickets.get(ticketId);
+    if (!ticket || ticket.modeId !== modeId) {
+      continue;
+    }
+
+    const groupKey = ticket.partyId
+      ? `party:${ticket.partyId}`
+      : `solo:${ticket.queueTicketId}`;
+
+    if (!groupByKey.has(groupKey)) {
+      groupByKey.set(groupKey, []);
+    }
+
+    groupByKey.get(groupKey).push(ticket);
+  }
+
+  const units = [];
+  const now = nowMs();
+
+  for (const [groupKey, tickets] of groupByKey.entries()) {
+    if (!Array.isArray(tickets) || tickets.length === 0) {
+      continue;
+    }
+
+    if (tickets.length > teamSize) {
+      continue;
+    }
+
+    const joinedAt = Math.min(...tickets.map((ticket) => ticket.joinedAt));
+    const playerSrs = tickets.map((ticket) => ticket.sr);
+    const playerRds = tickets.map((ticket) => ticket.rd);
+    const pingValues = tickets.map((ticket) => ticket.avgPingMs);
+
+    const waitSec = Math.max(0, Math.floor((now - joinedAt) / 1000));
+
+    units.push({
+      key: groupKey,
+      partyId: tickets[0].partyId,
+      ticketIds: tickets.map((ticket) => ticket.queueTicketId),
+      sessionIds: tickets.map((ticket) => ticket.sessionId),
+      size: tickets.length,
+      joinedAt,
+      waitSec,
+      avgSr: average(playerSrs),
+      avgRd: average(playerRds),
+      maxPingMs: Math.max(...pingValues),
+      regionPreference: tickets[0].regionPreference,
+      partyBucket: partyBucketForSize(tickets.length, teamSize),
+      playerSrs,
+    });
+  }
+
+  units.sort((a, b) => a.joinedAt - b.joinedAt);
+
+  return units;
+}
+
+function canUnitJoinAnchor(unit, anchor, expansion) {
+  if (!unit || !anchor) {
+    return false;
+  }
+
+  if (unit.maxPingMs > expansion.maxPingMs) {
+    return false;
+  }
+
+  if (Math.abs(unit.avgSr - anchor.avgSr) > expansion.srRange) {
+    return false;
+  }
+
+  if (expansion.strictRegion && unit.regionPreference !== anchor.regionPreference) {
+    return false;
+  }
+
+  return true;
+}
+
+function summarizeTeam(units) {
+  const playersSr = [];
+  let totalPlayers = 0;
+  let weightedSr = 0;
+
+  const partyCountBySize = new Map();
+
+  for (const unit of units) {
+    totalPlayers += unit.size;
+    weightedSr += unit.avgSr * unit.size;
+
+    for (const sr of unit.playerSrs) {
+      playersSr.push(sr);
+    }
+
+    const sizeCount = partyCountBySize.get(unit.size) ?? 0;
+    partyCountBySize.set(unit.size, sizeCount + 1);
+  }
+
+  const avgSr = totalPlayers > 0 ? weightedSr / totalPlayers : 0;
+  const srStd = stdDev(playersSr);
+
+  return {
+    playersSr,
+    totalPlayers,
+    avgSr,
+    srStd,
+    partyCountBySize,
+  };
+}
+
+function computePartySymmetryPenalty(teamAUnits, teamBUnits, teamSize) {
+  const teamA = summarizeTeam(teamAUnits);
+  const teamB = summarizeTeam(teamBUnits);
+
+  let penalty = 0;
+  for (let size = 1; size <= teamSize; size += 1) {
+    const countA = teamA.partyCountBySize.get(size) ?? 0;
+    const countB = teamB.partyCountBySize.get(size) ?? 0;
+    penalty += Math.abs(countA - countB);
+  }
+
+  return penalty;
+}
+
+function assignUnitsToTeams(units, teamSize, maxTeamSrDiff) {
+  const orderedUnits = [...units].sort((a, b) => b.size - a.size || a.joinedAt - b.joinedAt);
+
+  let best = null;
+
+  function evaluate(teamAUnits, teamBUnits) {
+    const summaryA = summarizeTeam(teamAUnits);
+    const summaryB = summarizeTeam(teamBUnits);
+
+    if (summaryA.totalPlayers !== teamSize || summaryB.totalPlayers !== teamSize) {
+      return;
+    }
+
+    const srDiff = Math.abs(summaryA.avgSr - summaryB.avgSr);
+    if (srDiff > maxTeamSrDiff) {
+      return;
+    }
+
+    const srStdGap = Math.abs(summaryA.srStd - summaryB.srStd);
+    const partyPenalty = computePartySymmetryPenalty(teamAUnits, teamBUnits, teamSize);
+
+    const score = partyPenalty * 1000 + srDiff * 8 + srStdGap * 4;
+
+    if (!best || score < best.score) {
+      best = {
+        score,
+        teamAUnits: [...teamAUnits],
+        teamBUnits: [...teamBUnits],
+        srDiff,
+        srStdGap,
+        partyPenalty,
+      };
+    }
+  }
+
+  function dfs(index, teamAUnits, teamBUnits, teamASize, teamBSize) {
+    if (teamASize > teamSize || teamBSize > teamSize) {
+      return;
+    }
+
+    if (index >= orderedUnits.length) {
+      evaluate(teamAUnits, teamBUnits);
+      return;
+    }
+
+    const unit = orderedUnits[index];
+
+    teamAUnits.push(unit);
+    dfs(index + 1, teamAUnits, teamBUnits, teamASize + unit.size, teamBSize);
+    teamAUnits.pop();
+
+    teamBUnits.push(unit);
+    dfs(index + 1, teamAUnits, teamBUnits, teamASize, teamBSize + unit.size);
+    teamBUnits.pop();
+  }
+
+  dfs(0, [], [], 0, 0);
+  return best;
+}
+
+function findBestMatchFromUnits(units, teamSize) {
+  const requiredCount = teamSize * 2;
+  if (!Array.isArray(units) || units.length === 0) {
+    return null;
+  }
+
+  const totalPlayers = units.reduce((acc, unit) => acc + unit.size, 0);
+  if (totalPlayers < requiredCount) {
+    return null;
+  }
+
+  for (const anchor of units) {
+    const expansion = getQueueExpansion(anchor.waitSec);
+
+    const eligible = units.filter((unit) => canUnitJoinAnchor(unit, anchor, expansion));
+    const eligiblePlayers = eligible.reduce((acc, unit) => acc + unit.size, 0);
+
+    if (eligiblePlayers < requiredCount) {
+      continue;
+    }
+
+    const ordered = [
+      anchor,
+      ...eligible.filter((unit) => unit.key !== anchor.key),
+    ].sort((a, b) => a.joinedAt - b.joinedAt);
+
+    let best = null;
+
+    function evaluateUnitSubset(selectedUnits) {
+      const assignment = assignUnitsToTeams(
+        selectedUnits,
+        teamSize,
+        expansion.maxTeamSrDiff,
+      );
+
+      if (!assignment) {
+        return;
+      }
+
+      const ticketIds = selectedUnits.flatMap((unit) => unit.ticketIds);
+      const participantSessionIds = selectedUnits.flatMap((unit) => unit.sessionIds);
+      const teamA = assignment.teamAUnits.flatMap((unit) => unit.sessionIds);
+      const teamB = assignment.teamBUnits.flatMap((unit) => unit.sessionIds);
+
+      const qualityTier =
+        assignment.partyPenalty === 0 && assignment.srDiff <= 40
+          ? "HIGH"
+          : assignment.partyPenalty <= 1 && assignment.srDiff <= 70
+            ? "MEDIUM"
+            : "LOW";
+
+      const score = assignment.score + expansion.stage * 300;
+      if (!best || score < best.score) {
+        best = {
+          score,
+          ticketIds,
+          participantSessionIds,
+          teamAssignments: { teamA, teamB },
+          quality: {
+            qualityTier,
+            expansionStage: expansion.stage,
+            maxPingMs: expansion.maxPingMs,
+            srRange: expansion.srRange,
+            maxTeamSrDiff: expansion.maxTeamSrDiff,
+            avgSrDiff: Number(assignment.srDiff.toFixed(2)),
+            partySymmetryPenalty: assignment.partyPenalty,
+            srStdGap: Number(assignment.srStdGap.toFixed(2)),
+            anchorWaitSec: anchor.waitSec,
+            extremeWait: anchor.waitSec >= MATCHMAKING_EXTREME_WAIT_SEC,
+          },
+        };
+      }
+    }
+
+    function dfs(index, selectedUnits, selectedPlayers) {
+      if (selectedPlayers === requiredCount) {
+        evaluateUnitSubset(selectedUnits);
+        return;
+      }
+
+      if (selectedPlayers > requiredCount || index >= ordered.length) {
+        return;
+      }
+
+      let remainPlayers = 0;
+      for (let i = index; i < ordered.length; i += 1) {
+        remainPlayers += ordered[i].size;
+      }
+      if (selectedPlayers + remainPlayers < requiredCount) {
+        return;
+      }
+
+      const unit = ordered[index];
+
+      selectedUnits.push(unit);
+      dfs(index + 1, selectedUnits, selectedPlayers + unit.size);
+      selectedUnits.pop();
+
+      dfs(index + 1, selectedUnits, selectedPlayers);
+    }
+
+    dfs(1, [anchor], anchor.size);
+
+    if (best) {
+      return best;
+    }
+  }
+
+  return null;
+}
+
 function runMatchmaker() {
   for (const [modeId, ticketIds] of queueBuckets.entries()) {
-    const activeIds = ticketIds.filter((ticketId) => {
+    let activeIds = ticketIds.filter((ticketId) => {
       const ticket = queueTickets.get(ticketId);
-      if (!ticket) return false;
-
-      const session = sessionsBySessionId.get(ticket.sessionId);
-      if (!session) return false;
-      if (session.flowState !== FLOW_STATES.QUEUEING) return false;
-      if (session.activeMatchCandidateId) return false;
-
-      return true;
+      return isActiveQueueTicket(ticket);
     });
 
     if (activeIds.length === 0) {
@@ -549,11 +985,24 @@ function runMatchmaker() {
       continue;
     }
 
-    const needed = firstTicket.requiredCount;
+    const teamSize = firstTicket.teamSize;
+    const requiredCount = teamSize * 2;
 
-    while (activeIds.length >= needed) {
-      const group = activeIds.splice(0, needed);
-      createMatchCandidate(modeId, group);
+    while (activeIds.length >= requiredCount) {
+      const units = buildQueueUnits(modeId, activeIds, teamSize);
+      const matched = findBestMatchFromUnits(units, teamSize);
+
+      if (!matched) {
+        break;
+      }
+
+      createMatchCandidate(modeId, matched.ticketIds, {
+        teamAssignments: matched.teamAssignments,
+        quality: matched.quality,
+      });
+
+      const consumed = new Set(matched.ticketIds);
+      activeIds = activeIds.filter((ticketId) => !consumed.has(ticketId));
     }
 
     if (activeIds.length === 0) {
@@ -564,7 +1013,7 @@ function runMatchmaker() {
   }
 }
 
-function createMatchCandidate(modeId, ticketIds) {
+function createMatchCandidate(modeId, ticketIds, options = {}) {
   const candidateId = makeId("mc", nextMatchCandidateId++);
   const tickets = ticketIds
     .map((id) => queueTickets.get(id))
@@ -577,7 +1026,18 @@ function createMatchCandidate(modeId, ticketIds) {
   const requiredCount = tickets[0].requiredCount;
   const participantSessionIds = tickets.map((ticket) => ticket.sessionId);
 
+  const ticketSnapshotBySessionId = Object.create(null);
+
   for (const ticket of tickets) {
+    ticketSnapshotBySessionId[ticket.sessionId] = {
+      partyId: ticket.partyId,
+      regionPreference: ticket.regionPreference,
+      inputDevice: ticket.inputDevice,
+      sr: ticket.sr,
+      rd: ticket.rd,
+      avgPingMs: ticket.avgPingMs,
+    };
+
     removeQueueTicket(ticket.queueTicketId);
   }
 
@@ -592,6 +1052,9 @@ function createMatchCandidate(modeId, ticketIds) {
     createdAt: nowMs(),
     timeoutHandle: null,
     mapPool: ["NJD_CR_01", "HMY_SZ_01"],
+    teamAssignments: options.teamAssignments ?? null,
+    quality: options.quality ?? null,
+    ticketSnapshotBySessionId,
   };
 
   matchCandidates.set(candidateId, candidate);
@@ -608,7 +1071,14 @@ function createMatchCandidate(modeId, ticketIds) {
       modeId,
       acceptDeadlineSec: READY_CHECK_TIMEOUT_SEC,
       mapPool: candidate.mapPool,
+      quality: candidate.quality,
     });
+  }
+
+  if (candidate.quality) {
+    console.log(
+      `[gateway][matchmaker] candidate=${candidateId} mode=${modeId} quality=${candidate.quality.qualityTier} srDiff=${candidate.quality.avgSrDiff} partyPenalty=${candidate.quality.partySymmetryPenalty} stage=${candidate.quality.expansionStage}`,
+    );
   }
 
   candidate.timeoutHandle = setTimeout(() => {
@@ -663,6 +1133,10 @@ function resolveReadyCheck(candidateId, failureReason = null) {
 
       const ticketId = makeId("qt", nextQueueTicketId++);
       const teamSize = modeToTeamSize(candidate.modeId) ?? 3;
+
+      const snapshot =
+        candidate.ticketSnapshotBySessionId?.[sessionId] ?? null;
+
       const ticket = {
         queueTicketId: ticketId,
         modeId: candidate.modeId,
@@ -670,9 +1144,26 @@ function resolveReadyCheck(candidateId, failureReason = null) {
         requiredCount: teamSize * 2,
         accountId: session.accountId,
         sessionId: session.sessionId,
-        partyId: session.partyId,
-        regionPreference: "KR",
-        inputDevice: "kbm",
+        partyId: snapshot?.partyId ?? session.partyId,
+        regionPreference: snapshot?.regionPreference ?? "KR",
+        inputDevice: snapshot?.inputDevice ?? "kbm",
+        sr: Number.isFinite(snapshot?.sr)
+          ? snapshot.sr
+          : Number.isFinite(session.hiddenSr)
+            ? session.hiddenSr
+            : 1500,
+        rd: Number.isFinite(snapshot?.rd)
+          ? snapshot.rd
+          : Number.isFinite(session.hiddenRd)
+            ? session.hiddenRd
+            : 350,
+        avgPingMs: clamp(
+          Number.isFinite(snapshot?.avgPingMs)
+            ? snapshot.avgPingMs
+            : session.lastKnownPingMs ?? 80,
+          20,
+          500,
+        ),
         joinedAt: nowMs(),
       };
       queueTickets.set(ticketId, ticket);
@@ -686,6 +1177,13 @@ function resolveReadyCheck(candidateId, failureReason = null) {
         queueTicketId: ticketId,
         modeId: candidate.modeId,
         joinedAt: ticket.joinedAt,
+        mmr: {
+          sr: Math.round(ticket.sr),
+          rd: Math.round(ticket.rd),
+        },
+        network: {
+          avgPingMs: Math.round(ticket.avgPingMs),
+        },
       });
       continue;
     }
@@ -721,7 +1219,8 @@ function makeTeamAssignments(participantSessionIds) {
 
 function createDraftMatch(candidate) {
   const matchId = makeId("m", nextMatchId++);
-  const teamAssignments = makeTeamAssignments(candidate.participantSessionIds);
+  const teamAssignments =
+    candidate.teamAssignments ?? makeTeamAssignments(candidate.participantSessionIds);
 
   const match = {
     matchId,
@@ -744,6 +1243,7 @@ function createDraftMatch(candidate) {
     matchEndHandle: null,
     rematchVotes: new Map(),
     roomAssignRetryBySessionId: new Map(),
+    quality: candidate.quality ?? null,
   };
 
   matches.set(matchId, match);
@@ -772,6 +1272,7 @@ function createDraftMatch(candidate) {
     draftType: match.draftType,
     turnOrder: match.turnOrder,
     timePerTurnSec: match.timePerTurnSec,
+    matchQuality: match.quality,
   });
 
   broadcastDraftState(match);
@@ -910,6 +1411,7 @@ function finishDraftAndAssign(match) {
       mapId,
       modeId: match.modeId,
       teamInfo,
+      matchQuality: match.quality,
       reconnectWindowSec: RECONNECT_WINDOW_SEC,
       roomConnectTimeoutSec: MATCH_ASSIGN_CONNECT_TIMEOUT_SEC,
     });
@@ -931,6 +1433,23 @@ function finishMatch(matchId) {
   const scoreA = 10 + Math.floor(Math.random() * 5);
   const scoreB = 8 + Math.floor(Math.random() * 5);
 
+  const teamASessions = match.teamA
+    .map((sessionId) => sessionsBySessionId.get(sessionId))
+    .filter(Boolean);
+  const teamBSessions = match.teamB
+    .map((sessionId) => sessionsBySessionId.get(sessionId))
+    .filter(Boolean);
+
+  const teamAAvgSr = average(teamASessions.map((session) => session.hiddenSr));
+  const teamBAvgSr = average(teamBSessions.map((session) => session.hiddenSr));
+
+  const expectedA = 1 / (1 + 10 ** ((teamBAvgSr - teamAAvgSr) / 400));
+  const expectedB = 1 - expectedA;
+  const actualA = scoreA >= scoreB ? 1 : 0;
+  const actualB = 1 - actualA;
+
+  const baseK = 24;
+
   for (const sessionId of match.participantSessionIds) {
     const session = sessionsBySessionId.get(sessionId);
     if (!session) continue;
@@ -941,10 +1460,33 @@ function finishMatch(matchId) {
         ? "WIN"
         : "LOSE";
 
+    const expected = team === "A" ? expectedA : expectedB;
+    const actual = team === "A" ? actualA : actualB;
+    const rdFactor = clamp((session.hiddenRd ?? 250) / 350, 0.45, 1.0);
+    const srDelta = Math.round(baseK * rdFactor * (actual - expected));
+
+    session.hiddenSr = Math.round(clamp((session.hiddenSr ?? 1500) + srDelta, 0, 4000));
+    session.hiddenRd = Math.round(clamp((session.hiddenRd ?? 350) * 0.97, 80, 350));
+    session.matchesPlayed = (session.matchesPlayed ?? 0) + 1;
+
+    if (session.accountId) {
+      const profile = accountProfiles.get(session.accountId);
+      if (profile) {
+        profile.sr = session.hiddenSr;
+        profile.rd = session.hiddenRd;
+        profile.matchesPlayed = session.matchesPlayed;
+      }
+    }
+
     sendPush(session, "S2C_MATCH_ENDED", {
       matchId,
       result,
       score: { teamA: scoreA, teamB: scoreB },
+      mmr: {
+        sr: session.hiddenSr,
+        rd: session.hiddenRd,
+        delta: srDelta,
+      },
       rewards: {
         rpDelta: result === "WIN" ? 24 : 8,
         xp: result === "WIN" ? 380 : 210,
@@ -1017,6 +1559,23 @@ function handleRematchResolution(match) {
     createdAt: nowMs(),
     timeoutHandle: null,
     mapPool: ["NJD_CR_01", "HMY_SZ_01"],
+    teamAssignments: {
+      teamA: [...match.teamA],
+      teamB: [...match.teamB],
+    },
+    quality: match.quality ?? {
+      qualityTier: "REMATCH",
+      expansionStage: 0,
+      maxPingMs: null,
+      srRange: null,
+      maxTeamSrDiff: null,
+      avgSrDiff: null,
+      partySymmetryPenalty: 0,
+      srStdGap: 0,
+      anchorWaitSec: 0,
+      extremeWait: false,
+    },
+    ticketSnapshotBySessionId: Object.create(null),
   };
 
   matchCandidates.set(rematchCandidateId, candidate);
@@ -1136,16 +1695,36 @@ function authenticateSession(session, accountId, displayName) {
   sessionsBySessionId.set(session.sessionId, session);
   sessionsByAccountId.set(accountId, session);
 
+  const skillSeed = deriveInitialSkill(accountId);
   const profile = accountProfiles.get(accountId) ?? {
     displayName,
     onboardingDone: false,
+    sr: skillSeed.sr,
+    rd: skillSeed.rd,
+    matchesPlayed: 0,
   };
 
   if (!profile.displayName) {
     profile.displayName = displayName;
   }
 
+  if (!Number.isFinite(profile.sr)) {
+    profile.sr = skillSeed.sr;
+  }
+
+  if (!Number.isFinite(profile.rd)) {
+    profile.rd = skillSeed.rd;
+  }
+
+  if (!Number.isFinite(profile.matchesPlayed)) {
+    profile.matchesPlayed = 0;
+  }
+
   accountProfiles.set(accountId, profile);
+
+  session.hiddenSr = profile.sr;
+  session.hiddenRd = profile.rd;
+  session.matchesPlayed = profile.matchesPlayed;
 
   const isFirstUser = !profile.onboardingDone;
   setFlowState(session, isFirstUser ? FLOW_STATES.ONBOARDING : FLOW_STATES.LOBBY);
@@ -1155,6 +1734,11 @@ function authenticateSession(session, accountId, displayName) {
     sessionId: session.sessionId,
     isFirstUser,
     displayName: profile.displayName,
+    mmr: {
+      sr: profile.sr,
+      rd: profile.rd,
+      matchesPlayed: profile.matchesPlayed,
+    },
   };
 }
 
@@ -1508,17 +2092,33 @@ function handleCustomRoomStart(ctx) {
     .filter(Boolean)
     .slice(0, requiredCount);
 
+  const participantSessionIds = participantSessions.map((session) => session.sessionId);
+
   const candidate = {
     matchCandidateId: makeId("mc", nextMatchCandidateId++),
     modeId,
     requiredCount,
-    participantSessionIds: participantSessions.map((session) => session.sessionId),
-    acceptedSessionIds: new Set(participantSessions.map((session) => session.sessionId)),
+    participantSessionIds,
+    acceptedSessionIds: new Set(participantSessionIds),
     declinedSessionIds: new Set(),
     resolved: false,
     createdAt: nowMs(),
     timeoutHandle: null,
     mapPool: ["NJD_CR_01", "HMY_SZ_01"],
+    teamAssignments: makeTeamAssignments(participantSessionIds),
+    quality: {
+      qualityTier: "CUSTOM",
+      expansionStage: 0,
+      maxPingMs: null,
+      srRange: null,
+      maxTeamSrDiff: null,
+      avgSrDiff: null,
+      partySymmetryPenalty: 0,
+      srStdGap: 0,
+      anchorWaitSec: 0,
+      extremeWait: false,
+    },
+    ticketSnapshotBySessionId: Object.create(null),
   };
 
   matchCandidates.set(candidate.matchCandidateId, candidate);
@@ -1527,7 +2127,7 @@ function handleCustomRoomStart(ctx) {
 
 function handleQueueJoin(ctx) {
   if (!requireAuth(ctx) || !checkSessionId(ctx)) return;
-  if (!requireFlowState(ctx, FLOW_STATES.LOBBY)) return;
+  if (!requireFlowState(ctx, [FLOW_STATES.LOBBY, FLOW_STATES.PARTY])) return;
 
   enqueueSession(ctx.session, ctx.payload, ctx.requestId, ctx.incomingEventId);
 }
@@ -1824,9 +2424,24 @@ function handleRematchVote(ctx) {
 
 function handlePing(ctx) {
   if (!checkSessionId(ctx)) return;
+
+  const now = nowMs();
+  const reportedPingMs = Number(ctx.payload?.pingMs ?? ctx.payload?.rttMs ?? NaN);
+  const clientTimeMs = Number(ctx.payload?.clientTimeMs ?? ctx.payload?.clientTime ?? NaN);
+
+  if (Number.isFinite(reportedPingMs) && reportedPingMs > 0) {
+    ctx.session.lastKnownPingMs = clamp(reportedPingMs, 20, 500);
+  } else if (Number.isFinite(clientTimeMs) && clientTimeMs > 0 && clientTimeMs <= now) {
+    const approximateHalfRtt = (now - clientTimeMs) * 0.5;
+    ctx.session.lastKnownPingMs = clamp(approximateHalfRtt, 20, 500);
+  }
+
   sendFromRequestContext(ctx, "S2C_PONG", {
-    nowMs: nowMs(),
+    nowMs: now,
     state: ctx.session.flowState,
+    network: {
+      serverSeenPingMs: Math.round(ctx.session.lastKnownPingMs),
+    },
   });
 }
 
@@ -1914,6 +2529,10 @@ wss.on("connection", (ws, req) => {
     sessionId: null,
     accountId: null,
     displayName: null,
+    hiddenSr: 1500,
+    hiddenRd: 350,
+    matchesPlayed: 0,
+    lastKnownPingMs: 80,
 
     partyId: null,
     customRoomId: null,
@@ -1994,6 +2613,10 @@ wss.on("close", () => {
  * @property {string | null} sessionId
  * @property {string | null} accountId
  * @property {string | null} displayName
+ * @property {number} hiddenSr
+ * @property {number} hiddenRd
+ * @property {number} matchesPlayed
+ * @property {number} lastKnownPingMs
  * @property {string | null} partyId
  * @property {string | null} customRoomId
  * @property {string | null} queueTicketId
@@ -2043,6 +2666,9 @@ wss.on("close", () => {
  * @property {string | null} partyId
  * @property {string} regionPreference
  * @property {string} inputDevice
+ * @property {number} sr
+ * @property {number} rd
+ * @property {number} avgPingMs
  * @property {number} joinedAt
  */
 
@@ -2058,6 +2684,9 @@ wss.on("close", () => {
  * @property {number} createdAt
  * @property {NodeJS.Timeout | null} timeoutHandle
  * @property {string[]} mapPool
+ * @property {{teamA: string[], teamB: string[]} | null} teamAssignments
+ * @property {any | null} quality
+ * @property {Record<string, {partyId: string | null, regionPreference: string, inputDevice: string, sr: number, rd: number, avgPingMs: number}>} ticketSnapshotBySessionId
  */
 
 /**
@@ -2079,4 +2708,5 @@ wss.on("close", () => {
  * @property {NodeJS.Timeout | null} matchEndHandle
  * @property {Map<string, boolean>} rematchVotes
  * @property {Map<string, number>} roomAssignRetryBySessionId
+ * @property {any | null} quality
  */
