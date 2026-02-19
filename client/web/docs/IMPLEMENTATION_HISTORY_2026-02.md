@@ -231,3 +231,47 @@ npm run test
 - 기대효과:
   - 모바일 화면에서도 전체 밝기와 가독성 개선
   - 특정 위치/방향에서 발생하던 과한 명암 대비 완화
+
+## 18) 레벨 블록아웃 기반 클라이언트 구현(23번 문서 반영)
+
+- 신규 레벨 모듈 추가 (`src/level/**`)
+  - data
+    - `levelSchema.ts`: 맵/오브젝트/프리팹/튜닝 타입 정의
+    - `levelLoader.ts`: 3개 맵 로드 + validation 게이트
+    - `levelValidator.ts`: 공통 + 맵별 규칙 검증
+      - 공통: prefab unique, bounds, spawn safety, lane width
+      - NJD: CORE (0,0,0), 스폰-코어 도달시간 편차 체크
+      - HMY: zone 반경 4.5, A45/gap10/B45 로테이션 체크
+      - FDD: payload path node 순서, CP1/CP2 좌표 체크
+    - `maps/*.json`: `NJD_CR_01`, `HMY_SZ_01`, `FDD_PH_01` 블록아웃 데이터
+  - prefab
+    - `prefabCatalog.ts` / `prefabTypes.ts` / `prefabFactory.ts`
+    - 블록아웃 프리팹을 렌더 메쉬 + AABB collider로 변환
+  - runtime
+    - `levelRuntime.ts`: 레벨 로딩/레이어 구성/static collider/objective view/debug layer 관리
+    - `levelCollision.ts`: collider 유틸 + 2D segment 교차
+    - `spawnSafetyCheck.ts`: 스폰 안전 반경/직선 LoS 점검 + fallback offset
+    - `lineOfSightDebug.ts`, `levelNavOverlay.ts`: LoS/레인 디버그 시각화
+  - modes
+    - `crystalRushView.ts`, `switchZoneView.ts`, `payloadView.ts`
+  - minimap
+    - `minimapProjector.ts`, `minimapLayers.ts`
+- 게임 런타임 연동
+  - `src/app/gameApp.ts`
+    - `LevelRuntime` 생성/업데이트/해제 연결
+    - match assign의 `mapId`를 받아 맵 로드(쿼리 `?map=` fallback)
+    - 시뮬레이션 context에 `staticColliders`, 맵 bounds 전달
+  - `src/ecs/world.ts`, `src/ecs/systems/CollisionSystem.ts`
+    - world bounds를 axis 단위로 확장(minX/maxX/minZ/maxZ)
+    - static collider 기반 이동 충돌 보정 추가
+  - `src/app/bootstrap.ts`, `src/ui/common/AppShell.tsx`
+    - `mapId` 전달 경로 확장
+- 운영 스크립트
+  - `scripts/level-validate.ts` + `npm run level:validate` 추가
+- FDD 배치값 튜닝
+  - `FDD_PH_01`의 `C_BUSH_02` 좌표를 `(12,12)` -> `(15,13)`으로 조정
+  - 이유: `DEF_SPAWN_P1`와 안전 반경(8m) 위반 해소
+- 검증
+  - `npm run level:validate` ✅ (NJD/HMY/FDD 모두 통과)
+  - `npm run build` ✅
+  - `npm run test` ✅

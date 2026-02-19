@@ -17,7 +17,21 @@ export interface SimulationContext {
   dtMs: number;
   localPlayerId: EntityId;
   command?: InputCommand;
-  worldBounds: { min: number; max: number };
+  worldBounds: {
+    min: number;
+    max: number;
+    minX?: number;
+    maxX?: number;
+    minZ?: number;
+    maxZ?: number;
+  };
+  staticColliders?: ReadonlyArray<{
+    minX: number;
+    maxX: number;
+    minZ: number;
+    maxZ: number;
+    blocksMovement: boolean;
+  }>;
 }
 
 export interface EcsSystem {

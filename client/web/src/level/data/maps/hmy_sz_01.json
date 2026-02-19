@@ -1,0 +1,71 @@
+{
+  "mapId": "HMY_SZ_01",
+  "mode": "SWITCH_ZONE",
+  "mapRevision": 1,
+  "size": { "width": 64, "height": 56 },
+  "origin": { "x": 0, "y": 0, "z": 0 },
+  "spawnPoints": [
+    { "id": "SPAWN_A", "team": "A", "position": { "x": -25, "y": -4, "z": 0 }, "radius": 4 },
+    { "id": "SPAWN_B", "team": "B", "position": { "x": 25, "y": 4, "z": 0 }, "radius": 4 }
+  ],
+  "objectives": [
+    { "id": "ZONE_A", "type": "ZONE", "position": { "x": -11, "y": 6, "z": 0 }, "radius": 4.5 },
+    { "id": "ZONE_B", "type": "ZONE", "position": { "x": 11, "y": -6, "z": 0 }, "radius": 4.5 },
+    { "id": "CLASH_MID", "type": "MARKER", "position": { "x": 0, "y": 0, "z": 0 } }
+  ],
+  "prefabs": [
+    { "id": "B_WALL_01", "prefabCode": "WALL_6", "x": -4, "y": 2, "z": 0, "rotDeg": 0 },
+    { "id": "B_WALL_02", "prefabCode": "WALL_6", "x": 4, "y": -2, "z": 0, "rotDeg": 0 },
+    { "id": "B_COV_01", "prefabCode": "COV_H_3x1", "x": -12, "y": 2, "z": 0, "rotDeg": 90 },
+    { "id": "B_COV_02", "prefabCode": "COV_H_3x1", "x": 12, "y": -2, "z": 0, "rotDeg": 90 },
+    { "id": "B_COV_03", "prefabCode": "COV_L_2x1", "x": -1, "y": 6, "z": 0, "rotDeg": 90 },
+    { "id": "B_COV_04", "prefabCode": "COV_L_2x1", "x": 1, "y": -6, "z": 0, "rotDeg": 90 },
+    { "id": "B_BUSH_01", "prefabCode": "BUSH_M", "x": -16, "y": 11, "z": 0 },
+    { "id": "B_BUSH_02", "prefabCode": "BUSH_M", "x": 16, "y": -11, "z": 0 },
+    { "id": "B_RAMP_01", "prefabCode": "RAMP_10", "x": -8, "y": -10, "z": 0, "rotDeg": 35, "extra": { "heightTo": 2 } },
+    { "id": "B_RAMP_02", "prefabCode": "RAMP_10", "x": 8, "y": 10, "z": 0, "rotDeg": 215, "extra": { "heightTo": 2 } }
+  ],
+  "lanes": [
+    {
+      "id": "ROTATE_A",
+      "points": [
+        { "x": -25, "y": -4, "z": 0 },
+        { "x": -17, "y": 1, "z": 0 },
+        { "x": -11, "y": 6, "z": 0 }
+      ],
+      "minWidth": 2.8,
+      "tags": ["zoneA"]
+    },
+    {
+      "id": "ROTATE_B",
+      "points": [
+        { "x": 25, "y": 4, "z": 0 },
+        { "x": 17, "y": -1, "z": 0 },
+        { "x": 11, "y": -6, "z": 0 }
+      ],
+      "minWidth": 2.8,
+      "tags": ["zoneB"]
+    },
+    {
+      "id": "CLASH",
+      "points": [
+        { "x": -14, "y": -1, "z": 0 },
+        { "x": 0, "y": 0, "z": 0 },
+        { "x": 14, "y": 1, "z": 0 }
+      ],
+      "minWidth": 3,
+      "tags": ["clash"]
+    }
+  ],
+  "tuning": {
+    "spawnSafetyRadius": 8,
+    "minCorridorWidth": 2.4,
+    "expectedFirstEngageSec": [6, 8],
+    "spawnRunSpeedMps": 5,
+    "switchRotation": {
+      "zoneAActiveSec": 45,
+      "gapSec": 10,
+      "zoneBActiveSec": 45
+    }
+  }
+}

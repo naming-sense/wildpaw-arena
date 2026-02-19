@@ -4,6 +4,7 @@ interface BootstrapOptions {
   wsUrl?: string;
   heroId?: string;
   roomToken?: string;
+  mapId?: string;
 }
 
 function resolveDefaultWsUrl(): string | undefined {
@@ -17,6 +18,7 @@ export async function bootstrap(canvas: HTMLCanvasElement, options: BootstrapOpt
     wsUrl: options.wsUrl ?? import.meta.env.VITE_WS_URL ?? resolveDefaultWsUrl(),
     heroId: options.heroId,
     roomToken: options.roomToken,
+    mapId: options.mapId,
   });
 
   await app.start();

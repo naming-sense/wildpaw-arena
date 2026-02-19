@@ -8,7 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "level:validate": "tsx scripts/level-validate.ts"
   },
   "dependencies": {
     "flatbuffers": "2.0.7",

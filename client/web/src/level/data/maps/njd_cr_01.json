@@ -1,0 +1,87 @@
+{
+  "mapId": "NJD_CR_01",
+  "mode": "CRYSTAL_RUSH",
+  "mapRevision": 1,
+  "size": { "width": 60, "height": 60 },
+  "origin": { "x": 0, "y": 0, "z": 0 },
+  "spawnPoints": [
+    { "id": "SPAWN_A", "team": "A", "position": { "x": -24, "y": 0, "z": 0 }, "radius": 4 },
+    { "id": "SPAWN_B", "team": "B", "position": { "x": 24, "y": 0, "z": 0 }, "radius": 4 }
+  ],
+  "objectives": [
+    { "id": "CORE", "type": "CORE", "position": { "x": 0, "y": 0, "z": 0 }, "radius": 4 },
+    { "id": "GATE_N", "type": "MARKER", "position": { "x": 0, "y": 14, "z": 0 } },
+    { "id": "GATE_S", "type": "MARKER", "position": { "x": 0, "y": -14, "z": 0 } }
+  ],
+  "prefabs": [
+    { "id": "A_COV_01", "prefabCode": "COV_H_3x1", "x": -6, "y": 4, "z": 0, "rotDeg": 0 },
+    { "id": "A_COV_02", "prefabCode": "COV_H_3x1", "x": 6, "y": -4, "z": 0, "rotDeg": 0 },
+    { "id": "A_COV_03", "prefabCode": "COV_L_2x1", "x": -2, "y": 7, "z": 0, "rotDeg": 90 },
+    { "id": "A_COV_04", "prefabCode": "COV_L_2x1", "x": 2, "y": -7, "z": 0, "rotDeg": 90 },
+    { "id": "A_WALL_01", "prefabCode": "WALL_6", "x": -10, "y": 0, "z": 0, "rotDeg": 90 },
+    { "id": "A_WALL_02", "prefabCode": "WALL_6", "x": 10, "y": 0, "z": 0, "rotDeg": 90 },
+    { "id": "A_BUSH_01", "prefabCode": "BUSH_M", "x": -12, "y": 10, "z": 0 },
+    { "id": "A_BUSH_02", "prefabCode": "BUSH_M", "x": 12, "y": -10, "z": 0 },
+    { "id": "A_BUSH_03", "prefabCode": "BUSH_S", "x": -3, "y": 12, "z": 0 },
+    { "id": "A_BUSH_04", "prefabCode": "BUSH_S", "x": 3, "y": -12, "z": 0 }
+  ],
+  "lanes": [
+    {
+      "id": "MAIN_N",
+      "points": [
+        { "x": -24, "y": 4, "z": 0 },
+        { "x": 0, "y": 4, "z": 0 },
+        { "x": 24, "y": 4, "z": 0 }
+      ],
+      "minWidth": 3,
+      "tags": ["main"]
+    },
+    {
+      "id": "MAIN_S",
+      "points": [
+        { "x": -24, "y": -4, "z": 0 },
+        { "x": 0, "y": -4, "z": 0 },
+        { "x": 24, "y": -4, "z": 0 }
+      ],
+      "minWidth": 3,
+      "tags": ["main"]
+    },
+    {
+      "id": "FLANK_N",
+      "points": [
+        { "x": -24, "y": 10, "z": 0 },
+        { "x": 0, "y": 14, "z": 0 },
+        { "x": 24, "y": 10, "z": 0 }
+      ],
+      "minWidth": 2.6,
+      "tags": ["flank"]
+    },
+    {
+      "id": "FLANK_S",
+      "points": [
+        { "x": -24, "y": -10, "z": 0 },
+        { "x": 0, "y": -14, "z": 0 },
+        { "x": 24, "y": -10, "z": 0 }
+      ],
+      "minWidth": 2.6,
+      "tags": ["flank"]
+    },
+    {
+      "id": "BACKDOOR_LOOP",
+      "points": [
+        { "x": -24, "y": 15, "z": 0 },
+        { "x": -8, "y": 22, "z": 0 },
+        { "x": 8, "y": 22, "z": 0 },
+        { "x": 24, "y": 15, "z": 0 }
+      ],
+      "minWidth": 2.4,
+      "tags": ["backdoor"]
+    }
+  ],
+  "tuning": {
+    "spawnSafetyRadius": 8,
+    "minCorridorWidth": 2.4,
+    "expectedFirstEngageSec": [6, 8],
+    "spawnRunSpeedMps": 5
+  }
+}

@@ -1,0 +1,93 @@
+{
+  "mapId": "FDD_PH_01",
+  "mode": "PAYLOAD_HOWL",
+  "mapRevision": 1,
+  "size": { "width": 88, "height": 72 },
+  "origin": { "x": 0, "y": 0, "z": 0 },
+  "spawnPoints": [
+    { "id": "ATK_SPAWN_P1", "team": "A", "phase": 1, "position": { "x": -40, "y": -6, "z": 0 }, "radius": 4 },
+    { "id": "ATK_SPAWN_P2", "team": "A", "phase": 2, "position": { "x": -18, "y": -10, "z": 0 }, "radius": 4 },
+    { "id": "ATK_SPAWN_P3", "team": "A", "phase": 3, "position": { "x": 8, "y": -10, "z": 0 }, "radius": 4 },
+    { "id": "DEF_SPAWN_P1", "team": "B", "phase": 1, "position": { "x": 6, "y": 10, "z": 0 }, "radius": 4 },
+    { "id": "DEF_SPAWN_P2", "team": "B", "phase": 2, "position": { "x": 24, "y": 10, "z": 0 }, "radius": 4 },
+    { "id": "DEF_SPAWN_P3", "team": "B", "phase": 3, "position": { "x": 40, "y": 6, "z": 0 }, "radius": 4 }
+  ],
+  "objectives": [
+    {
+      "id": "PAYLOAD_MAIN",
+      "type": "PAYLOAD_PATH",
+      "pathNodes": [
+        { "x": -34, "y": 0, "z": 0 },
+        { "x": -22, "y": 4, "z": 0 },
+        { "x": -10, "y": 0, "z": 0 },
+        { "x": 2, "y": -3, "z": 0 },
+        { "x": 14, "y": -3, "z": 0 },
+        { "x": 25, "y": 2, "z": 0 },
+        { "x": 34, "y": 0, "z": 0 }
+      ],
+      "meta": {
+        "nodeIds": ["P0", "P1", "P2", "P3", "P4", "P5", "P6"],
+        "checkpointIds": ["CP1", "CP2"]
+      }
+    },
+    { "id": "CP1", "type": "CHECKPOINT", "position": { "x": -10, "y": 0, "z": 0 }, "radius": 3.5 },
+    { "id": "CP2", "type": "CHECKPOINT", "position": { "x": 14, "y": -3, "z": 0 }, "radius": 3.5 }
+  ],
+  "prefabs": [
+    { "id": "C_WALL_01", "prefabCode": "WALL_6", "x": -18, "y": 0, "z": 0, "rotDeg": 90 },
+    { "id": "C_WALL_02", "prefabCode": "WALL_6", "x": -4, "y": -5, "z": 0, "rotDeg": 0 },
+    { "id": "C_WALL_03", "prefabCode": "WALL_6", "x": 8, "y": -5, "z": 0, "rotDeg": 0 },
+    { "id": "C_COV_01", "prefabCode": "COV_H_3x1", "x": -12, "y": 6, "z": 0, "rotDeg": 0 },
+    { "id": "C_COV_02", "prefabCode": "COV_H_3x1", "x": 18, "y": 4, "z": 0, "rotDeg": 0 },
+    { "id": "C_COV_03", "prefabCode": "COV_L_2x1", "x": 0, "y": 6, "z": 0, "rotDeg": 90 },
+    { "id": "C_COV_04", "prefabCode": "COV_L_2x1", "x": 20, "y": -5, "z": 0, "rotDeg": 90 },
+    { "id": "C_BUSH_01", "prefabCode": "BUSH_M", "x": -6, "y": 12, "z": 0 },
+    { "id": "C_BUSH_02", "prefabCode": "BUSH_M", "x": 15, "y": 13, "z": 0 },
+    { "id": "C_RAMP_01", "prefabCode": "RAMP_10", "x": 4, "y": 14, "z": 0, "rotDeg": 180, "extra": { "heightTo": 3 } },
+    { "id": "C_RAMP_02", "prefabCode": "RAMP_10", "x": 22, "y": -14, "z": 0, "rotDeg": 0, "extra": { "heightTo": 3 } }
+  ],
+  "lanes": [
+    {
+      "id": "PAYLOAD_ROUTE",
+      "points": [
+        { "x": -34, "y": 0, "z": 0 },
+        { "x": -10, "y": 0, "z": 0 },
+        { "x": 14, "y": -3, "z": 0 },
+        { "x": 34, "y": 0, "z": 0 }
+      ],
+      "minWidth": 3,
+      "tags": ["objective"]
+    },
+    {
+      "id": "UPPER_FLANK",
+      "points": [
+        { "x": -30, "y": 10, "z": 0 },
+        { "x": 0, "y": 14, "z": 0 },
+        { "x": 30, "y": 10, "z": 0 }
+      ],
+      "minWidth": 2.6,
+      "tags": ["flank"]
+    },
+    {
+      "id": "LOWER_FLANK",
+      "points": [
+        { "x": -30, "y": -12, "z": 0 },
+        { "x": 0, "y": -14, "z": 0 },
+        { "x": 30, "y": -12, "z": 0 }
+      ],
+      "minWidth": 2.6,
+      "tags": ["flank"]
+    }
+  ],
+  "tuning": {
+    "spawnSafetyRadius": 8,
+    "minCorridorWidth": 2.4,
+    "expectedFirstEngageSec": [8, 11],
+    "spawnRunSpeedMps": 5,
+    "payloadCheckpointTargets": [
+      { "id": "CP1", "targetMinSec": 55, "targetMaxSec": 75 },
+      { "id": "CP2", "targetMinSec": 45, "targetMaxSec": 65 },
+      { "id": "FINISH", "targetMinSec": 40, "targetMaxSec": 60 }
+    ]
+  }
+}

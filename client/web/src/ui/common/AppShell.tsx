@@ -54,6 +54,7 @@ export function AppShell(): JSX.Element {
       wsUrl: loading.roomEndpoint,
       heroId: selectedHeroId,
       roomToken: loading.roomToken,
+      mapId: loading.mapId ?? undefined,
     })
       .then((app) => {
         if (cancelled) {

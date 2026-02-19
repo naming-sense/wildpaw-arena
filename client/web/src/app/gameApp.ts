@@ -32,12 +32,14 @@ import { createGltfLoader } from "../assets/loaders/gltfLoader";
 import { HERO_ASSET_MANIFEST, type HeroAssetManifest } from "../assets/manifests/heroes";
 import { HERO_DEFS, HERO_DEF_BY_ID, type HeroDef } from "../gameplay/hero/heroDefs";
 import { WEAPON_DEFS, WEAPON_DEF_BY_ID } from "../gameplay/weapon/weaponDefs";
+import { LevelRuntime } from "../level/runtime/levelRuntime";
 import type { GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 interface GameAppOptions {
   wsUrl?: string;
   heroId?: string;
   roomToken?: string;
+  mapId?: string;
 }
 
 const HERO_MOVE_ANIM_THRESHOLD = 0.15;
@@ -86,6 +88,28 @@ function resolvePreferredHeroId(explicitHeroId?: string): string {
   }
 
   return DEFAULT_HERO_ID;
+}
+
+function resolvePreferredMapId(explicitMapId?: string): string | undefined {
+  if (explicitMapId && explicitMapId.trim().length > 0) {
+    return explicitMapId.trim();
+  }
+
+  if (typeof window === "undefined") {
+    return undefined;
+  }
+
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const fromQuery = params.get("map");
+    if (fromQuery && fromQuery.trim().length > 0) {
+      return fromQuery.trim();
+    }
+  } catch {
+    // ignore parse errors
+  }
+
+  return undefined;
 }
 
 function pickHeroDef(heroId: string): HeroDef {
@@ -178,6 +202,15 @@ export class GameApp {
   private readonly sceneRoot = createSceneRoot();
   private readonly renderer: GameRenderer;
   private readonly cameraRig: CameraRig;
+  private readonly levelRuntime: LevelRuntime;
+  private readonly worldBounds: {
+    min: number;
+    max: number;
+    minX: number;
+    maxX: number;
+    minZ: number;
+    maxZ: number;
+  };
 
   private readonly socket: RealtimeSocketClient;
   private readonly hasRealtimeServer: boolean;
@@ -230,6 +263,17 @@ export class GameApp {
       this.config.render.cameraTiltDeg,
     );
     createMainLights(this.sceneRoot.scene);
+
+    const resolvedMapId = resolvePreferredMapId(options.mapId);
+    const levelDebugEnabled =
+      typeof window !== "undefined" &&
+      (new URLSearchParams(window.location.search).get("levelDebug") === "1" ||
+        new URLSearchParams(window.location.search).get("debugLevel") === "1");
+    this.levelRuntime = new LevelRuntime(this.sceneRoot.scene, resolvedMapId, levelDebugEnabled);
+    this.worldBounds = this.levelRuntime.worldBounds;
+    console.info(
+      `[level] loaded map=${this.levelRuntime.map.mapId} mode=${this.levelRuntime.map.mode} prefabs=${this.levelRuntime.map.prefabs.length}`,
+    );
 
     this.input = new KeyboardMouseInput(canvas);
     this.ensureHitMarkerElement();
@@ -306,6 +350,7 @@ export class GameApp {
     this.clearImpactBurstEffects();
     this.removeHitMarkerElement();
     this.removeDamageOverlayElement();
+    this.levelRuntime.dispose();
     this.renderer.dispose();
   }
 
@@ -364,6 +409,7 @@ export class GameApp {
       this.socket.sendPing();
     }
 
+    this.levelRuntime.update(nowMs);
     this.renderer.render(this.sceneRoot.scene, this.sceneRoot.camera);
     this.rafId = requestAnimationFrame(this.frame);
   };
@@ -437,7 +483,8 @@ export class GameApp {
       dtMs,
       localPlayerId: this.localPlayerEntityId,
       command,
-      worldBounds: this.config.simulation.worldBounds,
+      worldBounds: this.worldBounds,
+      staticColliders: this.levelRuntime.colliders,
     });
 
     this.syncLocalFacingFromCommand(command, rawInput);
