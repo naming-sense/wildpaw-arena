@@ -1,9 +1,13 @@
 import { readFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 
 const PORT = Number(process.env.PORT ?? 8080);
+const ADMIN_PORT = Number(process.env.ADMIN_PORT ?? 9100);
+const ADMIN_TOKEN = String(process.env.WILDPAW_ADMIN_TOKEN ?? "").trim();
+const MAX_ADMIN_VIOLATIONS = Number(process.env.ADMIN_MAX_VIOLATIONS ?? 200);
 const TICK_HZ = Number(process.env.TICK_HZ ?? 30);
 const TICK_MS = Math.max(1, Math.floor(1000 / Math.max(1, TICK_HZ)));
 const STALE_CLIENT_TIMEOUT_MS = Number(process.env.STALE_CLIENT_TIMEOUT_MS ?? 120000);
@@ -188,6 +192,17 @@ const clientsById = new Map();
 let nextPlayerId = 1;
 let serverTick = 0;
 
+const startedAtMs = Date.now();
+let totalConnected = 0;
+let totalDisconnected = 0;
+let totalStaleTimeouts = 0;
+let totalParseErrors = 0;
+let totalUnsupportedMessages = 0;
+let totalPingReceived = 0;
+let totalSnapshotsSent = 0;
+/** @type {Array<{atMs:number, remote:string, type:string, detail:string}>} */
+const violations = [];
+
 const wss = new WebSocketServer({ host: "0.0.0.0", port: PORT });
 
 function createPlayerState(playerId, profile) {
@@ -257,10 +272,337 @@ function snapshotPlayers() {
   }));
 }
 
+function recordViolation(remote, type, detail) {
+  violations.push({
+    atMs: Date.now(),
+    remote: typeof remote === "string" && remote.length > 0 ? remote : "unknown",
+    type,
+    detail,
+  });
+
+  while (violations.length > MAX_ADMIN_VIOLATIONS) {
+    violations.shift();
+  }
+}
+
+function getSocketStats(client) {
+  const socket = client?.ws?._socket;
+  if (!socket) {
+    return { bytesIn: 0, bytesOut: 0 };
+  }
+
+  return {
+    bytesIn: Number(socket.bytesRead ?? 0),
+    bytesOut: Number(socket.bytesWritten ?? 0),
+  };
+}
+
+function getTeamOccupancy() {
+  let team1 = 0;
+  let team2 = 0;
+
+  for (const client of clients) {
+    if (client.player.team === 2) {
+      team2 += 1;
+    } else {
+      team1 += 1;
+    }
+  }
+
+  return { team1, team2 };
+}
+
+function renderAdminStatus() {
+  const teamOccupancy = getTeamOccupancy();
+
+  return {
+    nowMs: Date.now(),
+    startedAtMs,
+    uptimeSec: Math.floor((Date.now() - startedAtMs) / 1000),
+    rooms: 1,
+    teamSize: 1,
+    maxPlayersPerRoom: 2,
+    teamOccupancy,
+    wsPort: PORT,
+    tickRate: TICK_HZ,
+    currentTick: serverTick,
+    defaultProfile: DEFAULT_HERO_ID,
+    metrics: {
+      activeSessions: clients.size,
+      connectedTotal: totalConnected,
+      disconnectedTotal: totalDisconnected,
+      staleTimeoutTotal: totalStaleTimeouts,
+      parseErrorTotal: totalParseErrors,
+      unsupportedMessageTotal: totalUnsupportedMessages,
+      pingReceivedTotal: totalPingReceived,
+      snapshotSentTotal: totalSnapshotsSent,
+    },
+  };
+}
+
+function renderAdminSessions() {
+  const nowMs = Date.now();
+  const list = [...clients].sort((a, b) => a.player.playerId - b.player.playerId);
+  const slotByTeam = new Map();
+
+  const sessions = list.map((client) => {
+    const teamId = client.player.team === 2 ? 2 : 1;
+    const nextSlot = (slotByTeam.get(teamId) ?? 0) + 1;
+    slotByTeam.set(teamId, nextSlot);
+
+    const network = getSocketStats(client);
+
+    return {
+      playerId: client.player.playerId,
+      teamId,
+      teamSlot: nextSlot,
+      heroId: client.player.heroId,
+      heroName: client.player.heroName,
+      remote: client.remoteEndpoint,
+      connectedAtMs: client.connectedAtMs,
+      lastSeenAtMs: client.lastSeenAt,
+      bytesIn: network.bytesIn,
+      bytesOut: network.bytesOut,
+      invalidEnvelopeTotal: client.parseErrorTotal,
+      unsupportedMessageTotal: client.unsupportedMessageTotal,
+      invalidProfileSelectTotal: 0,
+      alive: client.player.alive,
+      hp: client.player.hp,
+      maxHp: client.player.maxHp,
+      pingMs: null,
+    };
+  });
+
+  return {
+    nowMs,
+    sessions,
+  };
+}
+
+function renderAdminViolations() {
+  return {
+    nowMs: Date.now(),
+    violations,
+  };
+}
+
+function renderPrometheusMetrics() {
+  const teamOccupancy = getTeamOccupancy();
+
+  return [
+    "# HELP wildpaw_mock_room_active_sessions Active sessions in mock room",
+    "# TYPE wildpaw_mock_room_active_sessions gauge",
+    `wildpaw_mock_room_active_sessions ${clients.size}`,
+    "# HELP wildpaw_mock_room_connected_total Total connected sessions",
+    "# TYPE wildpaw_mock_room_connected_total counter",
+    `wildpaw_mock_room_connected_total ${totalConnected}`,
+    "# HELP wildpaw_mock_room_disconnected_total Total disconnected sessions",
+    "# TYPE wildpaw_mock_room_disconnected_total counter",
+    `wildpaw_mock_room_disconnected_total ${totalDisconnected}`,
+    "# HELP wildpaw_mock_room_stale_timeout_total Stale timeout disconnects",
+    "# TYPE wildpaw_mock_room_stale_timeout_total counter",
+    `wildpaw_mock_room_stale_timeout_total ${totalStaleTimeouts}`,
+    "# HELP wildpaw_mock_room_parse_error_total Invalid JSON envelopes",
+    "# TYPE wildpaw_mock_room_parse_error_total counter",
+    `wildpaw_mock_room_parse_error_total ${totalParseErrors}`,
+    "# HELP wildpaw_mock_room_unsupported_message_total Unsupported message envelopes",
+    "# TYPE wildpaw_mock_room_unsupported_message_total counter",
+    `wildpaw_mock_room_unsupported_message_total ${totalUnsupportedMessages}`,
+    "# HELP wildpaw_mock_room_snapshot_sent_total Snapshot messages sent",
+    "# TYPE wildpaw_mock_room_snapshot_sent_total counter",
+    `wildpaw_mock_room_snapshot_sent_total ${totalSnapshotsSent}`,
+    "# HELP wildpaw_mock_room_team_occupancy Team occupancy",
+    "# TYPE wildpaw_mock_room_team_occupancy gauge",
+    `wildpaw_mock_room_team_occupancy{team=\"1\"} ${teamOccupancy.team1}`,
+    `wildpaw_mock_room_team_occupancy{team=\"2\"} ${teamOccupancy.team2}`,
+    "",
+  ].join("\n");
+}
+
+function isAdminAuthorized(req, url) {
+  if (!ADMIN_TOKEN) return true;
+
+  const headerToken = req.headers["x-admin-token"];
+  if (typeof headerToken === "string" && headerToken === ADMIN_TOKEN) {
+    return true;
+  }
+
+  const queryToken = url.searchParams.get("token");
+  return queryToken === ADMIN_TOKEN;
+}
+
+function writeJson(res, status, payload) {
+  const body = JSON.stringify(payload);
+  res.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  res.end(body);
+}
+
+function writeText(res, status, body, contentType = "text/plain; charset=utf-8") {
+  res.writeHead(status, {
+    "content-type": contentType,
+    "cache-control": "no-store",
+  });
+  res.end(body);
+}
+
+const ADMIN_HTML = `<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Wildpaw Mock Room Admin</title>
+  <style>
+    body { font-family: ui-sans-serif, system-ui; margin: 16px; background:#0b1020; color:#d7def7; }
+    h1,h2 { margin: 8px 0; }
+    .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
+    .card { background:#151b33; border:1px solid #243057; border-radius:10px; padding:12px; }
+    input,button { background:#1a2448; color:#d7def7; border:1px solid #2a3b74; border-radius:8px; padding:6px 10px; }
+    table { width:100%; border-collapse:collapse; }
+    th,td { border-bottom:1px solid #243057; padding:6px; font-size:13px; text-align:left; }
+    pre { white-space:pre-wrap; background:#0f1530; border:1px solid #243057; border-radius:8px; padding:8px; }
+  </style>
+</head>
+<body>
+  <h1>Wildpaw Mock Room Admin</h1>
+  <div class="row card">
+    <label>Admin Token <input id="token" type="password" placeholder="x-admin-token" /></label>
+    <button id="refresh">Refresh</button>
+    <button id="reload">Rules Reload</button>
+    <span id="statusMsg"></span>
+  </div>
+
+  <div class="card">
+    <h2>Overview</h2>
+    <pre id="overview">loading...</pre>
+  </div>
+
+  <div class="card" style="margin-top:12px;">
+    <h2>Sessions</h2>
+    <table>
+      <thead><tr><th>playerId</th><th>team</th><th>remote</th><th>bytesIn/out</th><th>lastSeen</th><th>invalid</th><th>action</th></tr></thead>
+      <tbody id="sessions"></tbody>
+    </table>
+  </div>
+
+  <div class="card" style="margin-top:12px;">
+    <h2>Violations</h2>
+    <pre id="violations">loading...</pre>
+  </div>
+
+  <script>
+    const q = (s) => document.querySelector(s);
+    const tokenEl = q('#token');
+    const msgEl = q('#statusMsg');
+    const TOKEN_STORAGE_KEY = 'wildpaw-mock-admin-token';
+
+    function initToken() {
+      const queryToken = new URLSearchParams(window.location.search).get('token') || '';
+      if (queryToken) {
+        tokenEl.value = queryToken;
+      } else {
+        const stored = window.localStorage.getItem(TOKEN_STORAGE_KEY) || '';
+        if (stored) tokenEl.value = stored;
+      }
+    }
+
+    function persistToken() {
+      if (tokenEl.value) {
+        window.localStorage.setItem(TOKEN_STORAGE_KEY, tokenEl.value);
+      } else {
+        window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+      }
+    }
+
+    initToken();
+    persistToken();
+    tokenEl.addEventListener('input', persistToken);
+
+    const headers = () => tokenEl.value ? {'x-admin-token': tokenEl.value} : {};
+
+    function withToken(path) {
+      if (!tokenEl.value) return path;
+      const u = new URL(path, window.location.origin);
+      if (!u.searchParams.has('token')) u.searchParams.set('token', tokenEl.value);
+      return u.pathname + u.search;
+    }
+
+    async function api(path, options = {}) {
+      const res = await fetch(withToken(path), { ...options, headers: { ...(options.headers||{}), ...headers() } });
+      if (!res.ok) throw new Error(path + ' ' + res.status);
+      const ct = res.headers.get('content-type') || '';
+      return ct.includes('application/json') ? res.json() : res.text();
+    }
+
+    async function refresh() {
+      try {
+        const [status, sessions, violations] = await Promise.all([
+          api('/admin/api/status'),
+          api('/admin/api/sessions'),
+          api('/admin/api/violations'),
+        ]);
+
+        q('#overview').textContent = JSON.stringify(status, null, 2);
+
+        const tbody = q('#sessions');
+        tbody.innerHTML = '';
+        for (const s of sessions.sessions || []) {
+          const tr = document.createElement('tr');
+          tr.innerHTML = '<td>' + s.playerId + '</td>' +
+            '<td>T' + s.teamId + '-S' + s.teamSlot + '</td>' +
+            '<td>' + s.remote + '</td>' +
+            '<td>' + s.bytesIn + '/' + s.bytesOut + '</td>' +
+            '<td>' + s.lastSeenAtMs + '</td>' +
+            '<td>' + s.invalidEnvelopeTotal + '/' + s.unsupportedMessageTotal + '/0</td>' +
+            '<td><button data-id="' + s.playerId + '">disconnect</button></td>';
+          tr.querySelector('button').onclick = async () => {
+            try {
+              await api('/admin/api/sessions/' + s.playerId + '/disconnect', { method: 'POST' });
+              msgEl.textContent = 'disconnected ' + s.playerId;
+              await refresh();
+            } catch (e) {
+              msgEl.textContent = 'disconnect failed: ' + e.message;
+            }
+          };
+          tbody.appendChild(tr);
+        }
+
+        q('#violations').textContent = JSON.stringify(violations, null, 2);
+        msgEl.textContent = 'ok';
+      } catch (e) {
+        msgEl.textContent = 'error: ' + e.message;
+      }
+    }
+
+    q('#refresh').onclick = refresh;
+    q('#reload').onclick = async () => {
+      try {
+        const r = await api('/admin/api/rules/reload', { method:'POST' });
+        msgEl.textContent = JSON.stringify(r);
+        await refresh();
+      } catch (e) {
+        msgEl.textContent = 'reload failed: ' + e.message;
+      }
+    };
+
+    refresh();
+    setInterval(refresh, 2000);
+  </script>
+</body>
+</html>`;
+
 function removeClient(client, reason = "disconnect") {
   if (!clients.has(client)) return;
 
   clients.delete(client);
+  totalDisconnected += 1;
+
+  if (reason === "stale-timeout") {
+    totalStaleTimeouts += 1;
+    recordViolation(client.remoteEndpoint, "stale-timeout", `player=${client.player.playerId}`);
+  }
 
   if (client.clientId && clientsById.get(client.clientId) === client) {
     clientsById.delete(client.clientId);
@@ -603,9 +945,11 @@ function tryFire(client, nowMs) {
   client.player.nextFireAtMs = nowMs + Math.max(25, fireIntervalMs);
 }
 
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, req) => {
   const playerId = nextPlayerId++;
   const profile = getHeroProfile(DEFAULT_HERO_ID);
+  const remoteAddress = req?.socket?.remoteAddress ?? "unknown";
+  const remotePort = req?.socket?.remotePort ?? 0;
 
   const client = {
     ws,
@@ -613,9 +957,14 @@ wss.on("connection", (ws) => {
     player: createPlayerState(playerId, profile),
     clientId: null,
     lastSeenAt: Date.now(),
+    connectedAtMs: Date.now(),
+    remoteEndpoint: `${remoteAddress}:${remotePort}`,
+    parseErrorTotal: 0,
+    unsupportedMessageTotal: 0,
   };
 
   clients.add(client);
+  totalConnected += 1;
 
   console.log(
     `[mock-room] connected player=${playerId} hero=${client.player.heroId} total=${clients.size}`,
@@ -640,10 +989,18 @@ wss.on("connection", (ws) => {
     try {
       envelope = JSON.parse(String(raw));
     } catch {
+      totalParseErrors += 1;
+      client.parseErrorTotal += 1;
+      recordViolation(client.remoteEndpoint, "invalid_json", String(raw).slice(0, 180));
       return;
     }
 
-    if (!envelope || typeof envelope !== "object") return;
+    if (!envelope || typeof envelope !== "object") {
+      totalParseErrors += 1;
+      client.parseErrorTotal += 1;
+      recordViolation(client.remoteEndpoint, "invalid_envelope", "non-object envelope");
+      return;
+    }
 
     client.lastSeenAt = Date.now();
 
@@ -667,6 +1024,7 @@ wss.on("connection", (ws) => {
         break;
 
       case OPCODES.C2S_PING:
+        totalPingReceived += 1;
         safeSend(ws, {
           t: OPCODES.S2C_PONG,
           d: { serverTimeMs: Date.now() },
@@ -674,6 +1032,9 @@ wss.on("connection", (ws) => {
         break;
 
       default:
+        totalUnsupportedMessages += 1;
+        client.unsupportedMessageTotal += 1;
+        recordViolation(client.remoteEndpoint, "unsupported_opcode", String(envelope.t ?? "unknown"));
         break;
     }
   });
@@ -735,8 +1096,88 @@ setInterval(() => {
         players,
       },
     });
+    totalSnapshotsSent += 1;
   }
 }, TICK_MS);
+
+const adminServer = createServer((req, res) => {
+  const method = req.method ?? "GET";
+  const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "127.0.0.1"}`);
+  const path = url.pathname;
+
+  if (path === "/metrics") {
+    writeText(res, 200, renderPrometheusMetrics(), "text/plain; version=0.0.4; charset=utf-8");
+    return;
+  }
+
+  if (!path.startsWith("/admin")) {
+    writeJson(res, 404, { ok: false, error: "not found" });
+    return;
+  }
+
+  if (!isAdminAuthorized(req, url)) {
+    writeJson(res, 401, { ok: false, error: "unauthorized" });
+    return;
+  }
+
+  if (method === "GET" && (path === "/admin" || path === "/admin/")) {
+    writeText(res, 200, ADMIN_HTML, "text/html; charset=utf-8");
+    return;
+  }
+
+  if (method === "GET" && path === "/admin/api/status") {
+    writeJson(res, 200, renderAdminStatus());
+    return;
+  }
+
+  if (method === "GET" && path === "/admin/api/sessions") {
+    writeJson(res, 200, renderAdminSessions());
+    return;
+  }
+
+  if (method === "GET" && path === "/admin/api/violations") {
+    writeJson(res, 200, renderAdminViolations());
+    return;
+  }
+
+  if (method === "POST" && path === "/admin/api/rules/reload") {
+    writeJson(res, 200, { ok: true, message: "mock-room: rules reload noop" });
+    return;
+  }
+
+  if (method === "POST" && path.startsWith("/admin/api/sessions/") && path.endsWith("/disconnect")) {
+    const playerIdRaw = path.slice("/admin/api/sessions/".length, -"/disconnect".length);
+    const playerId = Number(playerIdRaw);
+
+    if (!Number.isFinite(playerId) || playerId <= 0) {
+      writeJson(res, 400, { ok: false, error: "invalid player id" });
+      return;
+    }
+
+    const target = [...clients].find((client) => client.player.playerId === playerId);
+    if (!target) {
+      writeJson(res, 404, { ok: false, error: "session not found" });
+      return;
+    }
+
+    try {
+      target.ws.close(4002, "admin disconnect");
+    } catch {
+      // ignore close errors
+    }
+
+    writeJson(res, 200, { ok: true, message: "disconnect requested" });
+    return;
+  }
+
+  writeJson(res, 404, { ok: false, error: "not found" });
+});
+
+adminServer.listen(ADMIN_PORT, "0.0.0.0", () => {
+  console.log(
+    `[mock-room-admin] listening on http://0.0.0.0:${ADMIN_PORT}/admin/ auth=${ADMIN_TOKEN ? "on" : "off"}`,
+  );
+});
 
 console.log(
   `[mock-room] listening on ws://0.0.0.0:${PORT} (${TICK_HZ}Hz) heroes=${HERO_PROFILES.size}`,
