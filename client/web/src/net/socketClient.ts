@@ -124,6 +124,11 @@ function normalizeMoveAxis(value: number): number {
   return 0;
 }
 
+interface CachedPlayerState {
+  state: NetworkPlayerState;
+  updatedAtMs: number;
+}
+
 export class RealtimeSocketClient {
   private ws: WebSocket | null = null;
   private reconnectTimer: number | null = null;
@@ -137,9 +142,11 @@ export class RealtimeSocketClient {
   private readonly sequenceTracker = new SequenceTracker();
   private readonly seenRemoteEnvelopeSeqs: number[] = [];
   private readonly lastYawByPlayerId = new Map<number, number>();
+  private readonly playerStateCache = new Map<number, CachedPlayerState>();
   private localNetworkPlayerId = 1;
   private localTeamId = 1;
   private lastAimRadian = 0;
+  private lastAckSeq = 0;
 
   constructor(private readonly options: RealtimeSocketClientOptions) {
     this.heroId = getPreferredHeroId(options.heroId);
@@ -154,6 +161,9 @@ export class RealtimeSocketClient {
     }
 
     this.clearKeepAliveTimer();
+    this.playerStateCache.clear();
+    this.lastYawByPlayerId.clear();
+    this.lastAckSeq = 0;
     this.ws = new WebSocket(this.options.url);
     this.ws.binaryType = "arraybuffer";
 
@@ -398,6 +408,10 @@ export class RealtimeSocketClient {
         }
 
         this.localNetworkPlayerId = welcome.playerId();
+        this.playerStateCache.clear();
+        this.lastYawByPlayerId.clear();
+        this.lastAckSeq = 0;
+
         this.options.onEvent?.("S2C_WELCOME", {
           playerId: welcome.playerId(),
           serverTick: welcome.serverTick(),
@@ -414,8 +428,14 @@ export class RealtimeSocketClient {
           return;
         }
 
-        let ackSeq = 0;
-        const players: NetworkPlayerState[] = [];
+        const serverTimeMsRaw = Number(snapshotPayload.serverTimeMs());
+        const serverTimeMs = Number.isFinite(serverTimeMsRaw)
+          ? serverTimeMsRaw
+          : Date.now();
+
+        if (snapshotPayload.kind() === SnapshotKind.Base) {
+          this.playerStateCache.clear();
+        }
 
         for (let i = 0; i < snapshotPayload.playersLength(); i += 1) {
           const player = snapshotPayload.players(i);
@@ -453,16 +473,28 @@ export class RealtimeSocketClient {
           };
 
           if (playerId === this.localNetworkPlayerId) {
-            ackSeq = mapped.lastProcessedInputSeq;
+            this.lastAckSeq = Math.max(this.lastAckSeq, mapped.lastProcessedInputSeq);
           }
 
-          players.push(mapped);
+          this.playerStateCache.set(playerId, {
+            state: mapped,
+            updatedAtMs: serverTimeMs,
+          });
         }
+
+        const localCached = this.playerStateCache.get(this.localNetworkPlayerId);
+        if (localCached) {
+          this.lastAckSeq = Math.max(this.lastAckSeq, localCached.state.lastProcessedInputSeq);
+        }
+
+        const players = [...this.playerStateCache.values()]
+          .map((entry) => entry.state)
+          .sort((a, b) => a.playerId - b.playerId);
 
         const snapshot: WorldSnapshot = {
           serverTick: snapshotPayload.serverTick(),
-          serverTimeMs: Number(snapshotPayload.serverTimeMs()),
-          ackSeq,
+          serverTimeMs,
+          ackSeq: this.lastAckSeq,
           players,
         };
 
