@@ -5,6 +5,10 @@ export interface InputCommand {
   moveY: number;
   aimX: number;
   aimY: number;
+  // C++ room wire(ActionCommandPayload) 변환용 보조 필드
+  aimRadian?: number;
+  originX?: number;
+  originY?: number;
   fire: boolean;
   skillQ: boolean;
   skillE: boolean;

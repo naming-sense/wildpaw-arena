@@ -1,5 +1,17 @@
-import { OPCODES } from "./protocol/opcodes";
-import type { Envelope, InputCommand, WorldSnapshot } from "./protocol/schemas";
+import * as flatbuffers from "flatbuffers";
+
+import { ActionCommandPayload } from "../netcode/gen/wildpaw/protocol/action-command-payload";
+import { CombatEventPayload } from "../netcode/gen/wildpaw/protocol/combat-event-payload";
+import { Envelope } from "../netcode/gen/wildpaw/protocol/envelope";
+import { EventPayload } from "../netcode/gen/wildpaw/protocol/event-payload";
+import { HelloPayload } from "../netcode/gen/wildpaw/protocol/hello-payload";
+import { MessagePayload } from "../netcode/gen/wildpaw/protocol/message-payload";
+import { PingPayload } from "../netcode/gen/wildpaw/protocol/ping-payload";
+import { ProjectileEventPayload } from "../netcode/gen/wildpaw/protocol/projectile-event-payload";
+import { SnapshotKind } from "../netcode/gen/wildpaw/protocol/snapshot-kind";
+import { SnapshotPayload } from "../netcode/gen/wildpaw/protocol/snapshot-payload";
+import { WelcomePayload } from "../netcode/gen/wildpaw/protocol/welcome-payload";
+import type { InputCommand, NetworkPlayerState, WorldSnapshot } from "./protocol/schemas";
 
 export type ConnectionState =
   | "Disconnected"
@@ -19,33 +31,7 @@ export interface RealtimeSocketClientOptions {
   onPing?: (pingMs: number) => void;
 }
 
-const CLIENT_ID_STORAGE_KEY = "wildpaw-client-id";
 const HERO_ID_STORAGE_KEY = "wildpaw-hero-id";
-
-function getOrCreateClientId(): string {
-  const fallback = `wildpaw-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-
-  if (typeof window === "undefined") {
-    return fallback;
-  }
-
-  try {
-    const existing = window.localStorage.getItem(CLIENT_ID_STORAGE_KEY);
-    if (existing && existing.length > 0) {
-      return existing;
-    }
-
-    const generated =
-      typeof window.crypto?.randomUUID === "function"
-        ? window.crypto.randomUUID()
-        : fallback;
-
-    window.localStorage.setItem(CLIENT_ID_STORAGE_KEY, generated);
-    return generated;
-  } catch {
-    return fallback;
-  }
-}
 
 function normalizeHeroId(rawHeroId: string): string {
   const heroId = rawHeroId.trim();
@@ -81,6 +67,63 @@ function getPreferredHeroId(explicit?: string): string {
   return "coral_cat";
 }
 
+class SequenceTracker {
+  private nextLocalSeq = 1;
+  private highestRemoteSeq = 0;
+  private readonly remoteWindow: number[] = [];
+
+  nextOutgoingMeta(): { seq: number; ack: number; ackBits: number } {
+    return {
+      seq: this.nextLocalSeq++,
+      ack: this.highestRemoteSeq,
+      ackBits: this.buildAckBits(),
+    };
+  }
+
+  noteRemote(seq: number): void {
+    if (!Number.isFinite(seq) || seq <= 0) {
+      return;
+    }
+
+    if (!this.remoteWindow.includes(seq)) {
+      this.remoteWindow.push(seq);
+      if (this.remoteWindow.length > 128) {
+        this.remoteWindow.shift();
+      }
+    }
+
+    if (seq > this.highestRemoteSeq) {
+      this.highestRemoteSeq = seq;
+    }
+  }
+
+  private buildAckBits(): number {
+    if (this.highestRemoteSeq === 0) {
+      return 0;
+    }
+
+    let ackBits = 0;
+    for (const seq of this.remoteWindow) {
+      if (seq >= this.highestRemoteSeq) {
+        continue;
+      }
+      const diff = this.highestRemoteSeq - seq - 1;
+      if (diff >= 0 && diff < 32) {
+        ackBits |= 1 << diff;
+      }
+    }
+
+    return ackBits >>> 0;
+  }
+}
+
+function normalizeMoveAxis(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (value > 0.1) return 1;
+  if (value < -0.1) return -1;
+  return 0;
+}
+
 export class RealtimeSocketClient {
   private ws: WebSocket | null = null;
   private reconnectTimer: number | null = null;
@@ -88,14 +131,23 @@ export class RealtimeSocketClient {
   private state: ConnectionState = "Disconnected";
   private pingSentAt = 0;
   private keepAliveTimer: number | null = null;
-  private readonly clientId = getOrCreateClientId();
   private readonly heroId: string;
+
+  private lastRoomToken = "dev-room";
+  private readonly sequenceTracker = new SequenceTracker();
+  private readonly seenRemoteEnvelopeSeqs: number[] = [];
+  private readonly lastYawByPlayerId = new Map<number, number>();
+  private localNetworkPlayerId = 1;
+  private localTeamId = 1;
+  private lastAimRadian = 0;
 
   constructor(private readonly options: RealtimeSocketClientOptions) {
     this.heroId = getPreferredHeroId(options.heroId);
   }
 
   connect(roomToken = "dev-room"): void {
+    this.lastRoomToken = roomToken;
+
     if (!this.options.url) {
       this.setState("Disconnected");
       return;
@@ -103,16 +155,12 @@ export class RealtimeSocketClient {
 
     this.clearKeepAliveTimer();
     this.ws = new WebSocket(this.options.url);
+    this.ws.binaryType = "arraybuffer";
 
     this.ws.onopen = () => {
       this.reconnectAttempt = 0;
       this.setState("Connected");
-      this.send(OPCODES.C2S_HELLO, {
-        roomToken,
-        clientVersion: "0.2.0",
-        clientId: this.clientId,
-        heroId: this.heroId,
-      });
+      this.sendHello(this.lastRoomToken);
       this.startKeepAlive();
     };
 
@@ -126,13 +174,7 @@ export class RealtimeSocketClient {
     };
 
     this.ws.onmessage = (event) => {
-      let envelope: Envelope;
-      try {
-        envelope = JSON.parse(String(event.data)) as Envelope;
-      } catch {
-        return;
-      }
-      this.handleEnvelope(envelope);
+      void this.handleIncoming(event.data);
     };
   }
 
@@ -141,6 +183,7 @@ export class RealtimeSocketClient {
       window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+
     this.clearKeepAliveTimer();
     this.ws?.close();
     this.ws = null;
@@ -148,30 +191,390 @@ export class RealtimeSocketClient {
   }
 
   sendInput(command: InputCommand): boolean {
-    return this.send(OPCODES.C2S_INPUT, command);
+    let aimRadian =
+      typeof command.aimRadian === "number" && Number.isFinite(command.aimRadian)
+        ? command.aimRadian
+        : Number.NaN;
+
+    if (!Number.isFinite(aimRadian)) {
+      const originX =
+        typeof command.originX === "number" && Number.isFinite(command.originX)
+          ? command.originX
+          : 0;
+      const originY =
+        typeof command.originY === "number" && Number.isFinite(command.originY)
+          ? command.originY
+          : 0;
+      const aimDx = command.aimX - originX;
+      const aimDy = command.aimY - originY;
+
+      if (Math.hypot(aimDx, aimDy) > 0.0001) {
+        aimRadian = Math.atan2(aimDx, aimDy);
+      } else {
+        aimRadian = this.lastAimRadian;
+      }
+    }
+
+    if (!Number.isFinite(aimRadian)) {
+      aimRadian = 0;
+    }
+
+    this.lastAimRadian = aimRadian;
+
+    return this.sendBinary((builder, meta) => {
+      const payloadOffset = ActionCommandPayload.createActionCommandPayload(
+        builder,
+        command.seq,
+        normalizeMoveAxis(command.moveX),
+        normalizeMoveAxis(command.moveY),
+        Boolean(command.fire),
+        aimRadian,
+        Boolean(command.skillQ),
+        Boolean(command.skillE),
+        Boolean(command.skillR),
+      );
+
+      return {
+        payloadType: MessagePayload.ActionCommandPayload,
+        payloadOffset,
+        meta,
+      };
+    });
   }
 
   sendPing(): boolean {
     this.pingSentAt = performance.now();
-    return this.send(OPCODES.C2S_PING, { clientTime: Date.now() });
+
+    return this.sendBinary((builder, meta) => {
+      const payloadOffset = PingPayload.createPingPayload(builder);
+      return {
+        payloadType: MessagePayload.PingPayload,
+        payloadOffset,
+        meta,
+      };
+    });
   }
 
-  private handleEnvelope(envelope: Envelope): void {
-    switch (envelope.t) {
-      case OPCODES.S2C_SNAPSHOT_BASE:
-      case OPCODES.S2C_SNAPSHOT_DELTA:
-        this.options.onSnapshot?.(envelope.d as WorldSnapshot);
-        break;
-      case OPCODES.C2S_PING:
-      case "S2C_PONG": {
+  private sendHello(roomToken: string): boolean {
+    return this.sendBinary((builder, meta) => {
+      const roomTokenOffset = builder.createString(roomToken);
+      const clientVersionOffset = builder.createString("0.4.0");
+      const payloadOffset = HelloPayload.createHelloPayload(
+        builder,
+        roomTokenOffset,
+        clientVersionOffset,
+      );
+
+      return {
+        payloadType: MessagePayload.HelloPayload,
+        payloadOffset,
+        meta,
+      };
+    });
+  }
+
+  private sendBinary(
+    encode: (
+      builder: flatbuffers.Builder,
+      meta: { seq: number; ack: number; ackBits: number },
+    ) => {
+      payloadType: MessagePayload;
+      payloadOffset: flatbuffers.Offset;
+      meta: { seq: number; ack: number; ackBits: number };
+    },
+  ): boolean {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+
+    const builder = new flatbuffers.Builder(256);
+    const meta = this.sequenceTracker.nextOutgoingMeta();
+    const encoded = encode(builder, meta);
+
+    const envelopeOffset = Envelope.createEnvelope(
+      builder,
+      encoded.meta.seq,
+      encoded.meta.ack,
+      encoded.meta.ackBits,
+      encoded.payloadType,
+      encoded.payloadOffset,
+    );
+
+    Envelope.finishEnvelopeBuffer(builder, envelopeOffset);
+    this.ws.send(builder.asUint8Array());
+    return true;
+  }
+
+  private async handleIncoming(data: string | ArrayBuffer | Blob): Promise<void> {
+    if (data instanceof ArrayBuffer) {
+      this.handleBinaryEnvelope(data);
+      return;
+    }
+
+    if (data instanceof Blob) {
+      this.handleBinaryEnvelope(await data.arrayBuffer());
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(String(data)) as { t?: string; d?: unknown };
+      if (typeof parsed.t === "string") {
+        this.handleLegacyJsonEnvelope(parsed.t, parsed.d);
+        return;
+      }
+    } catch {
+      // ignore parse error and report raw text below
+    }
+
+    this.options.onEvent?.("text.unexpected", data);
+  }
+
+  private handleLegacyJsonEnvelope(type: string, payload: unknown): void {
+    if (type === "S2C_SNAPSHOT_BASE" || type === "S2C_SNAPSHOT_DELTA") {
+      this.options.onSnapshot?.(payload as WorldSnapshot);
+      return;
+    }
+
+    if (type === "S2C_PONG" || type === "C2S_PING") {
+      if (this.pingSentAt > 0) {
+        this.options.onPing?.(performance.now() - this.pingSentAt);
+      }
+      return;
+    }
+
+    this.options.onEvent?.(type, payload);
+  }
+
+  private isDuplicateRemoteEnvelopeSeq(seq: number): boolean {
+    if (seq <= 0 || !Number.isFinite(seq)) {
+      return false;
+    }
+
+    if (this.seenRemoteEnvelopeSeqs.includes(seq)) {
+      return true;
+    }
+
+    this.seenRemoteEnvelopeSeqs.push(seq);
+    if (this.seenRemoteEnvelopeSeqs.length > 256) {
+      this.seenRemoteEnvelopeSeqs.shift();
+    }
+
+    return false;
+  }
+
+  private resolveTeamId(playerId: number): number {
+    if (playerId === this.localNetworkPlayerId) {
+      return this.localTeamId;
+    }
+
+    if ((playerId & 1) === (this.localNetworkPlayerId & 1)) {
+      return this.localTeamId;
+    }
+
+    return this.localTeamId === 1 ? 2 : 1;
+  }
+
+  private handleBinaryEnvelope(buffer: ArrayBuffer): void {
+    const byteBuffer = new flatbuffers.ByteBuffer(new Uint8Array(buffer));
+    if (!Envelope.bufferHasIdentifier(byteBuffer)) {
+      this.options.onEvent?.("binary.invalid_identifier", {
+        byteLength: buffer.byteLength,
+      });
+      return;
+    }
+
+    const envelope = Envelope.getRootAsEnvelope(byteBuffer);
+    this.sequenceTracker.noteRemote(envelope.seq());
+
+    if (this.isDuplicateRemoteEnvelopeSeq(envelope.seq())) {
+      return;
+    }
+
+    switch (envelope.payloadType()) {
+      case MessagePayload.WelcomePayload: {
+        const welcome = envelope.payload(new WelcomePayload()) as WelcomePayload | null;
+        if (!welcome) {
+          return;
+        }
+
+        this.localNetworkPlayerId = welcome.playerId();
+        this.options.onEvent?.("S2C_WELCOME", {
+          playerId: welcome.playerId(),
+          serverTick: welcome.serverTick(),
+          serverTickRate: welcome.serverTickRate(),
+          serverTimeMs: Date.now(),
+          heroId: this.heroId,
+        });
+        return;
+      }
+
+      case MessagePayload.SnapshotPayload: {
+        const snapshotPayload = envelope.payload(new SnapshotPayload()) as SnapshotPayload | null;
+        if (!snapshotPayload) {
+          return;
+        }
+
+        let ackSeq = 0;
+        const players: NetworkPlayerState[] = [];
+
+        for (let i = 0; i < snapshotPayload.playersLength(); i += 1) {
+          const player = snapshotPayload.players(i);
+          if (!player) {
+            continue;
+          }
+
+          const playerId = player.playerId();
+          const position = player.position();
+          const velocity = player.velocity();
+
+          const vx = velocity?.x() ?? 0;
+          const vy = velocity?.y() ?? 0;
+
+          const previousYaw = this.lastYawByPlayerId.get(playerId) ?? 0;
+          const nextYaw = Math.hypot(vx, vy) > 0.001 ? Math.atan2(vx, vy) : previousYaw;
+          this.lastYawByPlayerId.set(playerId, nextYaw);
+
+          const mapped: NetworkPlayerState = {
+            playerId,
+            team: this.resolveTeamId(playerId),
+            x: position?.x() ?? 0,
+            y: position?.y() ?? 0,
+            rot: nextYaw,
+            vx,
+            vy,
+            hp: player.hp(),
+            maxHp: 100,
+            shield: 0,
+            alive: player.alive(),
+            lastProcessedInputSeq: player.lastProcessedInputSeq(),
+            ammo: player.ammo(),
+            maxAmmo: player.maxAmmo(),
+            reloading: player.isReloading(),
+          };
+
+          if (playerId === this.localNetworkPlayerId) {
+            ackSeq = mapped.lastProcessedInputSeq;
+          }
+
+          players.push(mapped);
+        }
+
+        const snapshot: WorldSnapshot = {
+          serverTick: snapshotPayload.serverTick(),
+          serverTimeMs: Number(snapshotPayload.serverTimeMs()),
+          ackSeq,
+          players,
+        };
+
+        this.options.onSnapshot?.(snapshot);
+        this.options.onEvent?.(
+          snapshotPayload.kind() === SnapshotKind.Delta
+            ? "S2C_SNAPSHOT_DELTA"
+            : "S2C_SNAPSHOT_BASE",
+          { players: players.length },
+        );
+        return;
+      }
+
+      case MessagePayload.CombatEventPayload: {
+        const combatPayload = envelope.payload(new CombatEventPayload()) as
+          | CombatEventPayload
+          | null;
+        if (!combatPayload) {
+          return;
+        }
+
+        const payload = {
+          attackerPlayerId: combatPayload.sourcePlayerId(),
+          targetPlayerId: combatPayload.targetPlayerId(),
+          targetX: combatPayload.x(),
+          targetY: combatPayload.y(),
+          damage: combatPayload.damage(),
+          critical: combatPayload.isCritical(),
+          serverTick: combatPayload.serverTick(),
+        };
+
+        this.options.onEvent?.("S2C_EVENT", {
+          kind: "hit-confirm",
+          ...payload,
+        });
+
+        this.options.onEvent?.("S2C_EVENT", {
+          kind: "damage-taken",
+          ...payload,
+        });
+
+        return;
+      }
+
+      case MessagePayload.ProjectileEventPayload: {
+        const projectilePayload = envelope.payload(new ProjectileEventPayload()) as
+          | ProjectileEventPayload
+          | null;
+        if (!projectilePayload) {
+          return;
+        }
+
+        this.options.onEvent?.("S2C_PROJECTILE_EVENT", {
+          projectileId: projectilePayload.projectileId(),
+          ownerPlayerId: projectilePayload.ownerPlayerId(),
+          targetPlayerId: projectilePayload.targetPlayerId(),
+          phase: projectilePayload.phase(),
+          serverTick: projectilePayload.serverTick(),
+          x: projectilePayload.x(),
+          y: projectilePayload.y(),
+          vx: projectilePayload.vx(),
+          vy: projectilePayload.vy(),
+        });
+
+        return;
+      }
+
+      case MessagePayload.EventPayload: {
+        const eventPayload = envelope.payload(new EventPayload()) as EventPayload | null;
+        if (!eventPayload) {
+          return;
+        }
+
+        const eventName = eventPayload.name() ?? "S2C_EVENT";
+        const message = eventPayload.message() ?? "";
+
+        if (eventName === "pong" && this.pingSentAt > 0) {
+          this.options.onPing?.(performance.now() - this.pingSentAt);
+        }
+
+        if (eventName === "team.assigned" && message) {
+          try {
+            const parsed = JSON.parse(message) as { teamId?: unknown };
+            if (typeof parsed.teamId === "number" && Number.isFinite(parsed.teamId)) {
+              this.localTeamId = parsed.teamId === 2 ? 2 : 1;
+            }
+          } catch {
+            // ignore parse errors
+          }
+        }
+
+        this.options.onEvent?.(eventName, { message });
+        this.options.onEvent?.("S2C_EVENT", {
+          kind: eventName,
+          message,
+        });
+
+        return;
+      }
+
+      case MessagePayload.PingPayload: {
         if (this.pingSentAt > 0) {
           this.options.onPing?.(performance.now() - this.pingSentAt);
         }
-        break;
+        return;
       }
+
       default:
-        this.options.onEvent?.(envelope.t, envelope.d);
-        break;
+        this.options.onEvent?.("binary.unknown_payload", {
+          payloadType: envelope.payloadType(),
+        });
+        return;
     }
   }
 
@@ -183,6 +586,7 @@ export class RealtimeSocketClient {
 
     this.setState("Reconnecting");
     this.reconnectAttempt += 1;
+
     const base = Math.min(
       this.options.reconnectMaxMs,
       this.options.reconnectMinMs * 2 ** (this.reconnectAttempt - 1),
@@ -190,24 +594,15 @@ export class RealtimeSocketClient {
     const jittered = base * (0.8 + Math.random() * 0.4);
 
     this.reconnectTimer = window.setTimeout(() => {
-      this.connect();
+      this.connect(this.lastRoomToken);
     }, jittered);
-  }
-
-  private send(type: string, data: unknown): boolean {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
-    this.ws.send(JSON.stringify({ t: type, d: data } satisfies Envelope));
-    return true;
   }
 
   private startKeepAlive(): void {
     this.clearKeepAliveTimer();
 
     this.keepAliveTimer = window.setInterval(() => {
-      this.send(OPCODES.C2S_PING, {
-        clientTime: Date.now(),
-        source: "socket-keepalive",
-      });
+      this.sendPing();
     }, 4000);
   }
 

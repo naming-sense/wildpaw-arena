@@ -474,6 +474,18 @@ export class GameApp {
     const periodicSendDue = hasContinuousInput && nowMs - this.lastInputSentAt >= sendIntervalMs;
 
     if (inputChanged || periodicSendDue) {
+      const localTransform = this.world.transforms.get(this.localPlayerEntityId);
+      if (localTransform) {
+        const aimDx = command.aimX - localTransform.x;
+        const aimDy = command.aimY - localTransform.z;
+
+        command.originX = localTransform.x;
+        command.originY = localTransform.z;
+        if (Math.hypot(aimDx, aimDy) > 0.0001) {
+          command.aimRadian = Math.atan2(aimDx, aimDy);
+        }
+      }
+
       const sent = this.socket.sendInput(command);
       if (sent) {
         this.commands.markSent(command);
