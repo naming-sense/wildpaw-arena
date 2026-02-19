@@ -2,6 +2,7 @@ import * as flatbuffers from "flatbuffers";
 
 import { ActionCommandPayload } from "../netcode/gen/wildpaw/protocol/action-command-payload";
 import { CombatEventPayload } from "../netcode/gen/wildpaw/protocol/combat-event-payload";
+import { CombatEventType } from "../netcode/gen/wildpaw/protocol/combat-event-type";
 import { Envelope } from "../netcode/gen/wildpaw/protocol/envelope";
 import { EventPayload } from "../netcode/gen/wildpaw/protocol/event-payload";
 import { HelloPayload } from "../netcode/gen/wildpaw/protocol/hello-payload";
@@ -516,7 +517,9 @@ export class RealtimeSocketClient {
           return;
         }
 
+        const eventType = combatPayload.eventType();
         const payload = {
+          eventType,
           attackerPlayerId: combatPayload.sourcePlayerId(),
           targetPlayerId: combatPayload.targetPlayerId(),
           targetX: combatPayload.x(),
@@ -526,16 +529,28 @@ export class RealtimeSocketClient {
           serverTick: combatPayload.serverTick(),
         };
 
-        this.options.onEvent?.("S2C_EVENT", {
-          kind: "hit-confirm",
-          ...payload,
-        });
+        if (eventType === CombatEventType.DamageApplied) {
+          this.options.onEvent?.("S2C_EVENT", {
+            kind: "hit-confirm",
+            ...payload,
+          });
 
-        this.options.onEvent?.("S2C_EVENT", {
-          kind: "damage-taken",
-          ...payload,
-        });
+          this.options.onEvent?.("S2C_EVENT", {
+            kind: "damage-taken",
+            ...payload,
+          });
+          return;
+        }
 
+        if (eventType === CombatEventType.Knockout) {
+          this.options.onEvent?.("S2C_EVENT", {
+            kind: "knockout",
+            ...payload,
+          });
+          return;
+        }
+
+        this.options.onEvent?.("S2C_COMBAT_EVENT", payload);
         return;
       }
 

@@ -639,9 +639,9 @@ export class GameApp {
 
       const rawDamage =
         typeof payload.damage === "number" && Number.isFinite(payload.damage)
-          ? Math.max(1, Math.round(payload.damage))
+          ? Math.round(payload.damage)
           : null;
-      if (rawDamage === null) return;
+      if (rawDamage === null || rawDamage <= 0) return;
 
       const critical = Boolean(payload.critical);
 
@@ -692,9 +692,9 @@ export class GameApp {
 
       const rawDamage =
         typeof payload.damage === "number" && Number.isFinite(payload.damage)
-          ? Math.max(1, Math.round(payload.damage))
+          ? Math.round(payload.damage)
           : null;
-      if (rawDamage === null) return;
+      if (rawDamage === null || rawDamage <= 0) return;
 
       const critical = Boolean(payload.critical);
       this.triggerDamageTakenOverlay(critical);

@@ -170,8 +170,8 @@ void RoomSimulation::applyMovement() {
 }
 
 void RoomSimulation::processCombat() {
-  auto findNearestTarget = [&](const PlayerState& source,
-                               float rangeMeters) -> PlayerState* {
+  auto findNearestTargetInRange = [&](const PlayerState& source,
+                                      float rangeMeters) -> PlayerState* {
     if (rangeMeters <= 0.0f) {
       return nullptr;
     }
@@ -188,6 +188,47 @@ void RoomSimulation::processCombat() {
       const float d = distSq(source.position, target.position);
       if (d <= rangeSq && d < best) {
         best = d;
+        bestTarget = &target;
+      }
+    }
+
+    return bestTarget;
+  };
+
+  auto findShotTarget = [&](const PlayerState& source,
+                            float rangeMeters,
+                            float aimRadian) -> PlayerState* {
+    if (rangeMeters <= 0.0f) {
+      return nullptr;
+    }
+
+    constexpr float kShotHitRadiusMeters = 0.65f;
+    const Vec2 direction = directionFromRadian(aimRadian);
+
+    float bestScore = std::numeric_limits<float>::max();
+    PlayerState* bestTarget = nullptr;
+
+    for (auto& [targetId, target] : players_) {
+      if (targetId == source.playerId || !target.alive) {
+        continue;
+      }
+
+      const float toX = target.position.x - source.position.x;
+      const float toY = target.position.y - source.position.y;
+
+      const float forward = toX * direction.x + toY * direction.y;
+      if (forward < 0.0f || forward > rangeMeters) {
+        continue;
+      }
+
+      const float lateral = std::abs(toX * direction.y - toY * direction.x);
+      if (lateral > kShotHitRadiusMeters) {
+        continue;
+      }
+
+      const float score = forward + lateral * 0.25f;
+      if (score < bestScore) {
+        bestScore = score;
         bestTarget = &target;
       }
     }
@@ -280,7 +321,7 @@ void RoomSimulation::processCombat() {
 
     if (slot == SkillSlot::Q) {
       const auto& rule = sourceRules.skillQ;
-      if (auto* target = findNearestTarget(source, rule.rangeMeters);
+      if (auto* target = findNearestTargetInRange(source, rule.rangeMeters);
           target != nullptr) {
         pushDamageEvents(source, *target, rule.damage, SkillSlot::Q, rule.critical);
       }
@@ -450,7 +491,8 @@ void RoomSimulation::processCombat() {
                        .y = projectileDirection.y * rules.projectileSpeed},
           });
 
-          if (auto* target = findNearestTarget(player, rules.shotRangeMeters);
+          if (auto* target =
+                  findShotTarget(player, rules.shotRangeMeters, input.aimRadian);
               target != nullptr) {
             pushDamageEvents(player, *target, rules.shotDamage, SkillSlot::None,
                              false);
