@@ -49,7 +49,7 @@ export function AppShell(): JSX.Element {
     let cancelled = false;
     setInitError(null);
 
-    setLoadingVisual("CONNECTING_ROOM", Math.max(loading.progressPct, 38));
+    setLoadingVisual("CONNECTING_ROOM", 38);
 
     bootstrap(canvasRef.current, {
       wsUrl: loading.roomEndpoint,
@@ -94,7 +94,6 @@ export function AppShell(): JSX.Element {
     bumpLoadingRetry,
     loading.assignmentVersion,
     loading.matchId,
-    loading.progressPct,
     loading.roomEndpoint,
     loading.roomToken,
     reportRoomConnectResult,
