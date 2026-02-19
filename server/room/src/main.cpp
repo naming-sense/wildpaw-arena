@@ -688,7 +688,6 @@ class RoomServer {
     out << '}';
 
     out << '}';
-    out << '}';
     return out.str();
   }
 
@@ -1761,11 +1760,61 @@ class AdminHttpSession : public std::enable_shared_from_this<AdminHttpSession> {
     const q = (s) => document.querySelector(s);
     const tokenEl = q('#token');
     const msgEl = q('#statusMsg');
+    const TOKEN_STORAGE_KEY = 'wildpaw-admin-token';
+
+    function initToken() {
+      const queryToken = new URLSearchParams(window.location.search).get('token') || '';
+      if (queryToken) {
+        tokenEl.value = queryToken;
+        return;
+      }
+
+      try {
+        const stored = window.localStorage.getItem(TOKEN_STORAGE_KEY) || '';
+        if (stored) {
+          tokenEl.value = stored;
+        }
+      } catch {
+        // ignore storage failures
+      }
+    }
+
+    function persistToken() {
+      try {
+        if (tokenEl.value) {
+          window.localStorage.setItem(TOKEN_STORAGE_KEY, tokenEl.value);
+        } else {
+          window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+        }
+      } catch {
+        // ignore storage failures
+      }
+    }
+
+    tokenEl.addEventListener('input', persistToken);
+    initToken();
+    persistToken();
 
     const headers = () => tokenEl.value ? {'x-admin-token': tokenEl.value} : {};
 
+    function withTokenQuery(path) {
+      if (!tokenEl.value) {
+        return path;
+      }
+
+      try {
+        const url = new URL(path, window.location.origin);
+        if (!url.searchParams.has('token')) {
+          url.searchParams.set('token', tokenEl.value);
+        }
+        return `${url.pathname}${url.search}`;
+      } catch {
+        return path;
+      }
+    }
+
     async function api(path, options = {}) {
-      const res = await fetch(path, { ...options, headers: { ...(options.headers||{}), ...headers() } });
+      const res = await fetch(withTokenQuery(path), { ...options, headers: { ...(options.headers||{}), ...headers() } });
       if (!res.ok) throw new Error(path + ' ' + res.status);
       const ct = res.headers.get('content-type') || '';
       return ct.includes('application/json') ? res.json() : res.text();
