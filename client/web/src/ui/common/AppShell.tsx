@@ -22,6 +22,7 @@ export function AppShell(): JSX.Element {
   const flowState = useAppFlowStore((state) => state.flowState);
   const selectedHeroId = useAppFlowStore((state) => state.selectedHeroId);
   const loading = useAppFlowStore((state) => state.loading);
+  const shouldBootstrapRuntime = isRuntimeFlow(flowState);
 
   const setLoadingVisual = useAppFlowStore((state) => state.setLoadingVisual);
   const bumpLoadingRetry = useAppFlowStore((state) => state.bumpLoadingRetry);
@@ -30,7 +31,7 @@ export function AppShell(): JSX.Element {
   const toggleDebug = useUiStore((state) => state.toggleDebug);
 
   useEffect(() => {
-    if (flowState !== "MATCH_LOADING") return;
+    if (!shouldBootstrapRuntime) return;
     if (!canvasRef.current) return;
     if (!loading.matchId || !loading.roomEndpoint || !loading.roomToken) return;
 
@@ -91,7 +92,6 @@ export function AppShell(): JSX.Element {
     };
   }, [
     bumpLoadingRetry,
-    flowState,
     loading.assignmentVersion,
     loading.matchId,
     loading.progressPct,
@@ -100,6 +100,7 @@ export function AppShell(): JSX.Element {
     reportRoomConnectResult,
     selectedHeroId,
     setLoadingVisual,
+    shouldBootstrapRuntime,
   ]);
 
   useEffect(() => {
