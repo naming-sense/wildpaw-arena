@@ -7,15 +7,15 @@ export interface SceneRoot {
 
 export function createSceneRoot(): SceneRoot {
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x0d1119);
-  scene.fog = new THREE.Fog(0x0d1119, 18, 72);
+  scene.background = new THREE.Color(0x141c2a);
+  scene.fog = new THREE.Fog(0x141c2a, 26, 96);
 
   const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 250);
   camera.position.set(0, 12, 10);
 
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(120, 120),
-    new THREE.MeshStandardMaterial({ color: 0x1f2a2e, roughness: 0.95, metalness: 0.02 }),
+    new THREE.MeshStandardMaterial({ color: 0x2b3942, roughness: 0.9, metalness: 0.02 }),
   );
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;

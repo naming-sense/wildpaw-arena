@@ -210,3 +210,24 @@ npm run test
 - 효과:
   - 법률 페이지 왕복 후 다시 온보딩으로 자연스럽게 복귀
   - 이미 입력한 온보딩 값도 유지 가능
+
+## 17) 인게임 조명 밝기 상향 + 명암 편차 완화
+
+- 사용자 피드백: 인게임 화면이 전반적으로 어둡고, 위치에 따라 밝기 차이가 크게 느껴짐.
+- 조명/렌더 튜닝:
+  - `src/render/lights.ts`
+    - Hemisphere 강도 상향(0.5 -> 0.85)
+    - AmbientLight 추가(0.2)로 암부 리프트
+    - Key light 강도 상향(1.0 -> 1.18)
+    - Fill/Rim light 보강으로 측면/후면 암부 완화
+    - directional shadow camera 범위 확장 + bias/normalBias 조정
+  - `src/render/renderer.ts`
+    - `outputColorSpace = SRGBColorSpace` 명시
+    - `toneMappingExposure` 상향(1.0 -> 1.2)
+  - `src/render/sceneRoot.ts`
+    - 배경/안개 색상 소폭 상향
+    - fog 거리 조정(18~72 -> 26~96)으로 원거리 암전 완화
+    - 지면 색상 소폭 상향
+- 기대효과:
+  - 모바일 화면에서도 전체 밝기와 가독성 개선
+  - 특정 위치/방향에서 발생하던 과한 명암 대비 완화
