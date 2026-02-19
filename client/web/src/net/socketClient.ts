@@ -87,6 +87,7 @@ export class RealtimeSocketClient {
   private reconnectAttempt = 0;
   private state: ConnectionState = "Disconnected";
   private pingSentAt = 0;
+  private keepAliveTimer: number | null = null;
   private readonly clientId = getOrCreateClientId();
   private readonly heroId: string;
 
@@ -100,6 +101,7 @@ export class RealtimeSocketClient {
       return;
     }
 
+    this.clearKeepAliveTimer();
     this.ws = new WebSocket(this.options.url);
 
     this.ws.onopen = () => {
@@ -111,6 +113,7 @@ export class RealtimeSocketClient {
         clientId: this.clientId,
         heroId: this.heroId,
       });
+      this.startKeepAlive();
     };
 
     this.ws.onerror = () => {
@@ -118,11 +121,17 @@ export class RealtimeSocketClient {
     };
 
     this.ws.onclose = () => {
+      this.clearKeepAliveTimer();
       this.scheduleReconnect();
     };
 
     this.ws.onmessage = (event) => {
-      const envelope = JSON.parse(String(event.data)) as Envelope;
+      let envelope: Envelope;
+      try {
+        envelope = JSON.parse(String(event.data)) as Envelope;
+      } catch {
+        return;
+      }
       this.handleEnvelope(envelope);
     };
   }
@@ -132,6 +141,7 @@ export class RealtimeSocketClient {
       window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.clearKeepAliveTimer();
     this.ws?.close();
     this.ws = null;
     this.setState("Disconnected");
@@ -188,6 +198,26 @@ export class RealtimeSocketClient {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
     this.ws.send(JSON.stringify({ t: type, d: data } satisfies Envelope));
     return true;
+  }
+
+  private startKeepAlive(): void {
+    this.clearKeepAliveTimer();
+
+    this.keepAliveTimer = window.setInterval(() => {
+      this.send(OPCODES.C2S_PING, {
+        clientTime: Date.now(),
+        source: "socket-keepalive",
+      });
+    }, 4000);
+  }
+
+  private clearKeepAliveTimer(): void {
+    if (this.keepAliveTimer === null) {
+      return;
+    }
+
+    window.clearInterval(this.keepAliveTimer);
+    this.keepAliveTimer = null;
   }
 
   private setState(next: ConnectionState): void {

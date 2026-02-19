@@ -6,7 +6,7 @@ import { WebSocketServer } from "ws";
 const PORT = Number(process.env.PORT ?? 8080);
 const TICK_HZ = Number(process.env.TICK_HZ ?? 30);
 const TICK_MS = Math.max(1, Math.floor(1000 / Math.max(1, TICK_HZ)));
-const STALE_CLIENT_TIMEOUT_MS = Number(process.env.STALE_CLIENT_TIMEOUT_MS ?? 20000);
+const STALE_CLIENT_TIMEOUT_MS = Number(process.env.STALE_CLIENT_TIMEOUT_MS ?? 120000);
 const RESPAWN_MS = Number(process.env.RESPAWN_MS ?? 3000);
 const WORLD_MIN = -24;
 const WORLD_MAX = 24;

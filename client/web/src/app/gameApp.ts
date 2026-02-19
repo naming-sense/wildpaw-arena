@@ -368,50 +368,57 @@ export class GameApp {
   private frame = (nowMs: number): void => {
     if (!this.running) return;
 
-    const frameMs = nowMs - this.lastFrameMs;
-    this.lastFrameMs = nowMs;
+    try {
+      const frameMs = nowMs - this.lastFrameMs;
+      this.lastFrameMs = nowMs;
 
-    this.perf.recordFrame(frameMs);
-    useUiStore.getState().setHud({
-      fps: this.perf.fps,
-      frameMs: this.perf.frameMs,
-      drawCalls: this.renderer.drawCalls,
-      packetLossPct: this.netMetrics.packetLossPct,
-    });
+      this.perf.recordFrame(frameMs);
+      useUiStore.getState().setHud({
+        fps: this.perf.fps,
+        frameMs: this.perf.frameMs,
+        drawCalls: this.renderer.drawCalls,
+        packetLossPct: this.netMetrics.packetLossPct,
+      });
 
-    this.fixedStep.advance(frameMs, (dtMs) => this.simulationTick(nowMs, dtMs));
+      this.fixedStep.advance(frameMs, (dtMs) => this.simulationTick(nowMs, dtMs));
 
-    const estimatedServerNowMs = Date.now() + (this.hasServerTimeOffset ? this.serverTimeOffsetMs : 0);
-    this.applyInterpolatedRemoteState(estimatedServerNowMs);
-    this.syncRenderProxies(frameMs);
-    this.updateBulletTrailEffects(frameMs);
-    this.updateMuzzleFlashEffects(frameMs);
-    this.updateDamageNumberEffects(frameMs);
-    this.updateImpactBurstEffects(frameMs);
-    this.updateHitMarker(frameMs);
-    this.updateDamageTakenOverlay(frameMs);
+      const estimatedServerNowMs = Date.now() + (this.hasServerTimeOffset ? this.serverTimeOffsetMs : 0);
+      this.applyInterpolatedRemoteState(estimatedServerNowMs);
+      this.syncRenderProxies(frameMs);
+      this.updateBulletTrailEffects(frameMs);
+      this.updateMuzzleFlashEffects(frameMs);
+      this.updateDamageNumberEffects(frameMs);
+      this.updateImpactBurstEffects(frameMs);
+      this.updateHitMarker(frameMs);
+      this.updateDamageTakenOverlay(frameMs);
 
-    const localProxy = this.world.renderProxies.get(this.localPlayerEntityId);
-    if (localProxy) {
-      this.cameraRig.setFollowTarget(localProxy.object3d.position.x, localProxy.object3d.position.z);
-    } else {
-      const localTransform = this.world.transforms.get(this.localPlayerEntityId);
-      if (localTransform) {
-        this.cameraRig.setFollowTarget(localTransform.x, localTransform.z);
+      const localProxy = this.world.renderProxies.get(this.localPlayerEntityId);
+      if (localProxy) {
+        this.cameraRig.setFollowTarget(localProxy.object3d.position.x, localProxy.object3d.position.z);
+      } else {
+        const localTransform = this.world.transforms.get(this.localPlayerEntityId);
+        if (localTransform) {
+          this.cameraRig.setFollowTarget(localTransform.x, localTransform.z);
+        }
+      }
+      this.cameraRig.update(frameMs);
+
+      this.syncCameraAspectToCanvas();
+
+      if (nowMs - this.lastPingAt > 1000) {
+        this.lastPingAt = nowMs;
+        this.socket.sendPing();
+      }
+
+      this.levelRuntime.update(nowMs);
+      this.renderer.render(this.sceneRoot.scene, this.sceneRoot.camera);
+    } catch (error) {
+      console.error("[GameApp] frame error", error);
+    } finally {
+      if (this.running) {
+        this.rafId = requestAnimationFrame(this.frame);
       }
     }
-    this.cameraRig.update(frameMs);
-
-    this.syncCameraAspectToCanvas();
-
-    if (nowMs - this.lastPingAt > 1000) {
-      this.lastPingAt = nowMs;
-      this.socket.sendPing();
-    }
-
-    this.levelRuntime.update(nowMs);
-    this.renderer.render(this.sceneRoot.scene, this.sceneRoot.camera);
-    this.rafId = requestAnimationFrame(this.frame);
   };
 
   private syncRenderProxies(frameMs: number): void {
