@@ -227,6 +227,38 @@ function clampProgress(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+
+function normalizeRoomEndpoint(endpoint: string | null): string | null {
+  if (!endpoint) return null;
+  if (typeof window === "undefined") return endpoint;
+
+  try {
+    const url = new URL(endpoint);
+    if (!isLoopbackHost(url.hostname)) {
+      return endpoint;
+    }
+
+    const runtimeHost = window.location.hostname;
+    if (!runtimeHost || isLoopbackHost(runtimeHost)) {
+      return endpoint;
+    }
+
+    url.hostname = runtimeHost;
+
+    if (window.location.protocol === "https:" && url.protocol === "ws:") {
+      url.protocol = "wss:";
+    }
+
+    return url.toString();
+  } catch {
+    return endpoint;
+  }
+}
+
 function defaultQueueState(): QueueState {
   return {
     queueTicketId: null,
@@ -815,7 +847,10 @@ export const useAppFlowStore = create<AppFlowStore>((set, get) => ({
               phase: "ALLOCATING_ROOM",
               progressPct: 12,
               retryCount: 0,
-              roomEndpoint: typeof room?.endpoint === "string" ? room.endpoint : null,
+              roomEndpoint:
+                typeof room?.endpoint === "string"
+                  ? normalizeRoomEndpoint(room.endpoint)
+                  : null,
               roomToken: typeof room?.roomToken === "string" ? room.roomToken : null,
               roomRegion: typeof room?.region === "string" ? room.region : null,
               roomTokenExpiresAtMs:
@@ -847,7 +882,10 @@ export const useAppFlowStore = create<AppFlowStore>((set, get) => ({
               ...baseState.loading,
               phase: "CONNECTING_ROOM",
               retryCount: typeof payload.retryCount === "number" ? payload.retryCount : baseState.loading.retryCount + 1,
-              roomEndpoint: typeof room?.endpoint === "string" ? room.endpoint : baseState.loading.roomEndpoint,
+              roomEndpoint:
+                typeof room?.endpoint === "string"
+                  ? normalizeRoomEndpoint(room.endpoint)
+                  : baseState.loading.roomEndpoint,
               roomToken: typeof room?.roomToken === "string" ? room.roomToken : baseState.loading.roomToken,
               roomRegion: typeof room?.region === "string" ? room.region : baseState.loading.roomRegion,
               roomTokenExpiresAtMs:

@@ -264,6 +264,37 @@ function partyBucketForSize(size, teamSize) {
   return `party-${size}`;
 }
 
+function isLoopbackHost(hostname) {
+  const host = String(hostname ?? "").toLowerCase();
+  return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+
+function resolveRoomEndpointForSession(session) {
+  const fallback = ROOM_ENDPOINT;
+
+  try {
+    const endpoint = new URL(fallback);
+    if (!isLoopbackHost(endpoint.hostname)) {
+      return fallback;
+    }
+
+    const hostHeader = String(session.controlHost ?? "").trim();
+    if (!hostHeader) {
+      return fallback;
+    }
+
+    const controlUrl = new URL(`ws://${hostHeader}`);
+    if (!controlUrl.hostname || isLoopbackHost(controlUrl.hostname)) {
+      return fallback;
+    }
+
+    endpoint.hostname = controlUrl.hostname;
+    return endpoint.toString();
+  } catch {
+    return fallback;
+  }
+}
+
 function isDevMode(modeId) {
   return /_dev$/i.test(String(modeId ?? ""));
 }
@@ -1474,11 +1505,12 @@ function finishDraftAndAssign(match) {
 
     const token = assignRoomToken(match.matchId, sessionId);
     const teamInfo = session.teamInfo ?? { teamId: 1, slot: 1 };
+    const roomEndpoint = resolveRoomEndpointForSession(session);
 
     sendPush(session, "S2C_MATCH_ASSIGN", {
       matchId: match.matchId,
       room: {
-        endpoint: ROOM_ENDPOINT,
+        endpoint: roomEndpoint,
         roomToken: token.token,
         region: ROOM_REGION,
         expiresAtMs: token.expiresAtMs,
@@ -2441,11 +2473,12 @@ function handleRoomConnectResult(ctx) {
 
   if (nextRetry <= 1) {
     const token = assignRoomToken(matchId, ctx.session.sessionId);
+    const roomEndpoint = resolveRoomEndpointForSession(ctx.session);
     sendFromRequestContext(ctx, "S2C_MATCH_ASSIGN_RETRY", {
       matchId,
       retryCount: nextRetry,
       room: {
-        endpoint: ROOM_ENDPOINT,
+        endpoint: roomEndpoint,
         roomToken: token.token,
         region: ROOM_REGION,
         expiresAtMs: token.expiresAtMs,
@@ -2604,6 +2637,7 @@ wss.on("connection", (ws, req) => {
     sessionId: null,
     accountId: null,
     displayName: null,
+    controlHost: typeof req.headers?.host === "string" ? req.headers.host : null,
     hiddenSr: 1500,
     hiddenRd: 350,
     matchesPlayed: 0,
@@ -2688,6 +2722,7 @@ wss.on("close", () => {
  * @property {string | null} sessionId
  * @property {string | null} accountId
  * @property {string | null} displayName
+ * @property {string | null} controlHost
  * @property {number} hiddenSr
  * @property {number} hiddenRd
  * @property {number} matchesPlayed
