@@ -150,6 +150,8 @@ const customRooms = new Map();
 const queueTickets = new Map();
 /** @type {Map<string, string[]>} modeId -> ticketIds */
 const queueBuckets = new Map();
+/** @type {Map<string, number>} */
+const lastQueueNeedLogAtByMode = new Map();
 
 /** @type {Map<string, MatchCandidate>} */
 const matchCandidates = new Map();
@@ -260,6 +262,24 @@ function partyBucketForSize(size, teamSize) {
   if (size === 2) return "duo";
   if (size >= teamSize) return teamSize === 5 ? "5-stack" : "full-party";
   return `party-${size}`;
+}
+
+function isDevMode(modeId) {
+  return /_dev$/i.test(String(modeId ?? ""));
+}
+
+function activeQueuePlayerCount(modeId) {
+  const ids = queueBuckets.get(modeId) ?? [];
+  let count = 0;
+
+  for (const ticketId of ids) {
+    const ticket = queueTickets.get(ticketId);
+    if (isActiveQueueTicket(ticket)) {
+      count += 1;
+    }
+  }
+
+  return count;
 }
 
 function setFlowState(session, nextState) {
@@ -484,6 +504,10 @@ function removeQueueTicket(ticketId) {
   } else {
     queueBuckets.set(ticket.modeId, next);
   }
+
+  console.log(
+    `[gateway][queue.leave] account=${ticket.accountId} session=${ticket.sessionId} mode=${ticket.modeId} queued=${activeQueuePlayerCount(ticket.modeId)}/${ticket.requiredCount}`,
+  );
 }
 
 function attachQueueTicketToSession(session, ticketId) {
@@ -590,6 +614,10 @@ function enqueueSession(session, payload, requestId, incomingEventId) {
 
   attachQueueTicketToSession(session, ticketId);
   setFlowState(session, FLOW_STATES.QUEUEING);
+
+  console.log(
+    `[gateway][queue.join] account=${session.accountId} session=${session.sessionId} mode=${modeId} teamSize=${teamSize} queued=${activeQueuePlayerCount(modeId)}/${ticket.requiredCount} party=${ticket.partyId ?? "-"} sr=${Math.round(ticket.sr)} ping=${Math.round(ticket.avgPingMs)}`,
+  );
 
   const joinedEnvelope = makeOutboundEnvelope(session, "S2C_QUEUE_JOINED", {
     queueTicketId: ticketId,
@@ -856,7 +884,7 @@ function assignUnitsToTeams(units, teamSize, maxTeamSrDiff) {
   return best;
 }
 
-function findBestMatchFromUnits(units, teamSize) {
+function findBestMatchFromUnits(units, teamSize, modeId) {
   const requiredCount = teamSize * 2;
   if (!Array.isArray(units) || units.length === 0) {
     return null;
@@ -865,6 +893,37 @@ function findBestMatchFromUnits(units, teamSize) {
   const totalPlayers = units.reduce((acc, unit) => acc + unit.size, 0);
   if (totalPlayers < requiredCount) {
     return null;
+  }
+
+  if (isDevMode(modeId) && teamSize === 1) {
+    const ordered = [...units]
+      .filter((unit) => unit.size === 1)
+      .sort((a, b) => a.joinedAt - b.joinedAt);
+
+    if (ordered.length >= 2) {
+      const selected = [ordered[0], ordered[1]];
+      const ticketIds = selected.flatMap((unit) => unit.ticketIds);
+      const teamA = selected[0].sessionIds.slice(0, 1);
+      const teamB = selected[1].sessionIds.slice(0, 1);
+      return {
+        score: 0,
+        ticketIds,
+        participantSessionIds: [...teamA, ...teamB],
+        teamAssignments: { teamA, teamB },
+        quality: {
+          qualityTier: "DEV_FAST_TRACK",
+          expansionStage: 0,
+          maxPingMs: null,
+          srRange: null,
+          maxTeamSrDiff: null,
+          avgSrDiff: Number(Math.abs(selected[0].avgSr - selected[1].avgSr).toFixed(2)),
+          partySymmetryPenalty: 0,
+          srStdGap: 0,
+          anchorWaitSec: Math.max(selected[0].waitSec, selected[1].waitSec),
+          extremeWait: false,
+        },
+      };
+    }
   }
 
   for (const anchor of units) {
@@ -988,9 +1047,25 @@ function runMatchmaker() {
     const teamSize = firstTicket.teamSize;
     const requiredCount = teamSize * 2;
 
+    if (activeIds.length < requiredCount) {
+      const now = nowMs();
+      const lastLogAt = lastQueueNeedLogAtByMode.get(modeId) ?? 0;
+      if (now - lastLogAt >= 5000) {
+        const joinedAts = activeIds
+          .map((ticketId) => queueTickets.get(ticketId)?.joinedAt ?? now)
+          .filter((value) => Number.isFinite(value));
+        const oldestJoinedAt = joinedAts.length > 0 ? Math.min(...joinedAts) : now;
+        const oldestWaitSec = Math.max(0, Math.floor((now - oldestJoinedAt) / 1000));
+        console.log(
+          `[gateway][queue.wait] mode=${modeId} queued=${activeIds.length}/${requiredCount} oldestWaitSec=${oldestWaitSec}`,
+        );
+        lastQueueNeedLogAtByMode.set(modeId, now);
+      }
+    }
+
     while (activeIds.length >= requiredCount) {
       const units = buildQueueUnits(modeId, activeIds, teamSize);
-      const matched = findBestMatchFromUnits(units, teamSize);
+      const matched = findBestMatchFromUnits(units, teamSize, modeId);
 
       if (!matched) {
         break;

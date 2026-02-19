@@ -15,7 +15,7 @@ export type AppFlowState =
   | "RESULT"
   | "RECONNECTING";
 
-export type MatchModeId = "3v3_normal" | "3v3_rank" | "5v5_event";
+export type MatchModeId = "1v1_dev" | "3v3_normal" | "3v3_rank" | "5v5_event";
 export type BootPhase = "CHECK_VERSION" | "PROBE_REGION" | "RESTORE_SESSION" | "DONE" | "ERROR";
 export type AcceptState = "idle" | "pending" | "accepted" | "declined";
 export type MatchLoadingPhase = "ALLOCATING_ROOM" | "CONNECTING_ROOM" | "SYNCING_WORLD" | "READY";
@@ -181,6 +181,12 @@ function clearOnboardingDraft(): void {
 const initialOnboardingDraft = readOnboardingDraft();
 
 export const MATCH_MODE_OPTIONS: MatchModeOption[] = [
+  {
+    id: "1v1_dev",
+    title: "1v1 개발",
+    subtitle: "내부 테스트 전용",
+    estimatedQueueSec: 2,
+  },
   {
     id: "3v3_normal",
     title: "3v3 일반",
