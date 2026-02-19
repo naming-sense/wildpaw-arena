@@ -1523,15 +1523,8 @@ function finishDraftAndAssign(match) {
       roomConnectTimeoutSec: MATCH_ASSIGN_CONNECT_TIMEOUT_SEC,
     });
 
-    // 클라이언트가 C2S_ROOM_CONNECT_RESULT(OK)를 보내지 못해도 UI가 MATCH_LOADING에 고착되지 않도록
-    // 1차 확인 이벤트를 서버에서 선제 송신한다.
-    sendPush(session, "S2C_ROOM_CONNECT_CONFIRMED", {
-      matchId: match.matchId,
-      status: "OK",
-      source: "ASSIGN_AUTO",
-    });
-
-    setFlowState(session, FLOW_STATES.IN_MATCH);
+    // 룸 연결 확인은 클라이언트 C2S_ROOM_CONNECT_RESULT(OK) 수신 시에만 확정한다.
+    setFlowState(session, FLOW_STATES.MATCH_LOADING);
   }
 
   match.matchEndHandle = setTimeout(() => {
