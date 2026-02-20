@@ -20,7 +20,9 @@ float distSq(const Vec2& a, const Vec2& b) {
 }
 
 Vec2 directionFromRadian(float radian) {
-  return Vec2{.x = std::cos(radian), .y = std::sin(radian)};
+  // aimRadian은 클라이언트에서 atan2(aimDx, aimDy) 규약으로 전송된다.
+  // 따라서 월드 방향 복원은 (sin, cos) 순서여야 조준축과 일치한다.
+  return Vec2{.x = std::sin(radian), .y = std::cos(radian)};
 }
 
 bool segmentIntersectsAabb2D(float x0,
