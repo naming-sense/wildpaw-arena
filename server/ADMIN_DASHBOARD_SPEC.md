@@ -194,6 +194,15 @@ Auth:
 - ban list(메모리) + persistence
 - 멀티 룸/멀티 호스트 집계 Admin(별도 프로세스)
 
+### Phase C (시각화 고도화: 이번 반영)
+- JSON raw 출력 중심 화면을 대시보드형 UI로 재구성
+- KPI 카드(활성 세션/틱/입력/재전송/매치·맵) 추가
+- 최근 샘플 기반 실시간 라인 차트(tick duration / reliable inflight / active sessions) 추가
+- team occupancy bar 시각화 추가
+- sessions 필터 가능한 표 UI로 개선
+- violations를 type → player 기준 트리(details/summary) 구조로 시각화
+- raw JSON 패널은 디버그용으로 접어두고 유지
+
 ---
 
 ## 7) Definition of Done (M1)
