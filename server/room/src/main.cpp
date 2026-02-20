@@ -2124,50 +2124,241 @@ class AdminHttpSession : public std::enable_shared_from_this<AdminHttpSession> {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Wildpaw Admin</title>
+  <title>Wildpaw Admin Dashboard</title>
   <style>
-    body { font-family: ui-sans-serif, system-ui; margin: 16px; background:#0b1020; color:#d7def7; }
-    h1,h2 { margin: 8px 0; }
-    .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
-    .card { background:#151b33; border:1px solid #243057; border-radius:10px; padding:12px; }
-    input,button { background:#1a2448; color:#d7def7; border:1px solid #2a3b74; border-radius:8px; padding:6px 10px; }
-    table { width:100%; border-collapse:collapse; }
-    th,td { border-bottom:1px solid #243057; padding:6px; font-size:13px; text-align:left; }
-    pre { white-space:pre-wrap; background:#0f1530; border:1px solid #243057; border-radius:8px; padding:8px; }
+    :root {
+      --bg: #0b1020;
+      --card: #151b33;
+      --border: #243057;
+      --text: #d7def7;
+      --muted: #98a4cf;
+      --good: #5ddf98;
+      --warn: #ffd16a;
+      --bad: #ff8f7a;
+      --accent: #7ce7ff;
+      --accent2: #c58bff;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 16px;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    h1, h2, h3 { margin: 0 0 8px; }
+    h1 { font-size: 22px; margin-bottom: 14px; }
+    h2 { font-size: 17px; }
+    h3 { font-size: 13px; color: var(--muted); font-weight: 600; }
+
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    .grid { display: grid; gap: 12px; }
+    .grid.kpi { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-top: 12px; }
+    .grid.two-col { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); margin-top: 12px; }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      box-shadow: 0 1px 0 rgba(255,255,255,0.02) inset;
+    }
+
+    input, button, select {
+      background: #1a2448;
+      color: var(--text);
+      border: 1px solid #2a3b74;
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 13px;
+    }
+
+    input::placeholder { color: #8ea0d1; }
+    button { cursor: pointer; }
+    button:hover { filter: brightness(1.08); }
+
+    .kpi-value { font-size: 24px; font-weight: 700; line-height: 1.1; }
+    .kpi-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+    .status-chip {
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 12px;
+      border: 1px solid #2a3b74;
+      background: #1a2448;
+    }
+    .status-chip.good { color: var(--good); border-color: #327a57; }
+    .status-chip.warn { color: var(--warn); border-color: #7b6a34; }
+    .status-chip.bad { color: var(--bad); border-color: #7f4a40; }
+
+    .chart-canvas {
+      width: 100%;
+      height: 220px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #0f1530;
+      display: block;
+    }
+
+    .legend { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: var(--muted); }
+    .legend i { width: 10px; height: 10px; display: inline-block; border-radius: 999px; margin-right: 4px; }
+
+    .bar-wrap { display: grid; gap: 10px; margin-top: 8px; }
+    .bar-row { display: grid; grid-template-columns: 60px 1fr 50px; align-items: center; gap: 8px; font-size: 12px; }
+    .bar-track { height: 10px; background: #0f1530; border: 1px solid #243057; border-radius: 999px; overflow: hidden; }
+    .bar-fill { height: 100%; }
+
+    .table-tools { margin: 8px 0 10px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid #243057; padding: 7px 6px; font-size: 13px; text-align: left; vertical-align: top; }
+    th { color: #a8b5df; font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; }
+
+    .team-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      border-radius: 999px;
+      padding: 2px 8px;
+      border: 1px solid #2a3b74;
+      background: #1a2448;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 999px; display: inline-block; }
+
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .muted { color: var(--muted); }
+
+    .tree details { margin: 6px 0; }
+    .tree summary { cursor: pointer; color: #c9d5fb; }
+    .tree ul { margin: 6px 0 0 18px; padding: 0; }
+    .tree li { margin: 3px 0; }
+
+    pre {
+      white-space: pre-wrap;
+      background: #0f1530;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+      max-height: 280px;
+      overflow: auto;
+      margin: 0;
+    }
+
+    .section-space { margin-top: 12px; }
   </style>
 </head>
 <body>
-  <h1>Wildpaw Room Admin</h1>
-  <div class="row card">
+  <h1>Wildpaw Room Admin Dashboard</h1>
+
+  <div class="card row">
     <label>Admin Token <input id="token" type="password" placeholder="x-admin-token" /></label>
     <button id="refresh">Refresh</button>
     <button id="reload">Rules Reload</button>
-    <span id="statusMsg"></span>
+    <label>Auto
+      <select id="autoRefreshSec">
+        <option value="0">off</option>
+        <option value="1">1s</option>
+        <option value="2" selected>2s</option>
+        <option value="5">5s</option>
+      </select>
+    </label>
+    <span id="statusMsg" class="status-chip">idle</span>
   </div>
 
-  <div class="card">
-    <h2>Overview</h2>
-    <pre id="overview">loading...</pre>
+  <div class="grid kpi">
+    <div class="card"><h3>Active Sessions</h3><div id="kpiActiveSessions" class="kpi-value">-</div><div class="kpi-sub">현재 접속 플레이어</div></div>
+    <div class="card"><h3>Match / Map</h3><div id="kpiMatchMap" class="kpi-value mono" style="font-size:15px;">-</div><div class="kpi-sub">매치/맵 격리 상태</div></div>
+    <div class="card"><h3>Tick</h3><div id="kpiTick" class="kpi-value">-</div><div id="kpiTickSub" class="kpi-sub">-</div></div>
+    <div class="card"><h3>Input / Drop</h3><div id="kpiInput" class="kpi-value">-</div><div id="kpiDropSub" class="kpi-sub">-</div></div>
+    <div class="card"><h3>Retransmit</h3><div id="kpiRetransmit" class="kpi-value">-</div><div id="kpiRetransmitSub" class="kpi-sub">-</div></div>
   </div>
 
-  <div class="card" style="margin-top:12px;">
-    <h2>Sessions</h2>
+  <div class="grid two-col">
+    <div class="card">
+      <h2>실시간 지표 (최근 60 샘플)</h2>
+      <canvas id="metricsChart" class="chart-canvas" width="900" height="220"></canvas>
+      <div class="legend">
+        <span><i style="background:var(--accent)"></i>tick duration (ms)</span>
+        <span><i style="background:var(--accent2)"></i>reliable inflight</span>
+        <span><i style="background:var(--warn)"></i>active sessions</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>팀 점유 / 용량</h2>
+      <div class="bar-wrap">
+        <div class="bar-row">
+          <span>Team 1</span>
+          <div class="bar-track"><div id="barTeam1" class="bar-fill" style="width:0%;background:#7ce7ff"></div></div>
+          <span id="labelTeam1" class="mono">0</span>
+        </div>
+        <div class="bar-row">
+          <span>Team 2</span>
+          <div class="bar-track"><div id="barTeam2" class="bar-fill" style="width:0%;background:#ffc36a"></div></div>
+          <span id="labelTeam2" class="mono">0</span>
+        </div>
+      </div>
+      <div id="capacitySummary" class="kpi-sub" style="margin-top:10px;">-</div>
+    </div>
+  </div>
+
+  <div class="card section-space">
+    <h2>Sessions (표)</h2>
+    <div class="row table-tools">
+      <input id="sessionFilter" placeholder="playerId / remote 필터" />
+      <span class="muted" id="sessionCountLabel">0 sessions</span>
+    </div>
     <table>
-      <thead><tr><th>playerId</th><th>team</th><th>remote</th><th>bytesIn/out</th><th>lastSeen</th><th>invalid</th><th>action</th></tr></thead>
+      <thead>
+        <tr>
+          <th>player</th>
+          <th>team</th>
+          <th>remote</th>
+          <th>traffic (in/out)</th>
+          <th>last seen</th>
+          <th>invalid</th>
+          <th>action</th>
+        </tr>
+      </thead>
       <tbody id="sessions"></tbody>
     </table>
   </div>
 
-  <div class="card" style="margin-top:12px;">
-    <h2>Violations</h2>
-    <pre id="violations">loading...</pre>
+  <div class="card section-space">
+    <h2>Violations (트리)</h2>
+    <div id="violationsTree" class="tree muted">loading...</div>
   </div>
+
+  <details class="card section-space">
+    <summary>Raw JSON (debug)</summary>
+    <div class="grid two-col" style="margin-top:10px;">
+      <div>
+        <h3>Status</h3>
+        <pre id="rawStatus">-</pre>
+      </div>
+      <div>
+        <h3>Sessions / Violations</h3>
+        <pre id="rawOthers">-</pre>
+      </div>
+    </div>
+  </details>
 
   <script>
     const q = (s) => document.querySelector(s);
     const tokenEl = q('#token');
     const msgEl = q('#statusMsg');
+    const autoRefreshEl = q('#autoRefreshSec');
+    const sessionFilterEl = q('#sessionFilter');
     const TOKEN_STORAGE_KEY = 'wildpaw-admin-token';
+
+    const historyState = {
+      maxPoints: 60,
+      points: [],
+    };
+
+    let autoRefreshTimer = null;
 
     function initToken() {
       const queryToken = new URLSearchParams(window.location.search).get('token') || '';
@@ -2178,42 +2369,30 @@ class AdminHttpSession : public std::enable_shared_from_this<AdminHttpSession> {
 
       try {
         const stored = window.localStorage.getItem(TOKEN_STORAGE_KEY) || '';
-        if (stored) {
-          tokenEl.value = stored;
-        }
+        if (stored) tokenEl.value = stored;
       } catch {
-        // ignore storage failures
+        // ignore
       }
     }
 
     function persistToken() {
       try {
-        if (tokenEl.value) {
-          window.localStorage.setItem(TOKEN_STORAGE_KEY, tokenEl.value);
-        } else {
-          window.localStorage.removeItem(TOKEN_STORAGE_KEY);
-        }
+        if (tokenEl.value) window.localStorage.setItem(TOKEN_STORAGE_KEY, tokenEl.value);
+        else window.localStorage.removeItem(TOKEN_STORAGE_KEY);
       } catch {
-        // ignore storage failures
+        // ignore
       }
     }
 
-    tokenEl.addEventListener('input', persistToken);
-    initToken();
-    persistToken();
-
-    const headers = () => tokenEl.value ? {'x-admin-token': tokenEl.value} : {};
+    function headers() {
+      return tokenEl.value ? { 'x-admin-token': tokenEl.value } : {};
+    }
 
     function withTokenQuery(path) {
-      if (!tokenEl.value) {
-        return path;
-      }
-
+      if (!tokenEl.value) return path;
       try {
         const url = new URL(path, window.location.origin);
-        if (!url.searchParams.has('token')) {
-          url.searchParams.set('token', tokenEl.value);
-        }
+        if (!url.searchParams.has('token')) url.searchParams.set('token', tokenEl.value);
         return `${url.pathname}${url.search}`;
       } catch {
         return path;
@@ -2221,67 +2400,302 @@ class AdminHttpSession : public std::enable_shared_from_this<AdminHttpSession> {
     }
 
     async function api(path, options = {}) {
-      const res = await fetch(withTokenQuery(path), { ...options, headers: { ...(options.headers||{}), ...headers() } });
-      if (!res.ok) throw new Error(path + ' ' + res.status);
+      const res = await fetch(withTokenQuery(path), {
+        ...options,
+        headers: { ...(options.headers || {}), ...headers() },
+      });
+      if (!res.ok) throw new Error(`${path} ${res.status}`);
       const ct = res.headers.get('content-type') || '';
       return ct.includes('application/json') ? res.json() : res.text();
     }
 
+    function fmtNum(value) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return '-';
+      return value.toLocaleString();
+    }
+
+    function fmtSince(ms) {
+      if (typeof ms !== 'number' || !Number.isFinite(ms)) return '-';
+      const diff = Date.now() - ms;
+      if (diff < 1000) return 'just now';
+      if (diff < 60_000) return `${Math.round(diff / 1000)}s ago`;
+      if (diff < 3_600_000) return `${Math.round(diff / 60_000)}m ago`;
+      return `${Math.round(diff / 3_600_000)}h ago`;
+    }
+
+    function setStatusChip(text, tier = 'good') {
+      msgEl.textContent = text;
+      msgEl.className = `status-chip ${tier}`;
+    }
+
+    function pushHistory(status) {
+      const metrics = status?.metrics || {};
+      historyState.points.push({
+        at: Date.now(),
+        tickMs: Number(metrics.tickLastDurationMs ?? 0),
+        inflight: Number(metrics.reliableInFlight ?? 0),
+        activeSessions: Number(metrics.activeSessions ?? 0),
+      });
+      if (historyState.points.length > historyState.maxPoints) {
+        historyState.points.shift();
+      }
+    }
+
+    function drawChart() {
+      const canvas = q('#metricsChart');
+      const ctx = canvas.getContext('2d');
+      const points = historyState.points;
+      const w = canvas.width;
+      const h = canvas.height;
+
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = '#0f1530';
+      ctx.fillRect(0, 0, w, h);
+
+      const pad = { l: 40, r: 12, t: 12, b: 24 };
+      const cw = w - pad.l - pad.r;
+      const ch = h - pad.t - pad.b;
+
+      ctx.strokeStyle = '#243057';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i += 1) {
+        const y = pad.t + (ch * i) / 4;
+        ctx.beginPath();
+        ctx.moveTo(pad.l, y);
+        ctx.lineTo(pad.l + cw, y);
+        ctx.stroke();
+      }
+
+      if (points.length < 2) return;
+
+      const maxTickMs = Math.max(1, ...points.map((p) => p.tickMs));
+      const maxInflight = Math.max(1, ...points.map((p) => p.inflight));
+      const maxSessions = Math.max(1, ...points.map((p) => p.activeSessions));
+
+      function drawSeries(color, accessor, maxValue) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        points.forEach((p, i) => {
+          const x = pad.l + (cw * i) / (points.length - 1);
+          const y = pad.t + ch - (ch * accessor(p)) / maxValue;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      }
+
+      drawSeries('#7ce7ff', (p) => p.tickMs, maxTickMs);
+      drawSeries('#c58bff', (p) => p.inflight, maxInflight);
+      drawSeries('#ffd16a', (p) => p.activeSessions, maxSessions);
+
+      ctx.fillStyle = '#98a4cf';
+      ctx.font = '11px ui-monospace, monospace';
+      ctx.fillText(`tickMs max ${maxTickMs.toFixed(3)}`, 8, 16);
+      ctx.fillText(`inflight max ${maxInflight}`, 8, 30);
+      ctx.fillText(`sessions max ${maxSessions}`, 8, 44);
+    }
+
+    function renderKpi(status) {
+      const metrics = status?.metrics || {};
+      q('#kpiActiveSessions').textContent = fmtNum(metrics.activeSessions);
+      q('#kpiMatchMap').textContent = `${status?.activeMatchId || '-'} / ${status?.activeMapId || '-'}`;
+      q('#kpiTick').textContent = `${fmtNum(status?.currentTick)} @${fmtNum(status?.tickRate)}Hz`;
+      q('#kpiTickSub').textContent = `tickLast=${Number(metrics.tickLastDurationMs ?? 0).toFixed(3)}ms, overrun=${fmtNum(metrics.tickOverrunTotal)}`;
+      q('#kpiInput').textContent = `${fmtNum(metrics.inputFramesTotal)} / ${fmtNum(metrics.pendingInputDepth)}`;
+      q('#kpiDropSub').textContent = `dropped=${fmtNum(metrics.droppedInputFramesTotal)}, peak=${fmtNum(metrics.pendingInputPeak)}`;
+      q('#kpiRetransmit').textContent = `${fmtNum(metrics.retransmitSentTotal)} / ${fmtNum(metrics.retransmitDroppedTotal)}`;
+      q('#kpiRetransmitSub').textContent = `inflight=${fmtNum(metrics.reliableInFlight)}`;
+    }
+
+    function renderTeamBars(status) {
+      const occ = status?.teamOccupancy || {};
+      const team1 = Number(occ.team1 ?? 0);
+      const team2 = Number(occ.team2 ?? 0);
+      const maxPlayers = Number(status?.maxPlayersPerRoom ?? 1);
+      const teamCap = Math.max(1, Math.floor(maxPlayers / 2));
+
+      q('#barTeam1').style.width = `${Math.min(100, (team1 / teamCap) * 100)}%`;
+      q('#barTeam2').style.width = `${Math.min(100, (team2 / teamCap) * 100)}%`;
+      q('#labelTeam1').textContent = `${team1}/${teamCap}`;
+      q('#labelTeam2').textContent = `${team2}/${teamCap}`;
+      q('#capacitySummary').textContent = `active ${team1 + team2}/${maxPlayers} · roomExpiresAt ${status?.activeRoomExpiresAtMs || 0}`;
+    }
+
+    function renderSessionsTable(sessionsPayload) {
+      const list = Array.isArray(sessionsPayload?.sessions) ? sessionsPayload.sessions : [];
+      const filter = (sessionFilterEl.value || '').trim().toLowerCase();
+      const tbody = q('#sessions');
+      tbody.innerHTML = '';
+
+      const filtered = list.filter((s) => {
+        if (!filter) return true;
+        const hay = `${s.playerId} ${s.remote || ''}`.toLowerCase();
+        return hay.includes(filter);
+      });
+
+      q('#sessionCountLabel').textContent = `${filtered.length} sessions`;
+
+      for (const s of filtered) {
+        const tr = document.createElement('tr');
+        const teamColor = Number(s.teamId) === 1 ? '#7ce7ff' : '#ffc36a';
+
+        tr.innerHTML = `
+          <td class="mono">${s.playerId}</td>
+          <td><span class="team-badge"><i class="dot" style="background:${teamColor}"></i>T${s.teamId}-S${s.teamSlot}</span></td>
+          <td class="mono">${s.remote || '-'}</td>
+          <td class="mono">${fmtNum(s.bytesIn)} / ${fmtNum(s.bytesOut)}<br><span class="muted">frames ${fmtNum(s.binaryFramesIn)} text ${fmtNum(s.textFramesIn)}</span></td>
+          <td class="mono">${fmtSince(s.lastSeenAtMs)}<br><span class="muted">${s.lastSeenAtMs}</span></td>
+          <td class="mono">${fmtNum(s.invalidEnvelopeTotal)} / ${fmtNum(s.unsupportedMessageTotal)} / ${fmtNum(s.invalidProfileSelectTotal)}</td>
+          <td><button data-id="${s.playerId}">disconnect</button></td>
+        `;
+
+        tr.querySelector('button').onclick = async () => {
+          try {
+            await api(`/admin/api/sessions/${s.playerId}/disconnect`, { method: 'POST' });
+            setStatusChip(`disconnected ${s.playerId}`, 'warn');
+            await refresh();
+          } catch (error) {
+            setStatusChip(`disconnect failed: ${error.message}`, 'bad');
+          }
+        };
+
+        tbody.appendChild(tr);
+      }
+    }
+
+    function renderViolationsTree(violationsPayload) {
+      const list = Array.isArray(violationsPayload?.violations) ? violationsPayload.violations : [];
+      const root = q('#violationsTree');
+      root.innerHTML = '';
+
+      if (list.length === 0) {
+        root.textContent = 'No violations ✅';
+        root.classList.remove('muted');
+        return;
+      }
+
+      root.classList.remove('muted');
+
+      const byType = new Map();
+      for (const item of list) {
+        const type = item.type || 'unknown';
+        if (!byType.has(type)) byType.set(type, []);
+        byType.get(type).push(item);
+      }
+
+      const sortedTypes = [...byType.entries()].sort((a, b) => b[1].length - a[1].length);
+      for (const [type, entries] of sortedTypes) {
+        const typeNode = document.createElement('details');
+        typeNode.open = sortedTypes.length <= 3;
+        const typeSummary = document.createElement('summary');
+        typeSummary.innerHTML = `<span class="mono">${type}</span> <span class="muted">(${entries.length})</span>`;
+        typeNode.appendChild(typeSummary);
+
+        const byPlayer = new Map();
+        for (const e of entries) {
+          const key = String(e.playerId ?? '-');
+          if (!byPlayer.has(key)) byPlayer.set(key, []);
+          byPlayer.get(key).push(e);
+        }
+
+        const playerList = document.createElement('ul');
+        const sortedPlayers = [...byPlayer.entries()].sort((a, b) => b[1].length - a[1].length);
+
+        for (const [playerId, pe] of sortedPlayers) {
+          const li = document.createElement('li');
+          const detail = document.createElement('details');
+          const summary = document.createElement('summary');
+          summary.innerHTML = `<span class="mono">player ${playerId}</span> <span class="muted">(${pe.length})</span>`;
+          detail.appendChild(summary);
+
+          const inner = document.createElement('ul');
+          for (const ev of pe.slice(-8).reverse()) {
+            const row = document.createElement('li');
+            row.className = 'mono';
+            row.textContent = `${ev.timeMs} · ${ev.remote || '-'} · ${ev.detail || ''}`;
+            inner.appendChild(row);
+          }
+          detail.appendChild(inner);
+          li.appendChild(detail);
+          playerList.appendChild(li);
+        }
+
+        typeNode.appendChild(playerList);
+        root.appendChild(typeNode);
+      }
+    }
+
     async function refresh() {
       try {
+        setStatusChip('loading...', 'warn');
+
         const [status, sessions, violations] = await Promise.all([
           api('/admin/api/status'),
           api('/admin/api/sessions'),
           api('/admin/api/violations'),
         ]);
 
-        q('#overview').textContent = JSON.stringify(status, null, 2);
+        renderKpi(status);
+        renderTeamBars(status);
+        renderSessionsTable(sessions);
+        renderViolationsTree(violations);
 
-        const tbody = q('#sessions');
-        tbody.innerHTML = '';
-        for (const s of sessions.sessions || []) {
-          const tr = document.createElement('tr');
-          tr.innerHTML = `
-            <td>${s.playerId}</td>
-            <td>T${s.teamId}-S${s.teamSlot}</td>
-            <td>${s.remote}</td>
-            <td>${s.bytesIn}/${s.bytesOut}</td>
-            <td>${s.lastSeenAtMs}</td>
-            <td>${s.invalidEnvelopeTotal}/${s.unsupportedMessageTotal}/${s.invalidProfileSelectTotal}</td>
-            <td><button data-id="${s.playerId}">disconnect</button></td>
-          `;
-          tr.querySelector('button').onclick = async () => {
-            try {
-              await api(`/admin/api/sessions/${s.playerId}/disconnect`, { method:'POST' });
-              msgEl.textContent = `disconnected ${s.playerId}`;
-              await refresh();
-            } catch (e) {
-              msgEl.textContent = 'disconnect failed: ' + e.message;
-            }
-          };
-          tbody.appendChild(tr);
-        }
+        pushHistory(status);
+        drawChart();
 
-        q('#violations').textContent = JSON.stringify(violations, null, 2);
-        msgEl.textContent = 'ok';
-      } catch (e) {
-        msgEl.textContent = 'error: ' + e.message;
+        q('#rawStatus').textContent = JSON.stringify(status, null, 2);
+        q('#rawOthers').textContent = JSON.stringify({ sessions, violations }, null, 2);
+
+        setStatusChip('ok', 'good');
+      } catch (error) {
+        setStatusChip(`error: ${error.message}`, 'bad');
+      }
+    }
+
+    function applyAutoRefresh() {
+      if (autoRefreshTimer !== null) {
+        window.clearInterval(autoRefreshTimer);
+        autoRefreshTimer = null;
+      }
+
+      const sec = Number(autoRefreshEl.value || 0);
+      if (Number.isFinite(sec) && sec > 0) {
+        autoRefreshTimer = window.setInterval(refresh, sec * 1000);
       }
     }
 
     q('#refresh').onclick = refresh;
     q('#reload').onclick = async () => {
       try {
-        const r = await api('/admin/api/rules/reload', { method:'POST' });
-        msgEl.textContent = JSON.stringify(r);
+        const result = await api('/admin/api/rules/reload', { method: 'POST' });
+        setStatusChip(result?.ok ? 'rules reloaded' : JSON.stringify(result), result?.ok ? 'good' : 'warn');
         await refresh();
-      } catch (e) {
-        msgEl.textContent = 'reload failed: ' + e.message;
+      } catch (error) {
+        setStatusChip(`reload failed: ${error.message}`, 'bad');
       }
     };
 
+    tokenEl.addEventListener('input', () => {
+      persistToken();
+      refresh();
+    });
+
+    autoRefreshEl.addEventListener('change', applyAutoRefresh);
+    sessionFilterEl.addEventListener('input', () => {
+      const raw = q('#rawOthers').textContent;
+      try {
+        const parsed = JSON.parse(raw);
+        renderSessionsTable(parsed.sessions || {});
+      } catch {
+        // ignore
+      }
+    });
+
+    initToken();
+    persistToken();
+    applyAutoRefresh();
     refresh();
-    setInterval(refresh, 2000);
   </script>
 </body>
 </html>)HTML";
