@@ -30,7 +30,7 @@ npm run start
 - `MATCH_ASSIGN_CONNECT_TIMEOUT_SEC` (default: `8`)
 - `RECONNECT_WINDOW_SEC` (default: `20`)
 - `QUEUE_PENALTY_SEC` (default: `30`)
-- `SIM_MATCH_DURATION_SEC` (default: `45`)
+- `SIM_MATCH_DURATION_SEC` (default: `180`)
 - `ROOM_ENDPOINT` (default: `ws://127.0.0.1:7001`)
 - `ROOM_REGION` (default: `KR`)
 - `ROOM_TOKEN_TTL_SEC` (default: `45`)

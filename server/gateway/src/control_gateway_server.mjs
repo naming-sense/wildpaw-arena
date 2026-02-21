@@ -13,7 +13,7 @@ const MATCH_ASSIGN_CONNECT_TIMEOUT_SEC = Number(
 );
 const RECONNECT_WINDOW_SEC = Number(process.env.RECONNECT_WINDOW_SEC ?? 20);
 const QUEUE_PENALTY_SEC = Number(process.env.QUEUE_PENALTY_SEC ?? 30);
-const SIM_MATCH_DURATION_SEC = Number(process.env.SIM_MATCH_DURATION_SEC ?? 45);
+const SIM_MATCH_DURATION_SEC = Number(process.env.SIM_MATCH_DURATION_SEC ?? 180);
 
 const MATCHMAKING_EXPANSION_STEPS = [
   {
@@ -2363,7 +2363,11 @@ function handleCustomRoomStart(ctx) {
 
 function handleQueueJoin(ctx) {
   if (!requireAuth(ctx) || !checkSessionId(ctx)) return;
-  if (!requireFlowState(ctx, [FLOW_STATES.LOBBY, FLOW_STATES.PARTY])) return;
+  if (!requireFlowState(ctx, [FLOW_STATES.LOBBY, FLOW_STATES.PARTY, FLOW_STATES.RESULT])) return;
+
+  if (ctx.session.flowState === FLOW_STATES.RESULT) {
+    setSessionLobby(ctx.session);
+  }
 
   enqueueSession(ctx.session, ctx.payload, ctx.requestId, ctx.incomingEventId);
 }
