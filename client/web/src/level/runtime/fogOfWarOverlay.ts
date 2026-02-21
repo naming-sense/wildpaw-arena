@@ -36,11 +36,11 @@ const LOS_PADDING = 0.02;
 const QUALITY_PROFILES: Record<FogOfWarQuality, FogOfWarQualityProfile> = {
   low: {
     resolution: 128,
-    updateIntervalMs: 180,
-    moveUpdateThreshold: 0.3,
-    yawUpdateThresholdRad: (6 * Math.PI) / 180,
-    edgeBlurEnabled: false,
-    occlusionEnabled: false,
+    updateIntervalMs: 220,
+    moveUpdateThreshold: 0.42,
+    yawUpdateThresholdRad: (7 * Math.PI) / 180,
+    edgeBlurEnabled: true,
+    occlusionEnabled: true,
     darkAlpha: 0.7,
     visibleCenterAlpha: 0.05,
     visibleEdgeAlpha: 0.24,

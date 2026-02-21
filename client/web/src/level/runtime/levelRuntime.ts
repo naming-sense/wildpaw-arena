@@ -47,7 +47,7 @@ const HIDDEN_OBSTACLE_OPACITY_FACTOR = 0.38;
 
 const OBSTACLE_VISIBILITY_PROFILES: Record<FogOfWarQuality, ObstacleVisibilityProfile> = {
   low: {
-    enabled: false,
+    enabled: true,
     updateIntervalMs: 220,
     moveThreshold: 0.32,
     yawThresholdRad: (7 * Math.PI) / 180,

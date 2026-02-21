@@ -286,9 +286,10 @@ npm run test
     - 해상도/갱신 주기/이동·회전 임계치/경계 블러 on/off를 품질별로 분리
   - `src/level/runtime/levelRuntime.ts`
     - 장애물 가시성 판정도 품질별 프로파일 적용
-    - `low`에서는 장애물 반투명 처리(가시성 페이드) 비활성화
+    - `low`에서도 장애물 LOS 가시성 판정을 활성화해 시야 밖 장애물 반투명 처리
   - `src/level/runtime/fogOfWarOverlay.ts`
-    - `low`에서는 LOS 차폐(raycast) 연산을 끄고 단순 부채꼴 오버레이만 유지
+    - `low`에서도 LOS 차폐(raycast) 연산을 활성화해 장애물 차폐 반영
+    - `low`에서도 경계 블러를 활성화해 부채꼴 경계를 더 부드럽게 처리
   - `src/app/gameApp.ts`
     - `?fow=low|medium|high` (`?fowQuality=`도 허용) 쿼리 파라미터로 품질 선택
     - `low`에서는 원격 플레이어 LOS 가시성 판정 비활성화(항상 표시)
