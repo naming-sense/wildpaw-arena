@@ -289,11 +289,12 @@ npm run test
     - `low` 기본값에서 cone fill을 끄고 edge만 렌더해 노이즈/블렌딩 비용 완화
     - `medium/high`는 기존 CPU + LOS 차폐(raycast) 경로 유지
     - `low`에서는 LOS 차폐(raycast) 연산 비활성화
+    - `off`에서는 FOW 오버레이 생성 자체를 생략해 A/B 비교 가능
   - `src/level/runtime/levelRuntime.ts`
     - 장애물 가시성 판정도 품질별 프로파일 적용
     - `low`에서는 장애물 반투명 처리(가시성 페이드) 비활성화
   - `src/app/gameApp.ts`
-    - `?fow=low|medium|high` (`?fowQuality=`도 허용) 쿼리 파라미터로 품질 선택
+    - `?fow=off|low|medium|high` (`?fowQuality=`도 허용) 쿼리 파라미터로 품질 선택
     - `low`에서는 원격 플레이어 LOS 가시성 판정 비활성화(항상 표시)
     - FOW 품질에 맞춰 렌더 프로파일(AA/pixel ratio/shadow/tone mapping)을 함께 적용
     - HUD에 `DPR/FOW/VER/FOWms` 표시를 추가해 실제 반영 버전/모드/비용을 현장 확인 가능하게 개선

@@ -126,6 +126,9 @@ function normalizeFogOfWarQuality(raw: unknown): FogOfWarQuality | null {
   }
 
   const value = raw.trim().toLowerCase();
+  if (value === "off" || value === "none" || value === "0" || value === "disabled") {
+    return "off";
+  }
   if (value === "low" || value === "l" || value === "performance") {
     return "low";
   }
@@ -177,7 +180,7 @@ function resolvePreferredFogOfWarQuality(explicit?: string): FogOfWarQuality {
 }
 
 function isLosVisibilityEnabled(quality: FogOfWarQuality): boolean {
-  return quality !== "low";
+  return quality === "medium" || quality === "high";
 }
 
 interface RenderProfile {
@@ -194,7 +197,7 @@ function resolveRenderProfile(
   fowQuality: FogOfWarQuality,
   defaultShadowMapSize: number,
 ): RenderProfile {
-  if (fowQuality === "low") {
+  if (fowQuality === "off" || fowQuality === "low") {
     return {
       quality: "performance",
       antialias: false,

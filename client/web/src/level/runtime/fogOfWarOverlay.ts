@@ -8,7 +8,7 @@ export interface FogOfWarBounds {
   maxZ: number;
 }
 
-export type FogOfWarQuality = "low" | "medium" | "high";
+export type FogOfWarQuality = "off" | "low" | "medium" | "high";
 
 export interface FogOfWarVisionParams {
   originX: number;
@@ -60,6 +60,23 @@ interface ConeFogState {
 const LOS_PADDING = 0.02;
 
 const QUALITY_PROFILES: Record<FogOfWarQuality, FogOfWarQualityProfile> = {
+  off: {
+    backend: "cone",
+    resolution: 64,
+    updateIntervalMs: 1000,
+    moveUpdateThreshold: 999,
+    yawUpdateThresholdRad: Math.PI,
+    edgeBlurEnabled: false,
+    occlusionEnabled: false,
+    fovFeatherRad: (6 * Math.PI) / 180,
+    rangeFeatherRatio: 0.14,
+    darkAlpha: 0,
+    visibleCenterAlpha: 0,
+    visibleEdgeAlpha: 0,
+    coneSegments: 8,
+    coneFillOpacity: 0,
+    coneEdgeOpacity: 0,
+  },
   low: {
     backend: "cone",
     resolution: 128,
