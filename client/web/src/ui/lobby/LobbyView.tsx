@@ -338,6 +338,7 @@ export function LobbyView(): JSX.Element | null {
         <label className="flow-inline-input">
           모드
           <select value={modeId} onChange={(event) => setModeId(event.target.value)}>
+            <option value="solo_test">solo_test</option>
             <option value="1v1_dev">1v1_dev</option>
             <option value="3v3_rank">3v3_rank</option>
             <option value="3v3_normal">3v3_normal</option>

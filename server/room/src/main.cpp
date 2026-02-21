@@ -322,6 +322,11 @@ ParsedRoomToken parseRoomToken(std::string_view token,
   return parsed;
 }
 
+bool isSoloPracticeMatchId(std::string_view matchId) {
+  return matchId.starts_with("solo_") || matchId == "solo_practice" ||
+         matchId == "solo_test";
+}
+
 struct PrefabRuntimeSpec {
   float sizeX{0.0f};
   float sizeY{0.0f};
@@ -881,11 +886,15 @@ class RoomServer {
     std::string activeMatchId;
     std::string activeMapId;
     std::uint64_t activeRoomExpiresAtMs = 0;
+    bool soloPracticeMode = false;
+    bool soloPracticeDummySpawned = false;
     {
       std::lock_guard<std::mutex> lock(roomRuntimeMutex_);
       activeMatchId = activeMatchId_;
       activeMapId = activeMapId_;
       activeRoomExpiresAtMs = activeRoomExpiresAtMs_;
+      soloPracticeMode = soloPracticeMode_;
+      soloPracticeDummySpawned = soloPracticeDummySpawned_;
     }
 
     out << "\"teamOccupancy\":{";
@@ -895,6 +904,9 @@ class RoomServer {
     out << "\"activeMatchId\":\"" << jsonEscape(activeMatchId) << "\",";
     out << "\"activeMapId\":\"" << jsonEscape(activeMapId) << "\",";
     out << "\"activeRoomExpiresAtMs\":" << activeRoomExpiresAtMs << ',';
+    out << "\"soloPracticeMode\":" << (soloPracticeMode ? "true" : "false") << ',';
+    out << "\"soloPracticeDummySpawned\":"
+        << (soloPracticeDummySpawned ? "true" : "false") << ',';
     out << "\"wsPort\":" << wsPort_ << ',';
     out << "\"tickRate\":" << simulation_.tickRate() << ',';
     out << "\"currentTick\":" << tickTotal_.load(std::memory_order_relaxed)
@@ -1091,6 +1103,32 @@ class RoomServer {
     return true;
   }
 
+  void ensureSoloPracticeDummyLocked() {
+    if (!soloPracticeMode_ || soloPracticeDummySpawned_) {
+      return;
+    }
+
+    simulation_.addPlayer(kSoloPracticeDummyPlayerId, 2, 1);
+    simulation_.setPlayerProfile(kSoloPracticeDummyPlayerId,
+                                 wildpaw::room::defaultCombatRuleProfileId());
+    soloPracticeDummySpawned_ = true;
+
+    std::cout << "[room] solo practice dummy spawned playerId="
+              << kSoloPracticeDummyPlayerId << '\n';
+  }
+
+  void removeSoloPracticeDummyLocked() {
+    if (!soloPracticeDummySpawned_) {
+      return;
+    }
+
+    simulation_.removePlayer(kSoloPracticeDummyPlayerId);
+    soloPracticeDummySpawned_ = false;
+
+    std::cout << "[room] solo practice dummy removed playerId="
+              << kSoloPracticeDummyPlayerId << '\n';
+  }
+
   void applyMapRuntimeConfig(std::string_view mapId) {
     const auto loaded = loadMapRuntimeConfig(mapDataRootPath_, mapId);
     if (!loaded.has_value()) {
@@ -1138,12 +1176,15 @@ class RoomServer {
       return false;
     }
 
+    bool soloPracticeMode = false;
     {
       std::lock_guard<std::mutex> lock(roomRuntimeMutex_);
       if (activeMatchId_.empty()) {
         activeMatchId_ = parsedToken.matchId;
         activeMapId_ = parsedToken.mapId;
         activeRoomExpiresAtMs_ = parsedToken.expiresAtMs;
+        soloPracticeMode_ = isSoloPracticeMatchId(activeMatchId_);
+        soloPracticeDummySpawned_ = false;
         applyMapRuntimeConfig(activeMapId_);
       } else {
         if (parsedToken.matchId != activeMatchId_) {
@@ -1185,6 +1226,8 @@ class RoomServer {
         activeRoomExpiresAtMs_ =
             std::max(activeRoomExpiresAtMs_, parsedToken.expiresAtMs);
       }
+
+      soloPracticeMode = soloPracticeMode_;
     }
 
     TeamAssignment assignment;
@@ -1198,7 +1241,8 @@ class RoomServer {
           found != teamAssignments_.end()) {
         assignment = found->second;
         accepted = true;
-      } else if (teamAssignments_.size() < maxPlayersPerRoom_) {
+      } else if (!(soloPracticeMode && !teamAssignments_.empty()) &&
+                 teamAssignments_.size() < maxPlayersPerRoom_) {
         const auto reserved = allocateTeamAssignmentLocked();
         if (reserved.has_value()) {
           assignment = reserved.value();
@@ -1213,6 +1257,9 @@ class RoomServer {
       detail << "capacity reached active=" << activeSessionCount()
              << " maxPlayersPerRoom=" << maxPlayersPerRoom_
              << " teamSize=" << teamSize_;
+      if (soloPracticeMode) {
+        detail << " soloPractice=1";
+      }
       const std::string detailText = detail.str();
 
       recordViolation(playerId, session->remoteEndpoint(), "room_full", detailText);
@@ -1230,6 +1277,9 @@ class RoomServer {
     {
       std::lock_guard<std::mutex> lock(simulationMutex_);
       simulation_.addPlayer(playerId, assignment.teamId, assignment.slot);
+      if (soloPracticeMode) {
+        ensureSoloPracticeDummyLocked();
+      }
       baseSnapshot = simulation_.snapshot();
     }
 
@@ -1357,12 +1407,18 @@ class RoomServer {
     {
       std::lock_guard<std::mutex> lock(simulationMutex_);
       simulation_.removePlayer(playerId);
+      if (becameEmpty) {
+        removeSoloPracticeDummyLocked();
+      }
     }
 
     if (becameEmpty) {
       std::lock_guard<std::mutex> lock(roomRuntimeMutex_);
       activeMatchId_.clear();
+      activeMapId_.clear();
       activeRoomExpiresAtMs_ = 0;
+      soloPracticeMode_ = false;
+      soloPracticeDummySpawned_ = false;
     }
 
     std::cout << "[room] player disconnected: " << playerId
@@ -1798,10 +1854,14 @@ class RoomServer {
   std::optional<std::filesystem::file_time_type> rulesLastWriteTime_;
   std::chrono::steady_clock::time_point nextRuleReloadCheckAt_{};
 
+  static constexpr std::uint32_t kSoloPracticeDummyPlayerId = 9000001;
+
   std::mutex roomRuntimeMutex_;
   std::string activeMatchId_;
   std::string activeMapId_;
   std::uint64_t activeRoomExpiresAtMs_{0};
+  bool soloPracticeMode_{false};
+  bool soloPracticeDummySpawned_{false};
 
   std::atomic<bool> running_{false};
   std::jthread tickThread_;

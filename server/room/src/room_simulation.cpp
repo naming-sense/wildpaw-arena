@@ -83,6 +83,62 @@ bool segmentIntersectsAabb2D(float x0,
   return true;
 }
 
+bool isInsideMovementCollider(const Vec2& position,
+                              const StaticCollider& collider,
+                              float radiusPadding = kPlayerCollisionRadius) {
+  if (!collider.blocksMovement) {
+    return false;
+  }
+
+  const float minX = collider.minX - radiusPadding;
+  const float maxX = collider.maxX + radiusPadding;
+  const float minY = collider.minY - radiusPadding;
+  const float maxY = collider.maxY + radiusPadding;
+
+  return position.x > minX && position.x < maxX && position.y > minY &&
+         position.y < maxY;
+}
+
+bool isBlockedByMovement(const Vec2& position,
+                         const std::vector<StaticCollider>& colliders) {
+  for (const auto& collider : colliders) {
+    if (isInsideMovementCollider(position, collider)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void resolveMovementPenetration(Vec2& position,
+                                const std::vector<StaticCollider>& colliders) {
+  for (const auto& collider : colliders) {
+    if (!isInsideMovementCollider(position, collider)) {
+      continue;
+    }
+
+    const float minX = collider.minX - kPlayerCollisionRadius;
+    const float maxX = collider.maxX + kPlayerCollisionRadius;
+    const float minY = collider.minY - kPlayerCollisionRadius;
+    const float maxY = collider.maxY + kPlayerCollisionRadius;
+
+    const float leftDist = std::abs(position.x - minX);
+    const float rightDist = std::abs(maxX - position.x);
+    const float downDist = std::abs(position.y - minY);
+    const float upDist = std::abs(maxY - position.y);
+
+    const float minDist = std::min({leftDist, rightDist, downDist, upDist});
+    if (minDist == leftDist) {
+      position.x = minX;
+    } else if (minDist == rightDist) {
+      position.x = maxX;
+    } else if (minDist == downDist) {
+      position.y = minY;
+    } else {
+      position.y = maxY;
+    }
+  }
+}
+
 }  // namespace
 
 RoomSimulation::RoomSimulation(std::uint32_t tickRate)
@@ -223,6 +279,7 @@ void RoomSimulation::collectInputs() {
 
 void RoomSimulation::applyMovement() {
   const float dt = 1.0f / static_cast<float>(tickRate_);
+  constexpr float kMaxSubStepMeters = 0.06f;
 
   for (auto& [playerId, player] : players_) {
     if (!player.alive) {
@@ -238,47 +295,79 @@ void RoomSimulation::applyMovement() {
     player.velocity.x = static_cast<float>(input.moveX) * kPlayerSpeedMps;
     player.velocity.y = static_cast<float>(input.moveY) * kPlayerSpeedMps;
 
-    player.position.x += player.velocity.x * dt;
-    player.position.y += player.velocity.y * dt;
+    Vec2 resolved = player.position;
+    resolved.x = std::clamp(resolved.x, worldMinX_, worldMaxX_);
+    resolved.y = std::clamp(resolved.y, worldMinY_, worldMaxY_);
+    resolveMovementPenetration(resolved, staticColliders_);
 
-    player.position.x = std::clamp(player.position.x, worldMinX_, worldMaxX_);
-    player.position.y = std::clamp(player.position.y, worldMinY_, worldMaxY_);
+    Vec2 desired = {
+        .x = std::clamp(resolved.x + player.velocity.x * dt, worldMinX_, worldMaxX_),
+        .y = std::clamp(resolved.y + player.velocity.y * dt, worldMinY_, worldMaxY_),
+    };
 
-    for (const auto& collider : staticColliders_) {
-      if (!collider.blocksMovement) {
+    const float moveX = desired.x - resolved.x;
+    const float moveY = desired.y - resolved.y;
+    const float maxAxisMove = std::max(std::abs(moveX), std::abs(moveY));
+
+    const int stepCount = std::max(
+        1, static_cast<int>(std::ceil(maxAxisMove / kMaxSubStepMeters)));
+    const float stepX = moveX / static_cast<float>(stepCount);
+    const float stepY = moveY / static_cast<float>(stepCount);
+
+    for (int step = 0; step < stepCount; ++step) {
+      Vec2 candidate = {
+          .x = std::clamp(resolved.x + stepX, worldMinX_, worldMaxX_),
+          .y = std::clamp(resolved.y + stepY, worldMinY_, worldMaxY_),
+      };
+
+      if (!isBlockedByMovement(candidate, staticColliders_)) {
+        resolved = candidate;
         continue;
       }
 
-      const float minX = collider.minX - kPlayerCollisionRadius;
-      const float maxX = collider.maxX + kPlayerCollisionRadius;
-      const float minY = collider.minY - kPlayerCollisionRadius;
-      const float maxY = collider.maxY + kPlayerCollisionRadius;
+      bool crossedCollider = false;
+      for (const auto& collider : staticColliders_) {
+        if (!collider.blocksMovement) {
+          continue;
+        }
 
-      const bool insideX = player.position.x > minX && player.position.x < maxX;
-      const bool insideY = player.position.y > minY && player.position.y < maxY;
-      if (!insideX || !insideY) {
+        if (segmentIntersectsAabb2D(resolved.x, resolved.y, candidate.x,
+                                    candidate.y, collider,
+                                    kPlayerCollisionRadius)) {
+          crossedCollider = true;
+          break;
+        }
+      }
+
+      if (!crossedCollider) {
         continue;
       }
 
-      const float leftDist = std::abs(player.position.x - minX);
-      const float rightDist = std::abs(maxX - player.position.x);
-      const float downDist = std::abs(player.position.y - minY);
-      const float upDist = std::abs(maxY - player.position.y);
-
-      const float minDist = std::min({leftDist, rightDist, downDist, upDist});
-      if (minDist == leftDist) {
-        player.position.x = minX;
-      } else if (minDist == rightDist) {
-        player.position.x = maxX;
-      } else if (minDist == downDist) {
-        player.position.y = minY;
-      } else {
-        player.position.y = maxY;
+      Vec2 slideX = {
+          .x = std::clamp(resolved.x + stepX, worldMinX_, worldMaxX_),
+          .y = resolved.y,
+      };
+      if (!isBlockedByMovement(slideX, staticColliders_)) {
+        resolved = slideX;
+        continue;
       }
+
+      Vec2 slideY = {
+          .x = resolved.x,
+          .y = std::clamp(resolved.y + stepY, worldMinY_, worldMaxY_),
+      };
+      if (!isBlockedByMovement(slideY, staticColliders_)) {
+        resolved = slideY;
+        continue;
+      }
+
+      // 양축 모두 막힌 경우 해당 서브스텝 이동 중단.
+      break;
     }
 
-    player.position.x = std::clamp(player.position.x, worldMinX_, worldMaxX_);
-    player.position.y = std::clamp(player.position.y, worldMinY_, worldMaxY_);
+    resolveMovementPenetration(resolved, staticColliders_);
+    player.position.x = std::clamp(resolved.x, worldMinX_, worldMaxX_);
+    player.position.y = std::clamp(resolved.y, worldMinY_, worldMaxY_);
   }
 }
 

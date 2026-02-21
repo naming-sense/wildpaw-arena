@@ -15,7 +15,7 @@ export type AppFlowState =
   | "RESULT"
   | "RECONNECTING";
 
-export type MatchModeId = "1v1_dev" | "3v3_normal" | "3v3_rank" | "5v5_event";
+export type MatchModeId = "solo_test" | "1v1_dev" | "3v3_normal" | "3v3_rank" | "5v5_event";
 export type BootPhase = "CHECK_VERSION" | "PROBE_REGION" | "RESTORE_SESSION" | "DONE" | "ERROR";
 export type AcceptState = "idle" | "pending" | "accepted" | "declined";
 export type MatchLoadingPhase = "ALLOCATING_ROOM" | "CONNECTING_ROOM" | "SYNCING_WORLD" | "READY";
@@ -181,6 +181,12 @@ function clearOnboardingDraft(): void {
 const initialOnboardingDraft = readOnboardingDraft();
 
 export const MATCH_MODE_OPTIONS: MatchModeOption[] = [
+  {
+    id: "solo_test",
+    title: "솔로 테스트",
+    subtitle: "혼자 연습 + 데미지 더미",
+    estimatedQueueSec: 1,
+  },
   {
     id: "1v1_dev",
     title: "1v1 개발",

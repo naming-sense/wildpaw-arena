@@ -33,6 +33,7 @@ import { HERO_ASSET_MANIFEST, type HeroAssetManifest } from "../assets/manifests
 import { HERO_DEFS, HERO_DEF_BY_ID, type HeroDef } from "../gameplay/hero/heroDefs";
 import { WEAPON_DEFS, WEAPON_DEF_BY_ID } from "../gameplay/weapon/weaponDefs";
 import { LevelRuntime } from "../level/runtime/levelRuntime";
+import { segmentIntersectsCollider2D } from "../level/runtime/levelCollision";
 import type { GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 interface GameAppOptions {
@@ -59,6 +60,8 @@ const DAMAGE_TEXT_LIFE_MS = 680;
 const DAMAGE_TEXT_FLOAT_SPEED = 1.35;
 const HIT_MARKER_LIFE_MS = 130;
 const DAMAGE_OVERLAY_LIFE_MS = 220;
+const LOS_VISION_RANGE_METERS = 22;
+const LOS_COLLIDER_PADDING = 0.02;
 
 function normalizeHeroId(rawHeroId: string): string {
   const normalized = rawHeroId.trim();
@@ -230,6 +233,7 @@ export class GameApp {
   private readonly localHeroAssetPath: string;
 
   private readonly remoteEntities = new Map<number, EntityId>();
+  private readonly remoteVisibilityByPlayerId = new Map<number, boolean>();
   private localPlayerEntityId: EntityId;
   private localNetworkPlayerId = 1;
   private running = false;
@@ -793,6 +797,11 @@ export class GameApp {
       transform.yaw += yawDelta * 0.45;
     }
 
+    const localTeam = this.world.teams.get(this.localPlayerEntityId);
+    if (localTeam) {
+      localTeam.id = authoritative.team === 2 ? 2 : 1;
+    }
+
     const health = this.world.healths.get(this.localPlayerEntityId);
     if (health) {
       if (typeof authoritative.maxHp === "number" && Number.isFinite(authoritative.maxHp)) {
@@ -832,6 +841,45 @@ export class GameApp {
     });
   }
 
+  private isRemoteVisibleToLocal(player: NetworkPlayerState): boolean {
+    const localTransform = this.world.transforms.get(this.localPlayerEntityId);
+    if (!localTransform) {
+      return true;
+    }
+
+    const localTeamId = this.world.teams.get(this.localPlayerEntityId)?.id ?? 1;
+    if (player.team === localTeamId) {
+      return true;
+    }
+
+    const dx = player.x - localTransform.x;
+    const dz = player.y - localTransform.z;
+    if (dx * dx + dz * dz > LOS_VISION_RANGE_METERS * LOS_VISION_RANGE_METERS) {
+      return false;
+    }
+
+    for (const collider of this.levelRuntime.colliders) {
+      if (!collider.blocksLineOfSight) {
+        continue;
+      }
+
+      if (
+        segmentIntersectsCollider2D(
+          localTransform.x,
+          localTransform.z,
+          player.x,
+          player.y,
+          collider,
+          LOS_COLLIDER_PADDING,
+        )
+      ) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
   private applyInterpolatedRemoteState(nowMs: number): void {
     const sampled = this.interpolationBuffer.sample(nowMs);
     if (!sampled) return;
@@ -861,11 +909,18 @@ export class GameApp {
         team.id = player.team === 2 ? 2 : 1;
       }
 
+      const visible = this.isRemoteVisibleToLocal(player);
+      this.remoteVisibilityByPlayerId.set(player.playerId, visible);
+      const renderProxy = this.world.renderProxies.get(entityId);
+      if (renderProxy) {
+        renderProxy.object3d.visible = visible;
+      }
+
       if (typeof player.ammo === "number" && Number.isFinite(player.ammo)) {
         const nextAmmo = Math.max(0, Math.round(player.ammo));
         const prevAmmo = this.snapshotAmmoByPlayerId.get(player.playerId);
 
-        if (typeof prevAmmo === "number" && nextAmmo < prevAmmo) {
+        if (visible && typeof prevAmmo === "number" && nextAmmo < prevAmmo) {
           this.spawnRemoteShotTrails(player, prevAmmo - nextAmmo);
         }
 
@@ -912,6 +967,7 @@ export class GameApp {
     if (!entityId) return;
 
     this.remoteEntities.delete(networkPlayerId);
+    this.remoteVisibilityByPlayerId.delete(networkPlayerId);
     this.snapshotAmmoByPlayerId.delete(networkPlayerId);
 
     const proxy = this.world.renderProxies.get(entityId);

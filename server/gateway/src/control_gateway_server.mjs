@@ -51,6 +51,9 @@ const ROOM_TOKEN_TTL_SEC = Number(process.env.ROOM_TOKEN_TTL_SEC ?? 45);
 const ROOM_TOKEN_SECRET =
   process.env.WILDPAW_ROOM_TOKEN_SECRET ?? "dev-room-secret";
 
+const SOLO_TEST_MODE_ID = "solo_test";
+const SOLO_TEST_MAP_POOL = ["NJD_CR_01"];
+
 const FLOW_STATES = {
   BOOT: "BOOT",
   AUTH: "AUTH",
@@ -272,11 +275,17 @@ function deriveInitialSkill(accountId) {
 
 function modeToTeamSize(modeId) {
   if (typeof modeId !== "string") return null;
+  if (isSoloPracticeMode(modeId)) return 1;
+
   const match = modeId.match(/^(\d+)v\1/i);
   if (!match) return null;
   const size = Number(match[1]);
   if (!Number.isFinite(size) || size <= 0) return null;
   return size;
+}
+
+function isSoloPracticeMode(modeId) {
+  return String(modeId ?? "").toLowerCase() === SOLO_TEST_MODE_ID;
 }
 
 function partyBucketForSize(size, teamSize) {
@@ -577,6 +586,92 @@ function setSessionLobby(session) {
   session.activeMatchId = null;
 }
 
+function startSoloPracticeMatch(session, modeId, requestId, incomingEventId) {
+  const matchId = makeId("solo", nextMatchId++);
+  const mapId = SOLO_TEST_MAP_POOL[0] ?? "NJD_CR_01";
+
+  const match = {
+    matchId,
+    modeId,
+    participantSessionIds: [session.sessionId],
+    teamA: [session.sessionId],
+    teamB: [],
+    draftType: "SOLO_PRACTICE",
+    turnOrder: [],
+    timePerTurnSec: 0,
+    turnSeq: 0,
+    turnStartedAt: nowMs(),
+    teamState: {
+      teamA: { bans: [], picks: [], locked: [] },
+      teamB: { bans: [], picks: [], locked: [] },
+    },
+    draftActionKeys: new Set(),
+    resolved: true,
+    draftTimeoutHandle: null,
+    matchEndHandle: null,
+    rematchVotes: new Map(),
+    roomAssignRetryBySessionId: new Map(),
+    mapId,
+    quality: {
+      qualityTier: "SOLO_PRACTICE",
+      expansionStage: 0,
+      maxPingMs: null,
+      srRange: null,
+      maxTeamSrDiff: null,
+      avgSrDiff: 0,
+      partySymmetryPenalty: 0,
+      srStdGap: 0,
+      anchorWaitSec: 0,
+      extremeWait: false,
+    },
+  };
+
+  matches.set(matchId, match);
+
+  session.queueTicketId = null;
+  session.activeMatchCandidateId = null;
+  session.activeMatchId = matchId;
+  session.teamInfo = { teamId: 1, slot: 1 };
+  setFlowState(session, FLOW_STATES.MATCH_LOADING);
+
+  const token = assignRoomToken(matchId, mapId);
+  const roomEndpoint = resolveRoomEndpointForSession(session);
+
+  const assignEnvelope = makeOutboundEnvelope(
+    session,
+    "S2C_MATCH_ASSIGN",
+    {
+      matchId,
+      room: {
+        endpoint: roomEndpoint,
+        roomToken: token.token,
+        region: ROOM_REGION,
+        expiresAtMs: token.expiresAtMs,
+      },
+      mapId,
+      modeId,
+      teamInfo: { teamId: 1, slot: 1 },
+      matchQuality: match.quality,
+      reconnectWindowSec: RECONNECT_WINDOW_SEC,
+      roomConnectTimeoutSec: MATCH_ASSIGN_CONNECT_TIMEOUT_SEC,
+    },
+    requestId,
+  );
+
+  sendRaw(session, assignEnvelope);
+  cacheResponse(session, incomingEventId, assignEnvelope);
+
+  match.matchEndHandle = setTimeout(() => {
+    finishMatch(matchId);
+  }, SIM_MATCH_DURATION_SEC * 1000);
+
+  console.log(
+    `[gateway][solo.start] account=${session.accountId} session=${session.sessionId} mode=${modeId} match=${matchId} map=${mapId}`,
+  );
+
+  return true;
+}
+
 function enqueueSession(session, payload, requestId, incomingEventId) {
   const modeId = String(payload?.modeId ?? "");
   const teamSize = modeToTeamSize(modeId);
@@ -633,6 +728,10 @@ function enqueueSession(session, payload, requestId, incomingEventId) {
     });
 
     return false;
+  }
+
+  if (isSoloPracticeMode(modeId)) {
+    return startSoloPracticeMatch(session, modeId, requestId, incomingEventId);
   }
 
   const pingCandidate = Number(
@@ -2208,7 +2307,11 @@ function handleCustomRoomStart(ctx) {
 
   const modeId = room.settings.modeId;
   const teamSize = modeToTeamSize(modeId);
-  const requiredCount = teamSize ? teamSize * 2 : room.memberAccountIds.length;
+  const requiredCount = isSoloPracticeMode(modeId)
+    ? 1
+    : teamSize
+      ? teamSize * 2
+      : room.memberAccountIds.length;
 
   if (room.memberAccountIds.length < requiredCount) {
     sendError(
