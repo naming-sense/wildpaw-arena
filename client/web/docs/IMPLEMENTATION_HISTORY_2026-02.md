@@ -296,7 +296,7 @@ npm run test
     - FOW 품질에 맞춰 렌더 프로파일(AA/pixel ratio/shadow/tone mapping)을 함께 적용
     - 마지막 선택값을 localStorage(`wildpaw.fowQuality`)에 저장해 재접속 시 유지
   - `src/render/renderer.ts`, `src/render/lights.ts`
-    - `low` 렌더 경로에서 저전력 프로파일 적용(AA off, DPR clamp, shadow off, light 수 축소)
+    - `low` 렌더 경로에서 저전력 프로파일 적용(AA off, DPR 0.75 상한 허용, shadow off, light 수 축소)
 - 부트 옵션 확장
   - `src/app/bootstrap.ts`에 `fowQuality` 옵션 추가
 - 검증

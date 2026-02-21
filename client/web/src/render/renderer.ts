@@ -31,8 +31,8 @@ export class GameRenderer {
       throw new Error(WEBGL_UNSUPPORTED_ERROR);
     }
 
-    this.pixelRatioScale = Math.max(0.5, Math.min(1, options.pixelRatioScale ?? 1));
-    this.maxPixelRatio = Math.max(1, options.maxPixelRatio ?? 2);
+    this.pixelRatioScale = Math.max(0.35, Math.min(1, options.pixelRatioScale ?? 1));
+    this.maxPixelRatio = Math.max(0.5, options.maxPixelRatio ?? 2);
 
     this.renderer = new THREE.WebGLRenderer({
       canvas,

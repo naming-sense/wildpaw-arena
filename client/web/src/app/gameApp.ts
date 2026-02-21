@@ -197,8 +197,8 @@ function resolveRenderProfile(
     return {
       quality: "performance",
       antialias: false,
-      pixelRatioScale: 0.72,
-      maxPixelRatio: 1,
+      pixelRatioScale: 0.55,
+      maxPixelRatio: 0.75,
       shadowsEnabled: false,
       toneMapping: "none",
       shadowMapSize: 512,
@@ -389,6 +389,9 @@ export class GameApp {
       shadowsEnabled: renderProfile.shadowsEnabled,
       toneMapping: renderProfile.toneMapping,
     });
+    console.info(
+      `[render] fow=${fogOfWarQuality} quality=${renderProfile.quality} aa=${renderProfile.antialias ? 1 : 0} shadows=${renderProfile.shadowsEnabled ? 1 : 0} tone=${renderProfile.toneMapping} dpr=${this.renderer.renderer.getPixelRatio().toFixed(2)}`,
+    );
     this.cameraRig = new CameraRig(
       this.sceneRoot.camera,
       this.config.render.cameraHeight,
