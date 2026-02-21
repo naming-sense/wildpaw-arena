@@ -17,7 +17,7 @@ import {
   WeaponFireSystem,
 } from "../ecs/systems";
 import { createSceneRoot } from "../render/sceneRoot";
-import { GameRenderer, type RenderQualityMode } from "../render/renderer";
+import { GameRenderer } from "../render/renderer";
 import { createMainLights } from "../render/lights";
 import { CameraRig } from "../render/cameraRig";
 import { RealtimeSocketClient } from "../net/socketClient";
@@ -66,7 +66,6 @@ const LOS_VISION_RANGE_METERS = 22;
 const LOS_HALF_FOV_RAD = (55 * Math.PI) / 180;
 const LOS_COLLIDER_PADDING = 0.02;
 const FOW_QUALITY_STORAGE_KEY = "wildpaw.fowQuality";
-const HUD_UPDATE_INTERVAL_MS = 120;
 
 function normalizeHeroId(rawHeroId: string): string {
   const normalized = rawHeroId.trim();
@@ -126,9 +125,6 @@ function normalizeFogOfWarQuality(raw: unknown): FogOfWarQuality | null {
   }
 
   const value = raw.trim().toLowerCase();
-  if (value === "off" || value === "none" || value === "0" || value === "disabled") {
-    return "off";
-  }
   if (value === "low" || value === "l" || value === "performance") {
     return "low";
   }
@@ -180,68 +176,7 @@ function resolvePreferredFogOfWarQuality(explicit?: string): FogOfWarQuality {
 }
 
 function isLosVisibilityEnabled(quality: FogOfWarQuality): boolean {
-  return quality === "medium" || quality === "high";
-}
-
-interface RenderProfile {
-  quality: RenderQualityMode;
-  antialias: boolean;
-  pixelRatioScale: number;
-  maxPixelRatio: number;
-  shadowsEnabled: boolean;
-  toneMapping: "none" | "aces";
-  shadowMapSize: number;
-}
-
-function resolveRenderProfile(
-  fowQuality: FogOfWarQuality,
-  defaultShadowMapSize: number,
-): RenderProfile {
-  if (fowQuality === "off" || fowQuality === "low") {
-    return {
-      quality: "performance",
-      antialias: false,
-      pixelRatioScale: 0.55,
-      maxPixelRatio: 0.75,
-      shadowsEnabled: false,
-      toneMapping: "none",
-      shadowMapSize: 512,
-    };
-  }
-
-  if (fowQuality === "medium") {
-    return {
-      quality: "balanced",
-      antialias: true,
-      pixelRatioScale: 0.9,
-      maxPixelRatio: 1.5,
-      shadowsEnabled: true,
-      toneMapping: "aces",
-      shadowMapSize: Math.max(512, Math.min(defaultShadowMapSize, 768)),
-    };
-  }
-
-  return {
-    quality: "quality",
-    antialias: true,
-    pixelRatioScale: 1,
-    maxPixelRatio: 2,
-    shadowsEnabled: true,
-    toneMapping: "aces",
-    shadowMapSize: Math.max(512, defaultShadowMapSize),
-  };
-}
-
-function resolveBuildTag(): string {
-  if (typeof window === "undefined") {
-    return "-";
-  }
-
-  try {
-    return new URLSearchParams(window.location.search).get("v") ?? "-";
-  } catch {
-    return "-";
-  }
+  return quality !== "low";
 }
 
 function pickHeroDef(heroId: string): HeroDef {
@@ -361,7 +296,6 @@ export class GameApp {
   private readonly localHeroAsset: HeroAssetManifest;
   private readonly localHeroAssetPath: string;
   private readonly losVisibilityEnabled: boolean;
-  private readonly fowHudModePrefix: string;
 
   private readonly remoteEntities = new Map<number, EntityId>();
   private readonly remoteVisibilityByPlayerId = new Map<number, boolean>();
@@ -374,8 +308,6 @@ export class GameApp {
   private lastInputSentAt = Number.NEGATIVE_INFINITY;
   private serverTimeOffsetMs = 0;
   private hasServerTimeOffset = false;
-  private lastHudPublishAtMs = Number.NEGATIVE_INFINITY;
-  private fowFrameMsSmoothed = 0;
   private readonly snapshotAmmoByPlayerId = new Map<number, number>();
   private readonly bulletTrailEffects: BulletTrailEffect[] = [];
   private readonly muzzleFlashEffects: MuzzleFlashEffect[] = [];
@@ -393,39 +325,17 @@ export class GameApp {
     canvas: HTMLCanvasElement,
     options: GameAppOptions,
   ) {
-    const fogOfWarQuality = resolvePreferredFogOfWarQuality(options.fowQuality);
-    this.losVisibilityEnabled = isLosVisibilityEnabled(fogOfWarQuality);
-    const renderProfile = resolveRenderProfile(
-      fogOfWarQuality,
-      this.config.render.shadowMapSize,
-    );
-    const buildTag = resolveBuildTag();
-    const fowModeLabel = `${fogOfWarQuality}/${renderProfile.quality}`;
-    this.fowHudModePrefix = fowModeLabel;
-
-    this.renderer = new GameRenderer(canvas, {
-      shadowMapSize: renderProfile.shadowMapSize,
-      antialias: renderProfile.antialias,
-      pixelRatioScale: renderProfile.pixelRatioScale,
-      maxPixelRatio: renderProfile.maxPixelRatio,
-      shadowsEnabled: renderProfile.shadowsEnabled,
-      toneMapping: renderProfile.toneMapping,
-    });
-    console.info(
-      `[render] fow=${fogOfWarQuality} quality=${renderProfile.quality} aa=${renderProfile.antialias ? 1 : 0} shadows=${renderProfile.shadowsEnabled ? 1 : 0} tone=${renderProfile.toneMapping} dpr=${this.renderer.renderer.getPixelRatio().toFixed(2)}`,
-    );
+    this.renderer = new GameRenderer(canvas, this.config.render.shadowMapSize);
     this.cameraRig = new CameraRig(
       this.sceneRoot.camera,
       this.config.render.cameraHeight,
       this.config.render.cameraTiltDeg,
     );
-    createMainLights(this.sceneRoot.scene, {
-      quality: renderProfile.quality,
-      shadowsEnabled: renderProfile.shadowsEnabled,
-      shadowMapSize: renderProfile.shadowMapSize,
-    });
+    createMainLights(this.sceneRoot.scene);
 
     const resolvedMapId = resolvePreferredMapId(options.mapId);
+    const fogOfWarQuality = resolvePreferredFogOfWarQuality(options.fowQuality);
+    this.losVisibilityEnabled = isLosVisibilityEnabled(fogOfWarQuality);
     const levelDebugEnabled =
       typeof window !== "undefined" &&
       (new URLSearchParams(window.location.search).get("levelDebug") === "1" ||
@@ -479,10 +389,6 @@ export class GameApp {
       ammo: localWeapon.ammo,
       maxAmmo: localWeapon.ammo,
       reloading: false,
-      renderDpr: this.renderer.renderer.getPixelRatio(),
-      fowMode: `${this.fowHudModePrefix}/${this.levelRuntime.getFogDebugMode()}`,
-      fowFrameMs: 0,
-      buildTag,
     });
 
     this.loadHeroModel(this.localPlayerEntityId).catch((error) => {
@@ -541,18 +447,12 @@ export class GameApp {
       this.lastFrameMs = nowMs;
 
       this.perf.recordFrame(frameMs);
-      if (nowMs - this.lastHudPublishAtMs >= HUD_UPDATE_INTERVAL_MS) {
-        this.lastHudPublishAtMs = nowMs;
-        useUiStore.getState().setHud({
-          fps: this.perf.fps,
-          frameMs: this.perf.frameMs,
-          drawCalls: this.renderer.drawCalls,
-          packetLossPct: this.netMetrics.packetLossPct,
-          renderDpr: this.renderer.renderer.getPixelRatio(),
-          fowMode: `${this.fowHudModePrefix}/${this.levelRuntime.getFogDebugMode()}`,
-          fowFrameMs: this.fowFrameMsSmoothed,
-        });
-      }
+      useUiStore.getState().setHud({
+        fps: this.perf.fps,
+        frameMs: this.perf.frameMs,
+        drawCalls: this.renderer.drawCalls,
+        packetLossPct: this.netMetrics.packetLossPct,
+      });
 
       this.fixedStep.advance(frameMs, (dtMs) => this.simulationTick(nowMs, dtMs));
 
@@ -579,7 +479,6 @@ export class GameApp {
 
       const localTransformForLos = this.world.transforms.get(this.localPlayerEntityId);
       if (localTransformForLos) {
-        const fowStartedAt = performance.now();
         this.levelRuntime.updateFogOfWar(
           localTransformForLos.x,
           localTransformForLos.z,
@@ -588,8 +487,6 @@ export class GameApp {
           LOS_HALF_FOV_RAD,
           nowMs,
         );
-        const fowFrameMs = performance.now() - fowStartedAt;
-        this.fowFrameMsSmoothed = this.fowFrameMsSmoothed * 0.8 + fowFrameMs * 0.2;
       }
 
       this.syncCameraAspectToCanvas();

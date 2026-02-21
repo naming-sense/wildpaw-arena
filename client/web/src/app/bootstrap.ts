@@ -5,7 +5,7 @@ interface BootstrapOptions {
   heroId?: string;
   roomToken?: string;
   mapId?: string;
-  fowQuality?: "off" | "low" | "medium" | "high";
+  fowQuality?: "low" | "medium" | "high";
 }
 
 function resolveDefaultWsUrl(): string | undefined {

@@ -46,13 +46,6 @@ interface LosObstacleVisual {
 const HIDDEN_OBSTACLE_OPACITY_FACTOR = 0.38;
 
 const OBSTACLE_VISIBILITY_PROFILES: Record<FogOfWarQuality, ObstacleVisibilityProfile> = {
-  off: {
-    enabled: false,
-    updateIntervalMs: 9999,
-    moveThreshold: 999,
-    yawThresholdRad: Math.PI,
-    sampleMode: "center",
-  },
   low: {
     enabled: false,
     updateIntervalMs: 220,
@@ -370,14 +363,12 @@ export class LevelRuntime {
     };
 
     this.scene.add(this.root);
-    if (fogOfWarQuality !== "off") {
-      this.fogOfWarOverlay = new FogOfWarOverlay(
-        this.scene,
-        this.worldBounds,
-        this.colliders,
-        fogOfWarQuality,
-      );
-    }
+    this.fogOfWarOverlay = new FogOfWarOverlay(
+      this.scene,
+      this.worldBounds,
+      this.colliders,
+      fogOfWarQuality,
+    );
   }
 
   setDebugVisible(visible: boolean): void {
@@ -517,10 +508,6 @@ export class LevelRuntime {
         hasVisibleSample ? 1 : HIDDEN_OBSTACLE_OPACITY_FACTOR,
       );
     }
-  }
-
-  getFogDebugMode(): string {
-    return this.fogOfWarOverlay?.getDebugMode() ?? "off";
   }
 
   update(nowMs: number): void {
