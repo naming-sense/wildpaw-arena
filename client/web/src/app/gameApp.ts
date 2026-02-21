@@ -66,6 +66,7 @@ const LOS_VISION_RANGE_METERS = 22;
 const LOS_HALF_FOV_RAD = (55 * Math.PI) / 180;
 const LOS_COLLIDER_PADDING = 0.02;
 const FOW_QUALITY_STORAGE_KEY = "wildpaw.fowQuality";
+const HUD_UPDATE_INTERVAL_MS = 120;
 
 function normalizeHeroId(rawHeroId: string): string {
   const normalized = rawHeroId.trim();
@@ -369,6 +370,7 @@ export class GameApp {
   private lastInputSentAt = Number.NEGATIVE_INFINITY;
   private serverTimeOffsetMs = 0;
   private hasServerTimeOffset = false;
+  private lastHudPublishAtMs = Number.NEGATIVE_INFINITY;
   private readonly snapshotAmmoByPlayerId = new Map<number, number>();
   private readonly bulletTrailEffects: BulletTrailEffect[] = [];
   private readonly muzzleFlashEffects: MuzzleFlashEffect[] = [];
@@ -532,13 +534,16 @@ export class GameApp {
       this.lastFrameMs = nowMs;
 
       this.perf.recordFrame(frameMs);
-      useUiStore.getState().setHud({
-        fps: this.perf.fps,
-        frameMs: this.perf.frameMs,
-        drawCalls: this.renderer.drawCalls,
-        packetLossPct: this.netMetrics.packetLossPct,
-        renderDpr: this.renderer.renderer.getPixelRatio(),
-      });
+      if (nowMs - this.lastHudPublishAtMs >= HUD_UPDATE_INTERVAL_MS) {
+        this.lastHudPublishAtMs = nowMs;
+        useUiStore.getState().setHud({
+          fps: this.perf.fps,
+          frameMs: this.perf.frameMs,
+          drawCalls: this.renderer.drawCalls,
+          packetLossPct: this.netMetrics.packetLossPct,
+          renderDpr: this.renderer.renderer.getPixelRatio(),
+        });
+      }
 
       this.fixedStep.advance(frameMs, (dtMs) => this.simulationTick(nowMs, dtMs));
 
