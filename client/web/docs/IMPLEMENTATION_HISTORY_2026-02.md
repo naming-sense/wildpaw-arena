@@ -292,7 +292,7 @@ npm run test
     - `low`에서도 경계 블러를 활성화해 부채꼴 경계를 더 부드럽게 처리
   - `src/app/gameApp.ts`
     - `?fow=low|medium|high` (`?fowQuality=`도 허용) 쿼리 파라미터로 품질 선택
-    - `low`에서는 원격 플레이어 LOS 가시성 판정 비활성화(항상 표시)
+    - 모든 품질에서 원격 플레이어를 LOS/FOV 판정으로 가시/비가시 처리(시야 밖 미렌더)
     - 마지막 선택값을 localStorage(`wildpaw.fowQuality`)에 저장해 재접속 시 유지
 - 부트 옵션 확장
   - `src/app/bootstrap.ts`에 `fowQuality` 옵션 추가

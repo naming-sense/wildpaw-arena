@@ -175,8 +175,8 @@ function resolvePreferredFogOfWarQuality(explicit?: string): FogOfWarQuality {
   return "low";
 }
 
-function isLosVisibilityEnabled(quality: FogOfWarQuality): boolean {
-  return quality !== "low";
+function isLosVisibilityEnabled(_quality: FogOfWarQuality): boolean {
+  return true;
 }
 
 function pickHeroDef(heroId: string): HeroDef {
@@ -933,10 +933,7 @@ export class GameApp {
       return true;
     }
 
-    const localTeamId = this.world.teams.get(this.localPlayerEntityId)?.id ?? 1;
-    if (player.team === localTeamId) {
-      return true;
-    }
+    // 팀 구분 없이 시야 밖 원격 플레이어는 렌더링하지 않는다.
 
     const dx = player.x - localTransform.x;
     const dz = player.y - localTransform.z;
