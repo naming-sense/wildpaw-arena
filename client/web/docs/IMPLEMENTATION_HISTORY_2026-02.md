@@ -285,10 +285,12 @@ npm run test
   - `src/level/runtime/fogOfWarOverlay.ts`
     - 해상도/갱신 주기/이동·회전 임계치/경계 블러 on/off를 품질별로 분리
   - `src/level/runtime/levelRuntime.ts`
-    - 장애물 가시성 판정도 품질별 스로틀 프로파일 적용
-    - `low`에서는 샘플 포인트를 중심점 위주로 단순화
+    - 장애물 가시성 판정도 품질별 프로파일 적용
+    - `low`에서는 장애물 반투명 처리(가시성 페이드) 비활성화
+    - `low`에서는 FOW/LOS 오버레이 자체를 생성하지 않음
   - `src/app/gameApp.ts`
     - `?fow=low|medium|high` (`?fowQuality=`도 허용) 쿼리 파라미터로 품질 선택
+    - `low`에서는 원격 플레이어 LOS 가시성 판정 비활성화(항상 표시)
     - 마지막 선택값을 localStorage(`wildpaw.fowQuality`)에 저장해 재접속 시 유지
 - 부트 옵션 확장
   - `src/app/bootstrap.ts`에 `fowQuality` 옵션 추가
