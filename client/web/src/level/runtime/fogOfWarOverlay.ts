@@ -23,9 +23,9 @@ const MOVE_UPDATE_THRESHOLD = 0.12;
 const YAW_UPDATE_THRESHOLD_RAD = (2.5 * Math.PI) / 180;
 const LOS_PADDING = 0.02;
 const EDGE_BLUR_ENABLED = true;
-const DARK_ALPHA = 0.94;
-const VISIBLE_CENTER_ALPHA = 0.06;
-const VISIBLE_EDGE_ALPHA = 0.26;
+const DARK_ALPHA = 0.72;
+const VISIBLE_CENTER_ALPHA = 0.05;
+const VISIBLE_EDGE_ALPHA = 0.24;
 
 function isLosObstacle(collider: LevelStaticCollider): boolean {
   return (

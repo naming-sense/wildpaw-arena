@@ -11,7 +11,7 @@ import { createLaneOverlayGroup } from "./levelNavOverlay";
 import { createLineOfSightDebugGroup } from "./lineOfSightDebug";
 import { runSpawnSafetyCheck, type SpawnFallbackOffset } from "./spawnSafetyCheck";
 import { FogOfWarOverlay } from "./fogOfWarOverlay";
-import type { LevelStaticCollider } from "./levelCollision";
+import { segmentIntersectsCollider2D, type LevelStaticCollider } from "./levelCollision";
 
 export interface LevelRuntimeWorldBounds {
   min: number;
@@ -20,6 +20,91 @@ export interface LevelRuntimeWorldBounds {
   maxX: number;
   minZ: number;
   maxZ: number;
+}
+
+interface LosObstacleVisual {
+  root: THREE.Object3D;
+  colliders: readonly LevelStaticCollider[];
+  samplePoints: ReadonlyArray<{ x: number; z: number }>;
+}
+
+const HIDDEN_OBSTACLE_OPACITY_FACTOR = 0.38;
+
+function isLosObstacle(collider: LevelStaticCollider): boolean {
+  return (
+    collider.blocksLineOfSight ||
+    collider.blocksMovement ||
+    collider.blocksProjectile
+  );
+}
+
+function buildObstacleSamplePoints(
+  colliders: readonly LevelStaticCollider[],
+): ReadonlyArray<{ x: number; z: number }> {
+  const points: { x: number; z: number }[] = [];
+  const seen = new Set<string>();
+
+  for (const collider of colliders) {
+    const centerX = (collider.minX + collider.maxX) * 0.5;
+    const centerZ = (collider.minZ + collider.maxZ) * 0.5;
+
+    const candidates = [
+      { x: centerX, z: centerZ },
+      { x: collider.minX, z: collider.minZ },
+      { x: collider.minX, z: collider.maxZ },
+      { x: collider.maxX, z: collider.minZ },
+      { x: collider.maxX, z: collider.maxZ },
+    ];
+
+    for (const point of candidates) {
+      const key = `${point.x.toFixed(3)}:${point.z.toFixed(3)}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      points.push(point);
+    }
+  }
+
+  return points;
+}
+
+function applyOpacityToObject(root: THREE.Object3D, opacityFactor: number): void {
+  root.traverse((node) => {
+    const maybeMesh = node as THREE.Mesh;
+    if (!maybeMesh.isMesh) {
+      return;
+    }
+
+    const materials = Array.isArray(maybeMesh.material)
+      ? maybeMesh.material
+      : [maybeMesh.material];
+
+    for (const material of materials) {
+      const userData = material.userData as {
+        fowBaseOpacity?: number;
+        fowBaseTransparent?: boolean;
+      };
+
+      if (typeof userData.fowBaseOpacity !== "number") {
+        userData.fowBaseOpacity = material.opacity;
+        userData.fowBaseTransparent = material.transparent;
+      }
+
+      const baseOpacity = userData.fowBaseOpacity;
+      const baseTransparent = Boolean(userData.fowBaseTransparent);
+
+      if (opacityFactor >= 0.999) {
+        material.opacity = baseOpacity;
+        material.transparent = baseTransparent || baseOpacity < 0.999;
+      } else {
+        material.opacity = Math.max(0.05, baseOpacity * opacityFactor);
+        material.transparent = true;
+      }
+
+      material.needsUpdate = true;
+    }
+  });
 }
 
 function disposeObject3D(root: THREE.Object3D): void {
@@ -144,6 +229,7 @@ export class LevelRuntime {
   private switchZoneView: SwitchZoneView | null = null;
   private payloadView: PayloadView | null = null;
   private fogOfWarOverlay: FogOfWarOverlay | null = null;
+  private readonly losObstacleVisuals: LosObstacleVisual[] = [];
 
   constructor(scene: THREE.Scene, mapId?: string | null, debugVisible = false) {
     this.scene = scene;
@@ -173,6 +259,15 @@ export class LevelRuntime {
       const built = buildPrefab(prefab, catalog);
       this.staticLayer.add(built.root);
       colliders.push(...built.colliders);
+
+      const losColliders = built.colliders.filter(isLosObstacle);
+      if (losColliders.length > 0) {
+        this.losObstacleVisuals.push({
+          root: built.root,
+          colliders: losColliders,
+          samplePoints: buildObstacleSamplePoints(losColliders),
+        });
+      }
     }
 
     this.colliders = colliders;
@@ -235,6 +330,74 @@ export class LevelRuntime {
       halfFovRad,
       nowMs,
     });
+
+    this.updateObstacleVisibility(originX, originZ, yaw, rangeMeters, halfFovRad);
+  }
+
+  private updateObstacleVisibility(
+    originX: number,
+    originZ: number,
+    yaw: number,
+    rangeMeters: number,
+    halfFovRad: number,
+  ): void {
+    const forwardX = Math.sin(yaw);
+    const forwardZ = Math.cos(yaw);
+    const cosHalfFov = Math.cos(halfFovRad);
+    const rangeSq = rangeMeters * rangeMeters;
+
+    for (const visual of this.losObstacleVisuals) {
+      const ownIds = new Set(visual.colliders.map((collider) => collider.id));
+      let hasVisibleSample = false;
+
+      for (const point of visual.samplePoints) {
+        const dx = point.x - originX;
+        const dz = point.z - originZ;
+        const distSq = dx * dx + dz * dz;
+        if (distSq > rangeSq) {
+          continue;
+        }
+
+        const dist = Math.sqrt(distSq);
+        const dirX = dist > 1e-6 ? dx / dist : forwardX;
+        const dirZ = dist > 1e-6 ? dz / dist : forwardZ;
+        const forwardDot = dirX * forwardX + dirZ * forwardZ;
+        if (forwardDot < cosHalfFov) {
+          continue;
+        }
+
+        let blocked = false;
+        for (const collider of this.colliders) {
+          if (!isLosObstacle(collider) || ownIds.has(collider.id)) {
+            continue;
+          }
+
+          if (
+            segmentIntersectsCollider2D(
+              originX,
+              originZ,
+              point.x,
+              point.z,
+              collider,
+              0.02,
+            )
+          ) {
+            blocked = true;
+            break;
+          }
+        }
+
+        if (!blocked) {
+          hasVisibleSample = true;
+          break;
+        }
+      }
+
+      applyOpacityToObject(
+        visual.root,
+        hasVisibleSample ? 1 : HIDDEN_OBSTACLE_OPACITY_FACTOR,
+      );
+    }
   }
 
   update(nowMs: number): void {
