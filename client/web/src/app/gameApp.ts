@@ -17,7 +17,7 @@ import {
   WeaponFireSystem,
 } from "../ecs/systems";
 import { createSceneRoot } from "../render/sceneRoot";
-import { GameRenderer } from "../render/renderer";
+import { GameRenderer, type RenderQualityMode } from "../render/renderer";
 import { createMainLights } from "../render/lights";
 import { CameraRig } from "../render/cameraRig";
 import { RealtimeSocketClient } from "../net/socketClient";
@@ -179,6 +179,55 @@ function isLosVisibilityEnabled(quality: FogOfWarQuality): boolean {
   return quality !== "low";
 }
 
+interface RenderProfile {
+  quality: RenderQualityMode;
+  antialias: boolean;
+  pixelRatioScale: number;
+  maxPixelRatio: number;
+  shadowsEnabled: boolean;
+  toneMapping: "none" | "aces";
+  shadowMapSize: number;
+}
+
+function resolveRenderProfile(
+  fowQuality: FogOfWarQuality,
+  defaultShadowMapSize: number,
+): RenderProfile {
+  if (fowQuality === "low") {
+    return {
+      quality: "performance",
+      antialias: false,
+      pixelRatioScale: 0.72,
+      maxPixelRatio: 1,
+      shadowsEnabled: false,
+      toneMapping: "none",
+      shadowMapSize: 512,
+    };
+  }
+
+  if (fowQuality === "medium") {
+    return {
+      quality: "balanced",
+      antialias: true,
+      pixelRatioScale: 0.9,
+      maxPixelRatio: 1.5,
+      shadowsEnabled: true,
+      toneMapping: "aces",
+      shadowMapSize: Math.max(512, Math.min(defaultShadowMapSize, 768)),
+    };
+  }
+
+  return {
+    quality: "quality",
+    antialias: true,
+    pixelRatioScale: 1,
+    maxPixelRatio: 2,
+    shadowsEnabled: true,
+    toneMapping: "aces",
+    shadowMapSize: Math.max(512, defaultShadowMapSize),
+  };
+}
+
 function pickHeroDef(heroId: string): HeroDef {
   return HERO_DEF_BY_ID.get(heroId) ?? HERO_DEF_BY_ID.get(DEFAULT_HERO_ID) ?? HERO_DEFS[0]!;
 }
@@ -325,17 +374,33 @@ export class GameApp {
     canvas: HTMLCanvasElement,
     options: GameAppOptions,
   ) {
-    this.renderer = new GameRenderer(canvas, this.config.render.shadowMapSize);
+    const fogOfWarQuality = resolvePreferredFogOfWarQuality(options.fowQuality);
+    this.losVisibilityEnabled = isLosVisibilityEnabled(fogOfWarQuality);
+    const renderProfile = resolveRenderProfile(
+      fogOfWarQuality,
+      this.config.render.shadowMapSize,
+    );
+
+    this.renderer = new GameRenderer(canvas, {
+      shadowMapSize: renderProfile.shadowMapSize,
+      antialias: renderProfile.antialias,
+      pixelRatioScale: renderProfile.pixelRatioScale,
+      maxPixelRatio: renderProfile.maxPixelRatio,
+      shadowsEnabled: renderProfile.shadowsEnabled,
+      toneMapping: renderProfile.toneMapping,
+    });
     this.cameraRig = new CameraRig(
       this.sceneRoot.camera,
       this.config.render.cameraHeight,
       this.config.render.cameraTiltDeg,
     );
-    createMainLights(this.sceneRoot.scene);
+    createMainLights(this.sceneRoot.scene, {
+      quality: renderProfile.quality,
+      shadowsEnabled: renderProfile.shadowsEnabled,
+      shadowMapSize: renderProfile.shadowMapSize,
+    });
 
     const resolvedMapId = resolvePreferredMapId(options.mapId);
-    const fogOfWarQuality = resolvePreferredFogOfWarQuality(options.fowQuality);
-    this.losVisibilityEnabled = isLosVisibilityEnabled(fogOfWarQuality);
     const levelDebugEnabled =
       typeof window !== "undefined" &&
       (new URLSearchParams(window.location.search).get("levelDebug") === "1" ||

@@ -2,12 +2,26 @@ import * as THREE from "three";
 
 export const WEBGL_UNSUPPORTED_ERROR = "WEBGL_UNSUPPORTED";
 
+export type RenderQualityMode = "performance" | "balanced" | "quality";
+
+export interface GameRendererOptions {
+  shadowMapSize: number;
+  antialias?: boolean;
+  pixelRatioScale?: number;
+  maxPixelRatio?: number;
+  shadowsEnabled?: boolean;
+  toneMapping?: "none" | "aces";
+}
+
 export class GameRenderer {
   readonly renderer: THREE.WebGLRenderer;
 
+  private readonly pixelRatioScale: number;
+  private readonly maxPixelRatio: number;
+
   constructor(
     private readonly canvas: HTMLCanvasElement,
-    shadowMapSize: number,
+    options: GameRendererOptions,
   ) {
     const context =
       (canvas.getContext("webgl2") as WebGL2RenderingContext | null) ??
@@ -17,26 +31,34 @@ export class GameRenderer {
       throw new Error(WEBGL_UNSUPPORTED_ERROR);
     }
 
-    this.renderer = new THREE.WebGLRenderer({ canvas, context, antialias: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.pixelRatioScale = Math.max(0.5, Math.min(1, options.pixelRatioScale ?? 1));
+    this.maxPixelRatio = Math.max(1, options.maxPixelRatio ?? 2);
+
+    this.renderer = new THREE.WebGLRenderer({
+      canvas,
+      context,
+      antialias: options.antialias ?? true,
+    });
+
+    this.renderer.setPixelRatio(this.resolvePixelRatio());
     this.renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);
+
+    const shadowsEnabled = options.shadowsEnabled ?? true;
+    this.renderer.shadowMap.enabled = shadowsEnabled;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.autoUpdate = shadowsEnabled;
+    this.renderer.shadowMap.needsUpdate = shadowsEnabled;
+
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMapping =
+      options.toneMapping === "none" ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.2;
 
-    this.renderer.shadowMap.autoUpdate = true;
-    this.renderer.shadowMap.needsUpdate = true;
-
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.needsUpdate = true;
-    this.renderer.shadowMap.autoUpdate = true;
-
-    const target = this.renderer.getRenderTarget();
-    if (target) {
-      target.setSize(shadowMapSize, shadowMapSize);
+    if (shadowsEnabled) {
+      const target = this.renderer.getRenderTarget();
+      if (target) {
+        target.setSize(options.shadowMapSize, options.shadowMapSize);
+      }
     }
 
     window.addEventListener("resize", this.onResize);
@@ -56,10 +78,15 @@ export class GameRenderer {
     return this.renderer.info.render.calls;
   }
 
+  private resolvePixelRatio(): number {
+    const dpr = window.devicePixelRatio || 1;
+    return Math.min(dpr * this.pixelRatioScale, this.maxPixelRatio);
+  }
+
   private onResize = (): void => {
     const width = Math.max(1, this.canvas.clientWidth);
     const height = Math.max(1, this.canvas.clientHeight);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer.setPixelRatio(this.resolvePixelRatio());
     this.renderer.setSize(width, height, false);
   };
 }
