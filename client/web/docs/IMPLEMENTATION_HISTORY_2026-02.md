@@ -289,6 +289,7 @@ npm run test
     - `low`에서는 장애물 반투명 처리(가시성 페이드) 비활성화
   - `src/level/runtime/fogOfWarOverlay.ts`
     - `low`에서는 LOS 차폐(raycast) 연산을 끄고 단순 부채꼴 오버레이만 유지
+    - `low`에서도 경계 feather(거리/각도 완만화)와 해상도 소폭 상향(128→144)으로 품질 개선
   - `src/app/gameApp.ts`
     - `?fow=low|medium|high` (`?fowQuality=`도 허용) 쿼리 파라미터로 품질 선택
     - `low`에서는 원격 플레이어 LOS 가시성 판정 비활성화(항상 표시)

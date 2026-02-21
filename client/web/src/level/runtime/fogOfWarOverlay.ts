@@ -26,6 +26,8 @@ interface FogOfWarQualityProfile {
   yawUpdateThresholdRad: number;
   edgeBlurEnabled: boolean;
   occlusionEnabled: boolean;
+  fovFeatherRad: number;
+  rangeFeatherRatio: number;
   darkAlpha: number;
   visibleCenterAlpha: number;
   visibleEdgeAlpha: number;
@@ -35,15 +37,17 @@ const LOS_PADDING = 0.02;
 
 const QUALITY_PROFILES: Record<FogOfWarQuality, FogOfWarQualityProfile> = {
   low: {
-    resolution: 128,
-    updateIntervalMs: 180,
-    moveUpdateThreshold: 0.3,
-    yawUpdateThresholdRad: (6 * Math.PI) / 180,
+    resolution: 144,
+    updateIntervalMs: 160,
+    moveUpdateThreshold: 0.24,
+    yawUpdateThresholdRad: (5 * Math.PI) / 180,
     edgeBlurEnabled: false,
     occlusionEnabled: false,
-    darkAlpha: 0.7,
+    fovFeatherRad: (7 * Math.PI) / 180,
+    rangeFeatherRatio: 0.15,
+    darkAlpha: 0.66,
     visibleCenterAlpha: 0.05,
-    visibleEdgeAlpha: 0.24,
+    visibleEdgeAlpha: 0.22,
   },
   medium: {
     resolution: 192,
@@ -52,6 +56,8 @@ const QUALITY_PROFILES: Record<FogOfWarQuality, FogOfWarQualityProfile> = {
     yawUpdateThresholdRad: (4 * Math.PI) / 180,
     edgeBlurEnabled: true,
     occlusionEnabled: true,
+    fovFeatherRad: (4.5 * Math.PI) / 180,
+    rangeFeatherRatio: 0.1,
     darkAlpha: 0.72,
     visibleCenterAlpha: 0.05,
     visibleEdgeAlpha: 0.24,
@@ -63,6 +69,8 @@ const QUALITY_PROFILES: Record<FogOfWarQuality, FogOfWarQualityProfile> = {
     yawUpdateThresholdRad: (2.5 * Math.PI) / 180,
     edgeBlurEnabled: true,
     occlusionEnabled: true,
+    fovFeatherRad: (3 * Math.PI) / 180,
+    rangeFeatherRatio: 0.08,
     darkAlpha: 0.74,
     visibleCenterAlpha: 0.05,
     visibleEdgeAlpha: 0.24,
@@ -196,7 +204,13 @@ export class FogOfWarOverlay {
 
     const data = this.imageData.data;
     const rangeSq = rangeMeters * rangeMeters;
-    const cosHalfFov = Math.cos(halfFovRad);
+    const rangeFeatherMeters = Math.max(0, rangeMeters * this.profile.rangeFeatherRatio);
+    const rangeInner = Math.max(0.001, rangeMeters - rangeFeatherMeters);
+    const rangeOuter = Math.max(rangeInner + 0.001, rangeMeters);
+    const fovInner = Math.max(0.001, halfFovRad - this.profile.fovFeatherRad);
+    const fovOuter = Math.min(Math.PI - 0.001, halfFovRad + this.profile.fovFeatherRad);
+    const cosFovInner = Math.cos(fovInner);
+    const cosFovOuter = Math.cos(fovOuter);
     const forwardX = Math.sin(yaw);
     const forwardZ = Math.cos(yaw);
 
@@ -221,33 +235,54 @@ export class FogOfWarOverlay {
         const dirZ = dist > 1e-6 ? dz * invDist : forwardZ;
         const forwardDot = dirX * forwardX + dirZ * forwardZ;
 
-        if (forwardDot >= cosHalfFov) {
-          let blocked = false;
+        const angularWeight =
+          forwardDot >= cosFovInner
+            ? 1
+            : forwardDot <= cosFovOuter
+              ? 0
+              : (forwardDot - cosFovOuter) / Math.max(1e-5, cosFovInner - cosFovOuter);
 
-          if (this.profile.occlusionEnabled) {
-            for (const collider of this.losColliders) {
-              if (
-                segmentIntersectsCollider2D(
-                  originX,
-                  originZ,
-                  worldX,
-                  worldZ,
-                  collider,
-                  LOS_PADDING,
-                )
-              ) {
-                blocked = true;
-                break;
+        if (angularWeight > 0) {
+          const radialWeight =
+            dist <= rangeInner
+              ? 1
+              : dist >= rangeOuter
+                ? 0
+                : 1 - (dist - rangeInner) / Math.max(1e-5, rangeOuter - rangeInner);
+
+          const visibilityWeight = Math.max(0, Math.min(1, angularWeight * radialWeight));
+
+          if (visibilityWeight > 0) {
+            let blocked = false;
+
+            if (this.profile.occlusionEnabled) {
+              for (const collider of this.losColliders) {
+                if (
+                  segmentIntersectsCollider2D(
+                    originX,
+                    originZ,
+                    worldX,
+                    worldZ,
+                    collider,
+                    LOS_PADDING,
+                  )
+                ) {
+                  blocked = true;
+                  break;
+                }
               }
             }
-          }
 
-          if (!blocked) {
-            const edgeT = Math.min(1, dist / Math.max(0.001, rangeMeters));
-            alpha = Math.round(
-              visibleCenterAlpha255 +
-                (visibleEdgeAlpha255 - visibleCenterAlpha255) * edgeT,
-            );
+            if (!blocked) {
+              const edgeT = Math.min(1, dist / Math.max(0.001, rangeMeters));
+              const visibleAlpha = Math.round(
+                visibleCenterAlpha255 +
+                  (visibleEdgeAlpha255 - visibleCenterAlpha255) * edgeT,
+              );
+              alpha = Math.round(
+                darkAlpha255 + (visibleAlpha - darkAlpha255) * visibilityWeight,
+              );
+            }
           }
         }
       }
