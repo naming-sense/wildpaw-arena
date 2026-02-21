@@ -86,17 +86,18 @@ export class FogOfWarOverlay {
         map: this.texture,
         transparent: true,
         depthWrite: false,
-        depthTest: false,
+        depthTest: true,
       }),
     );
 
     this.mesh.rotation.x = -Math.PI / 2;
+    // 바닥면에 밀착시켜 떠 있는 느낌/캐릭터 가림 현상을 방지한다.
     this.mesh.position.set(
       (this.bounds.minX + this.bounds.maxX) * 0.5,
-      3.8,
+      0.06,
       (this.bounds.minZ + this.bounds.maxZ) * 0.5,
     );
-    this.mesh.renderOrder = 9000;
+    this.mesh.renderOrder = 20;
 
     scene.add(this.mesh);
   }
