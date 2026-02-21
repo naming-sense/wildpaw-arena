@@ -43,6 +43,9 @@ interface HudSlice {
   packetLossPct: number;
   reconnectState: string;
   drawCalls: number;
+  renderDpr: number;
+  fowMode: string;
+  buildTag: string;
   showDebug: boolean;
 }
 
@@ -96,6 +99,9 @@ export const useUiStore = create<UiState>((set) => ({
   packetLossPct: 0,
   reconnectState: "Disconnected",
   drawCalls: 0,
+  renderDpr: 1,
+  fowMode: "-",
+  buildTag: "-",
   showDebug: true,
 
   appFlowState: "BOOT",

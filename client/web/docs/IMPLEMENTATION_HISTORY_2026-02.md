@@ -285,6 +285,7 @@ npm run test
   - `src/level/runtime/fogOfWarOverlay.ts`
     - 품질별 프로파일(해상도/갱신 임계치/경계 feather) 분리
     - `low`를 CPU 픽셀 루프에서 **cone edge line 중심(지오메트리 기반)** 경로로 전환(로직 자체 최적화)
+    - `low` cone은 매 프레임 버텍스 재작성 대신 transform(position/rotation/scale)만 갱신하도록 개선
     - `low` 기본값에서 cone fill을 끄고 edge만 렌더해 노이즈/블렌딩 비용 완화
     - `medium/high`는 기존 CPU + LOS 차폐(raycast) 경로 유지
     - `low`에서는 LOS 차폐(raycast) 연산 비활성화
@@ -295,6 +296,7 @@ npm run test
     - `?fow=low|medium|high` (`?fowQuality=`도 허용) 쿼리 파라미터로 품질 선택
     - `low`에서는 원격 플레이어 LOS 가시성 판정 비활성화(항상 표시)
     - FOW 품질에 맞춰 렌더 프로파일(AA/pixel ratio/shadow/tone mapping)을 함께 적용
+    - HUD에 `DPR/FOW/VER` 표시를 추가해 실제 반영 버전/모드를 현장 확인 가능하게 개선
     - 마지막 선택값을 localStorage(`wildpaw.fowQuality`)에 저장해 재접속 시 유지
   - `src/render/renderer.ts`, `src/render/lights.ts`
     - `low` 렌더 경로에서 저전력 프로파일 적용(AA off, DPR 0.75 상한 허용, shadow off, light 수 축소)

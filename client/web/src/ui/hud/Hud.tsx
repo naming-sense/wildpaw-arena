@@ -15,6 +15,9 @@ export function Hud(): JSX.Element {
     packetLossPct,
     reconnectState,
     drawCalls,
+    renderDpr,
+    fowMode,
+    buildTag,
   } = useUiStore();
 
   return (
@@ -32,6 +35,9 @@ export function Hud(): JSX.Element {
           <p>PING: {pingMs.toFixed(1)} ms</p>
           <p>LOSS: {packetLossPct.toFixed(1)}%</p>
           <p>DRAW: {drawCalls}</p>
+          <p>DPR: {renderDpr.toFixed(2)}</p>
+          <p>FOW: {fowMode}</p>
+          <p>VER: {buildTag}</p>
           <p>NET: {reconnectState}</p>
         </div>
       </div>

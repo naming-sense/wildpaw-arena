@@ -228,6 +228,18 @@ function resolveRenderProfile(
   };
 }
 
+function resolveBuildTag(): string {
+  if (typeof window === "undefined") {
+    return "-";
+  }
+
+  try {
+    return new URLSearchParams(window.location.search).get("v") ?? "-";
+  } catch {
+    return "-";
+  }
+}
+
 function pickHeroDef(heroId: string): HeroDef {
   return HERO_DEF_BY_ID.get(heroId) ?? HERO_DEF_BY_ID.get(DEFAULT_HERO_ID) ?? HERO_DEFS[0]!;
 }
@@ -380,6 +392,8 @@ export class GameApp {
       fogOfWarQuality,
       this.config.render.shadowMapSize,
     );
+    const buildTag = resolveBuildTag();
+    const fowModeLabel = `${fogOfWarQuality}/${renderProfile.quality}`;
 
     this.renderer = new GameRenderer(canvas, {
       shadowMapSize: renderProfile.shadowMapSize,
@@ -457,6 +471,9 @@ export class GameApp {
       ammo: localWeapon.ammo,
       maxAmmo: localWeapon.ammo,
       reloading: false,
+      renderDpr: this.renderer.renderer.getPixelRatio(),
+      fowMode: fowModeLabel,
+      buildTag,
     });
 
     this.loadHeroModel(this.localPlayerEntityId).catch((error) => {
@@ -520,6 +537,7 @@ export class GameApp {
         frameMs: this.perf.frameMs,
         drawCalls: this.renderer.drawCalls,
         packetLossPct: this.netMetrics.packetLossPct,
+        renderDpr: this.renderer.renderer.getPixelRatio(),
       });
 
       this.fixedStep.advance(frameMs, (dtMs) => this.simulationTick(nowMs, dtMs));

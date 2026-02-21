@@ -51,13 +51,10 @@ interface CpuFogState {
 
 interface ConeFogState {
   fillMesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
-  fillPositions: Float32Array;
-  fillPositionAttribute: THREE.BufferAttribute;
   fillEnabled: boolean;
   edgeLine: THREE.LineLoop<THREE.BufferGeometry, THREE.LineBasicMaterial>;
-  edgePositions: Float32Array;
-  edgePositionAttribute: THREE.BufferAttribute;
   segmentCount: number;
+  halfFovRad: number;
 }
 
 const LOS_PADDING = 0.02;
@@ -122,6 +119,63 @@ function isLosObstacle(collider: LevelStaticCollider): boolean {
 
 function profileForQuality(quality: FogOfWarQuality): FogOfWarQualityProfile {
   return QUALITY_PROFILES[quality] ?? QUALITY_PROFILES.medium;
+}
+
+function createConeFillGeometry(
+  segmentCount: number,
+  halfFovRad: number,
+  y: number,
+): THREE.BufferGeometry {
+  const positions = new Float32Array((segmentCount + 2) * 3);
+  positions[0] = 0;
+  positions[1] = y;
+  positions[2] = 0;
+
+  for (let i = 0; i <= segmentCount; i += 1) {
+    const t = i / segmentCount;
+    const angle = -halfFovRad + halfFovRad * 2 * t;
+    const offset = (i + 1) * 3;
+    positions[offset] = Math.sin(angle);
+    positions[offset + 1] = y;
+    positions[offset + 2] = Math.cos(angle);
+  }
+
+  const indices = new Uint16Array(segmentCount * 3);
+  for (let i = 0; i < segmentCount; i += 1) {
+    const offset = i * 3;
+    indices[offset] = 0;
+    indices[offset + 1] = i + 1;
+    indices[offset + 2] = i + 2;
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+  return geometry;
+}
+
+function createConeEdgeGeometry(
+  segmentCount: number,
+  halfFovRad: number,
+  y: number,
+): THREE.BufferGeometry {
+  const positions = new Float32Array((segmentCount + 2) * 3);
+  positions[0] = 0;
+  positions[1] = y;
+  positions[2] = 0;
+
+  for (let i = 0; i <= segmentCount; i += 1) {
+    const t = i / segmentCount;
+    const angle = -halfFovRad + halfFovRad * 2 * t;
+    const offset = (i + 1) * 3;
+    positions[offset] = Math.sin(angle);
+    positions[offset + 1] = y;
+    positions[offset + 2] = Math.cos(angle);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  return geometry;
 }
 
 export class FogOfWarOverlay {
@@ -221,44 +275,21 @@ export class FogOfWarOverlay {
       return;
     }
 
-    const y = 0.08;
-    const segmentCount = cone.segmentCount;
-    const start = yaw - halfFovRad;
-    const span = halfFovRad * 2;
-
-    if (cone.fillEnabled) {
-      cone.fillPositions[0] = originX;
-      cone.fillPositions[1] = y;
-      cone.fillPositions[2] = originZ;
+    if (Math.abs(halfFovRad - cone.halfFovRad) > 1e-4) {
+      cone.fillMesh.geometry.dispose();
+      cone.edgeLine.geometry.dispose();
+      cone.fillMesh.geometry = createConeFillGeometry(cone.segmentCount, halfFovRad, 0.08);
+      cone.edgeLine.geometry = createConeEdgeGeometry(cone.segmentCount, halfFovRad, 0.082);
+      cone.halfFovRad = halfFovRad;
     }
 
-    cone.edgePositions[0] = originX;
-    cone.edgePositions[1] = y + 0.002;
-    cone.edgePositions[2] = originZ;
+    cone.fillMesh.position.set(originX, 0, originZ);
+    cone.fillMesh.rotation.y = yaw;
+    cone.fillMesh.scale.set(rangeMeters, 1, rangeMeters);
 
-    for (let i = 0; i <= segmentCount; i += 1) {
-      const t = i / segmentCount;
-      const angle = start + span * t;
-      const x = originX + Math.sin(angle) * rangeMeters;
-      const z = originZ + Math.cos(angle) * rangeMeters;
-
-      if (cone.fillEnabled) {
-        const fillOffset = (i + 1) * 3;
-        cone.fillPositions[fillOffset] = x;
-        cone.fillPositions[fillOffset + 1] = y;
-        cone.fillPositions[fillOffset + 2] = z;
-      }
-
-      const edgeOffset = (i + 1) * 3;
-      cone.edgePositions[edgeOffset] = x;
-      cone.edgePositions[edgeOffset + 1] = y + 0.002;
-      cone.edgePositions[edgeOffset + 2] = z;
-    }
-
-    if (cone.fillEnabled) {
-      cone.fillPositionAttribute.needsUpdate = true;
-    }
-    cone.edgePositionAttribute.needsUpdate = true;
+    cone.edgeLine.position.set(originX, 0, originZ);
+    cone.edgeLine.rotation.y = yaw;
+    cone.edgeLine.scale.set(rangeMeters, 1, rangeMeters);
   }
 
   private updateCpuVision(
@@ -441,24 +472,10 @@ export class FogOfWarOverlay {
 
   private createConeState(): ConeFogState {
     const segmentCount = Math.max(8, this.profile.coneSegments);
-
-    const fillPositions = new Float32Array((segmentCount + 2) * 3);
-    const fillPositionAttribute = new THREE.BufferAttribute(fillPositions, 3);
-    fillPositionAttribute.setUsage(THREE.DynamicDrawUsage);
-
-    const fillIndices = new Uint16Array(segmentCount * 3);
-    for (let i = 0; i < segmentCount; i += 1) {
-      const offset = i * 3;
-      fillIndices[offset] = 0;
-      fillIndices[offset + 1] = i + 1;
-      fillIndices[offset + 2] = i + 2;
-    }
-
-    const fillGeometry = new THREE.BufferGeometry();
-    fillGeometry.setAttribute("position", fillPositionAttribute);
-    fillGeometry.setIndex(new THREE.BufferAttribute(fillIndices, 1));
+    const halfFovRad = (55 * Math.PI) / 180;
 
     const fillEnabled = this.profile.coneFillOpacity > 0.001;
+    const fillGeometry = createConeFillGeometry(segmentCount, halfFovRad, 0.08);
 
     const fillMaterial = new THREE.MeshBasicMaterial({
       color: 0x0f1d2b,
@@ -473,13 +490,7 @@ export class FogOfWarOverlay {
     fillMesh.renderOrder = 20;
     fillMesh.frustumCulled = false;
 
-    const edgePositions = new Float32Array((segmentCount + 2) * 3);
-    const edgePositionAttribute = new THREE.BufferAttribute(edgePositions, 3);
-    edgePositionAttribute.setUsage(THREE.DynamicDrawUsage);
-
-    const edgeGeometry = new THREE.BufferGeometry();
-    edgeGeometry.setAttribute("position", edgePositionAttribute);
-
+    const edgeGeometry = createConeEdgeGeometry(segmentCount, halfFovRad, 0.082);
     const edgeTransparent = this.profile.coneEdgeOpacity < 0.999;
     const edgeMaterial = new THREE.LineBasicMaterial({
       color: 0x7fc4ff,
@@ -495,13 +506,10 @@ export class FogOfWarOverlay {
 
     return {
       fillMesh,
-      fillPositions,
-      fillPositionAttribute,
       fillEnabled,
       edgeLine,
-      edgePositions,
-      edgePositionAttribute,
       segmentCount,
+      halfFovRad,
     };
   }
 
