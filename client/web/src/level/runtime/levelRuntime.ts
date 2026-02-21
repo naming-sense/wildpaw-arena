@@ -25,10 +25,15 @@ export interface LevelRuntimeWorldBounds {
 interface LosObstacleVisual {
   root: THREE.Object3D;
   colliders: readonly LevelStaticCollider[];
+  ownColliderIds: ReadonlySet<string>;
   samplePoints: ReadonlyArray<{ x: number; z: number }>;
+  lastVisible: boolean | null;
 }
 
 const HIDDEN_OBSTACLE_OPACITY_FACTOR = 0.38;
+const OBSTACLE_VISIBILITY_UPDATE_INTERVAL_MS = 120;
+const OBSTACLE_VISIBILITY_MOVE_THRESHOLD = 0.22;
+const OBSTACLE_VISIBILITY_YAW_THRESHOLD_RAD = (4 * Math.PI) / 180;
 
 function isLosObstacle(collider: LevelStaticCollider): boolean {
   return (
@@ -231,6 +236,11 @@ export class LevelRuntime {
   private fogOfWarOverlay: FogOfWarOverlay | null = null;
   private readonly losObstacleVisuals: LosObstacleVisual[] = [];
 
+  private lastObstacleVisibilityUpdateMs = Number.NEGATIVE_INFINITY;
+  private lastObstacleOriginX = Number.NaN;
+  private lastObstacleOriginZ = Number.NaN;
+  private lastObstacleYaw = Number.NaN;
+
   constructor(scene: THREE.Scene, mapId?: string | null, debugVisible = false) {
     this.scene = scene;
     this.map = loadLevelMapDefinition(mapId);
@@ -265,7 +275,9 @@ export class LevelRuntime {
         this.losObstacleVisuals.push({
           root: built.root,
           colliders: losColliders,
+          ownColliderIds: new Set(losColliders.map((collider) => collider.id)),
           samplePoints: buildObstacleSamplePoints(losColliders),
+          lastVisible: null,
         });
       }
     }
@@ -331,7 +343,7 @@ export class LevelRuntime {
       nowMs,
     });
 
-    this.updateObstacleVisibility(originX, originZ, yaw, rangeMeters, halfFovRad);
+    this.updateObstacleVisibility(originX, originZ, yaw, rangeMeters, halfFovRad, nowMs);
   }
 
   private updateObstacleVisibility(
@@ -340,14 +352,43 @@ export class LevelRuntime {
     yaw: number,
     rangeMeters: number,
     halfFovRad: number,
+    nowMs: number,
   ): void {
+    const movedDistanceSq =
+      (originX - this.lastObstacleOriginX) * (originX - this.lastObstacleOriginX) +
+      (originZ - this.lastObstacleOriginZ) * (originZ - this.lastObstacleOriginZ);
+
+    const yawDelta = Number.isFinite(this.lastObstacleYaw)
+      ? Math.abs(
+        Math.atan2(
+          Math.sin(yaw - this.lastObstacleYaw),
+          Math.cos(yaw - this.lastObstacleYaw),
+        ),
+      )
+      : Number.POSITIVE_INFINITY;
+
+    const shouldSkipByTime =
+      nowMs - this.lastObstacleVisibilityUpdateMs < OBSTACLE_VISIBILITY_UPDATE_INTERVAL_MS;
+    const shouldSkipByMove =
+      movedDistanceSq <
+      OBSTACLE_VISIBILITY_MOVE_THRESHOLD * OBSTACLE_VISIBILITY_MOVE_THRESHOLD;
+    const shouldSkipByYaw = yawDelta < OBSTACLE_VISIBILITY_YAW_THRESHOLD_RAD;
+
+    if (shouldSkipByTime && shouldSkipByMove && shouldSkipByYaw) {
+      return;
+    }
+
+    this.lastObstacleVisibilityUpdateMs = nowMs;
+    this.lastObstacleOriginX = originX;
+    this.lastObstacleOriginZ = originZ;
+    this.lastObstacleYaw = yaw;
+
     const forwardX = Math.sin(yaw);
     const forwardZ = Math.cos(yaw);
     const cosHalfFov = Math.cos(halfFovRad);
     const rangeSq = rangeMeters * rangeMeters;
 
     for (const visual of this.losObstacleVisuals) {
-      const ownIds = new Set(visual.colliders.map((collider) => collider.id));
       let hasVisibleSample = false;
 
       for (const point of visual.samplePoints) {
@@ -368,7 +409,7 @@ export class LevelRuntime {
 
         let blocked = false;
         for (const collider of this.colliders) {
-          if (!isLosObstacle(collider) || ownIds.has(collider.id)) {
+          if (!isLosObstacle(collider) || visual.ownColliderIds.has(collider.id)) {
             continue;
           }
 
@@ -393,6 +434,11 @@ export class LevelRuntime {
         }
       }
 
+      if (visual.lastVisible === hasVisibleSample) {
+        continue;
+      }
+
+      visual.lastVisible = hasVisibleSample;
       applyOpacityToObject(
         visual.root,
         hasVisibleSample ? 1 : HIDDEN_OBSTACLE_OPACITY_FACTOR,

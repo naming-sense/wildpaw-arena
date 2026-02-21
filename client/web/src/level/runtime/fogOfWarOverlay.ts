@@ -17,10 +17,10 @@ export interface FogOfWarVisionParams {
   nowMs: number;
 }
 
-const DEFAULT_RESOLUTION = 256;
-const UPDATE_INTERVAL_MS = 90;
-const MOVE_UPDATE_THRESHOLD = 0.12;
-const YAW_UPDATE_THRESHOLD_RAD = (2.5 * Math.PI) / 180;
+const DEFAULT_RESOLUTION = 192;
+const UPDATE_INTERVAL_MS = 120;
+const MOVE_UPDATE_THRESHOLD = 0.2;
+const YAW_UPDATE_THRESHOLD_RAD = (4 * Math.PI) / 180;
 const LOS_PADDING = 0.02;
 const EDGE_BLUR_ENABLED = true;
 const DARK_ALPHA = 0.72;
