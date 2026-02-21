@@ -279,7 +279,6 @@ export class LevelRuntime {
   private payloadView: PayloadView | null = null;
   private fogOfWarOverlay: FogOfWarOverlay | null = null;
   private readonly losObstacleVisuals: LosObstacleVisual[] = [];
-  private readonly fogOfWarEnabled: boolean;
   private readonly obstacleVisibilityProfile: ObstacleVisibilityProfile;
 
   private lastObstacleVisibilityUpdateMs = Number.NEGATIVE_INFINITY;
@@ -293,7 +292,6 @@ export class LevelRuntime {
 
     const fogOfWarQuality: FogOfWarQuality = options.fogOfWarQuality ?? "low";
     const debugVisible = options.debugVisible ?? false;
-    this.fogOfWarEnabled = fogOfWarQuality !== "low";
     this.obstacleVisibilityProfile = obstacleVisibilityProfileForQuality(fogOfWarQuality);
 
     this.root.name = `level:${this.map.mapId}`;
@@ -365,14 +363,12 @@ export class LevelRuntime {
     };
 
     this.scene.add(this.root);
-    if (this.fogOfWarEnabled) {
-      this.fogOfWarOverlay = new FogOfWarOverlay(
-        this.scene,
-        this.worldBounds,
-        this.colliders,
-        fogOfWarQuality,
-      );
-    }
+    this.fogOfWarOverlay = new FogOfWarOverlay(
+      this.scene,
+      this.worldBounds,
+      this.colliders,
+      fogOfWarQuality,
+    );
   }
 
   setDebugVisible(visible: boolean): void {
@@ -395,16 +391,14 @@ export class LevelRuntime {
     halfFovRad: number,
     nowMs: number,
   ): void {
-    if (this.fogOfWarEnabled) {
-      this.fogOfWarOverlay?.updateVision({
-        originX,
-        originZ,
-        yaw,
-        rangeMeters,
-        halfFovRad,
-        nowMs,
-      });
-    }
+    this.fogOfWarOverlay?.updateVision({
+      originX,
+      originZ,
+      yaw,
+      rangeMeters,
+      halfFovRad,
+      nowMs,
+    });
 
     if (this.obstacleVisibilityProfile.enabled) {
       this.updateObstacleVisibility(originX, originZ, yaw, rangeMeters, halfFovRad, nowMs);

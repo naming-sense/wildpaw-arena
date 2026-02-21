@@ -175,7 +175,7 @@ function resolvePreferredFogOfWarQuality(explicit?: string): FogOfWarQuality {
   return "low";
 }
 
-function isLosFeatureEnabled(quality: FogOfWarQuality): boolean {
+function isLosVisibilityEnabled(quality: FogOfWarQuality): boolean {
   return quality !== "low";
 }
 
@@ -295,7 +295,7 @@ export class GameApp {
   private readonly localHeroDef: HeroDef;
   private readonly localHeroAsset: HeroAssetManifest;
   private readonly localHeroAssetPath: string;
-  private readonly losFeatureEnabled: boolean;
+  private readonly losVisibilityEnabled: boolean;
 
   private readonly remoteEntities = new Map<number, EntityId>();
   private readonly remoteVisibilityByPlayerId = new Map<number, boolean>();
@@ -335,7 +335,7 @@ export class GameApp {
 
     const resolvedMapId = resolvePreferredMapId(options.mapId);
     const fogOfWarQuality = resolvePreferredFogOfWarQuality(options.fowQuality);
-    this.losFeatureEnabled = isLosFeatureEnabled(fogOfWarQuality);
+    this.losVisibilityEnabled = isLosVisibilityEnabled(fogOfWarQuality);
     const levelDebugEnabled =
       typeof window !== "undefined" &&
       (new URLSearchParams(window.location.search).get("levelDebug") === "1" ||
@@ -478,7 +478,7 @@ export class GameApp {
       this.cameraRig.update(frameMs);
 
       const localTransformForLos = this.world.transforms.get(this.localPlayerEntityId);
-      if (this.losFeatureEnabled && localTransformForLos) {
+      if (localTransformForLos) {
         this.levelRuntime.updateFogOfWar(
           localTransformForLos.x,
           localTransformForLos.z,
@@ -924,7 +924,7 @@ export class GameApp {
   }
 
   private isRemoteVisibleToLocal(player: NetworkPlayerState): boolean {
-    if (!this.losFeatureEnabled) {
+    if (!this.losVisibilityEnabled) {
       return true;
     }
 

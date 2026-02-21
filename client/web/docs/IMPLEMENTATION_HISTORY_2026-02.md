@@ -287,7 +287,8 @@ npm run test
   - `src/level/runtime/levelRuntime.ts`
     - 장애물 가시성 판정도 품질별 프로파일 적용
     - `low`에서는 장애물 반투명 처리(가시성 페이드) 비활성화
-    - `low`에서는 FOW/LOS 오버레이 자체를 생성하지 않음
+  - `src/level/runtime/fogOfWarOverlay.ts`
+    - `low`에서는 LOS 차폐(raycast) 연산을 끄고 단순 부채꼴 오버레이만 유지
   - `src/app/gameApp.ts`
     - `?fow=low|medium|high` (`?fowQuality=`도 허용) 쿼리 파라미터로 품질 선택
     - `low`에서는 원격 플레이어 LOS 가시성 판정 비활성화(항상 표시)

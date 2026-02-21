@@ -25,6 +25,7 @@ interface FogOfWarQualityProfile {
   moveUpdateThreshold: number;
   yawUpdateThresholdRad: number;
   edgeBlurEnabled: boolean;
+  occlusionEnabled: boolean;
   darkAlpha: number;
   visibleCenterAlpha: number;
   visibleEdgeAlpha: number;
@@ -39,6 +40,7 @@ const QUALITY_PROFILES: Record<FogOfWarQuality, FogOfWarQualityProfile> = {
     moveUpdateThreshold: 0.3,
     yawUpdateThresholdRad: (6 * Math.PI) / 180,
     edgeBlurEnabled: false,
+    occlusionEnabled: false,
     darkAlpha: 0.7,
     visibleCenterAlpha: 0.05,
     visibleEdgeAlpha: 0.24,
@@ -49,6 +51,7 @@ const QUALITY_PROFILES: Record<FogOfWarQuality, FogOfWarQualityProfile> = {
     moveUpdateThreshold: 0.2,
     yawUpdateThresholdRad: (4 * Math.PI) / 180,
     edgeBlurEnabled: true,
+    occlusionEnabled: true,
     darkAlpha: 0.72,
     visibleCenterAlpha: 0.05,
     visibleEdgeAlpha: 0.24,
@@ -59,6 +62,7 @@ const QUALITY_PROFILES: Record<FogOfWarQuality, FogOfWarQualityProfile> = {
     moveUpdateThreshold: 0.12,
     yawUpdateThresholdRad: (2.5 * Math.PI) / 180,
     edgeBlurEnabled: true,
+    occlusionEnabled: true,
     darkAlpha: 0.74,
     visibleCenterAlpha: 0.05,
     visibleEdgeAlpha: 0.24,
@@ -102,7 +106,7 @@ export class FogOfWarOverlay {
     this.bounds = bounds;
     this.profile = profileForQuality(quality);
     this.resolution = this.profile.resolution;
-    this.losColliders = colliders.filter(isLosObstacle);
+    this.losColliders = this.profile.occlusionEnabled ? colliders.filter(isLosObstacle) : [];
 
     this.canvas = document.createElement("canvas");
     this.canvas.width = this.resolution;
@@ -220,19 +224,21 @@ export class FogOfWarOverlay {
         if (forwardDot >= cosHalfFov) {
           let blocked = false;
 
-          for (const collider of this.losColliders) {
-            if (
-              segmentIntersectsCollider2D(
-                originX,
-                originZ,
-                worldX,
-                worldZ,
-                collider,
-                LOS_PADDING,
-              )
-            ) {
-              blocked = true;
-              break;
+          if (this.profile.occlusionEnabled) {
+            for (const collider of this.losColliders) {
+              if (
+                segmentIntersectsCollider2D(
+                  originX,
+                  originZ,
+                  worldX,
+                  worldZ,
+                  collider,
+                  LOS_PADDING,
+                )
+              ) {
+                blocked = true;
+                break;
+              }
             }
           }
 
