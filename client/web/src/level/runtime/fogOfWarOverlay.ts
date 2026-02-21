@@ -20,7 +20,7 @@ export interface FogOfWarVisionParams {
 }
 
 interface FogOfWarQualityProfile {
-  backend: "cpu" | "gpu";
+  backend: "cpu" | "stencil";
   resolution: number;
   updateIntervalMs: number;
   moveUpdateThreshold: number;
@@ -32,12 +32,14 @@ interface FogOfWarQualityProfile {
   darkAlpha: number;
   visibleCenterAlpha: number;
   visibleEdgeAlpha: number;
+  stencilArcSegments: number;
 }
 
 interface CpuFogState {
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
   texture: THREE.CanvasTexture;
+  mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
   imageData: ImageData;
   worldXByPixel: Float32Array;
   worldZByPixel: Float32Array;
@@ -45,30 +47,24 @@ interface CpuFogState {
   alphaBlurScratch: Uint8ClampedArray;
 }
 
-interface GpuFogState {
-  material: THREE.ShaderMaterial;
-  uniforms: {
-    uOrigin: { value: THREE.Vector2 };
-    uForward: { value: THREE.Vector2 };
-    uRange: { value: number };
-    uRangeInner: { value: number };
-    uCosInner: { value: number };
-    uCosOuter: { value: number };
-    uDarkAlpha: { value: number };
-    uVisibleCenterAlpha: { value: number };
-    uVisibleEdgeAlpha: { value: number };
-  };
+interface StencilFogState {
+  darkMesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+  maskMesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
+  maskGeometry: THREE.BufferGeometry;
+  maskPositions: Float32Array;
+  maskPositionAttribute: THREE.BufferAttribute;
+  segmentCount: number;
 }
 
 const LOS_PADDING = 0.02;
 
 const QUALITY_PROFILES: Record<FogOfWarQuality, FogOfWarQualityProfile> = {
   low: {
-    backend: "gpu",
+    backend: "stencil",
     resolution: 128,
-    updateIntervalMs: 180,
-    moveUpdateThreshold: 0.28,
-    yawUpdateThresholdRad: (6 * Math.PI) / 180,
+    updateIntervalMs: 100,
+    moveUpdateThreshold: 0.12,
+    yawUpdateThresholdRad: (2.5 * Math.PI) / 180,
     edgeBlurEnabled: false,
     occlusionEnabled: false,
     fovFeatherRad: (8 * Math.PI) / 180,
@@ -76,6 +72,7 @@ const QUALITY_PROFILES: Record<FogOfWarQuality, FogOfWarQualityProfile> = {
     darkAlpha: 0.64,
     visibleCenterAlpha: 0.05,
     visibleEdgeAlpha: 0.21,
+    stencilArcSegments: 42,
   },
   medium: {
     backend: "cpu",
@@ -90,6 +87,7 @@ const QUALITY_PROFILES: Record<FogOfWarQuality, FogOfWarQualityProfile> = {
     darkAlpha: 0.72,
     visibleCenterAlpha: 0.05,
     visibleEdgeAlpha: 0.24,
+    stencilArcSegments: 42,
   },
   high: {
     backend: "cpu",
@@ -104,6 +102,7 @@ const QUALITY_PROFILES: Record<FogOfWarQuality, FogOfWarQualityProfile> = {
     darkAlpha: 0.74,
     visibleCenterAlpha: 0.05,
     visibleEdgeAlpha: 0.24,
+    stencilArcSegments: 48,
   },
 };
 
@@ -116,13 +115,13 @@ function profileForQuality(quality: FogOfWarQuality): FogOfWarQualityProfile {
 }
 
 export class FogOfWarOverlay {
-  private readonly mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.Material>;
+  private readonly root = new THREE.Group();
   private readonly resolution: number;
   private readonly losColliders: readonly LevelStaticCollider[];
   private readonly bounds: FogOfWarBounds;
   private readonly profile: FogOfWarQualityProfile;
   private readonly cpuState: CpuFogState | null;
-  private readonly gpuState: GpuFogState | null;
+  private readonly stencilState: StencilFogState | null;
 
   private lastUpdateMs = Number.NEGATIVE_INFINITY;
   private lastOriginX = Number.NaN;
@@ -140,41 +139,18 @@ export class FogOfWarOverlay {
     this.resolution = this.profile.resolution;
     this.losColliders = this.profile.occlusionEnabled ? colliders.filter(isLosObstacle) : [];
 
-    const width = Math.max(1, this.bounds.maxX - this.bounds.minX);
-    const depth = Math.max(1, this.bounds.maxZ - this.bounds.minZ);
-
-    let material: THREE.Material;
-    if (this.profile.backend === "gpu") {
-      const gpuState = this.createGpuState();
-      this.gpuState = gpuState;
+    if (this.profile.backend === "stencil") {
+      this.stencilState = this.createStencilState();
       this.cpuState = null;
-      material = gpuState.material;
+      this.root.add(this.stencilState.maskMesh, this.stencilState.darkMesh);
     } else {
-      const cpuState = this.createCpuState();
-      this.cpuState = cpuState;
-      this.gpuState = null;
-      material = new THREE.MeshBasicMaterial({
-        map: cpuState.texture,
-        transparent: true,
-        depthWrite: false,
-        depthTest: true,
-      });
+      this.cpuState = this.createCpuState();
+      this.stencilState = null;
+      this.root.add(this.cpuState.mesh);
     }
 
-    this.mesh = new THREE.Mesh<THREE.PlaneGeometry, THREE.Material>(
-      new THREE.PlaneGeometry(width, depth),
-      material,
-    );
-
-    this.mesh.rotation.x = -Math.PI / 2;
-    this.mesh.position.set(
-      (this.bounds.minX + this.bounds.maxX) * 0.5,
-      0.06,
-      (this.bounds.minZ + this.bounds.maxZ) * 0.5,
-    );
-    this.mesh.renderOrder = 20;
-
-    scene.add(this.mesh);
+    this.root.name = "fow-overlay";
+    scene.add(this.root);
   }
 
   updateVision(params: FogOfWarVisionParams): void {
@@ -213,8 +189,8 @@ export class FogOfWarOverlay {
     this.lastOriginZ = originZ;
     this.lastYaw = yaw;
 
-    if (this.gpuState) {
-      this.updateGpuVision(originX, originZ, yaw, rangeMeters, halfFovRad);
+    if (this.stencilState) {
+      this.updateStencilVision(originX, originZ, yaw, rangeMeters, halfFovRad);
       return;
     }
 
@@ -223,29 +199,38 @@ export class FogOfWarOverlay {
     }
   }
 
-  private updateGpuVision(
+  private updateStencilVision(
     originX: number,
     originZ: number,
     yaw: number,
     rangeMeters: number,
     halfFovRad: number,
   ): void {
-    const gpu = this.gpuState;
-    if (!gpu) {
+    const state = this.stencilState;
+    if (!state) {
       return;
     }
 
-    const rangeFeatherMeters = Math.max(0, rangeMeters * this.profile.rangeFeatherRatio);
-    const rangeInner = Math.max(0.001, rangeMeters - rangeFeatherMeters);
-    const fovInner = Math.max(0.001, halfFovRad - this.profile.fovFeatherRad);
-    const fovOuter = Math.min(Math.PI - 0.001, halfFovRad + this.profile.fovFeatherRad);
+    const y = 0.061;
+    const positions = state.maskPositions;
+    positions[0] = originX;
+    positions[1] = y;
+    positions[2] = originZ;
 
-    gpu.uniforms.uOrigin.value.set(originX, originZ);
-    gpu.uniforms.uForward.value.set(Math.sin(yaw), Math.cos(yaw));
-    gpu.uniforms.uRange.value = rangeMeters;
-    gpu.uniforms.uRangeInner.value = rangeInner;
-    gpu.uniforms.uCosInner.value = Math.cos(fovInner);
-    gpu.uniforms.uCosOuter.value = Math.cos(fovOuter);
+    const segmentCount = state.segmentCount;
+    const start = yaw - halfFovRad;
+    const span = halfFovRad * 2;
+
+    for (let i = 0; i <= segmentCount; i += 1) {
+      const t = i / segmentCount;
+      const angle = start + span * t;
+      const offset = (i + 1) * 3;
+      positions[offset] = originX + Math.sin(angle) * rangeMeters;
+      positions[offset + 1] = y;
+      positions[offset + 2] = originZ + Math.cos(angle) * rangeMeters;
+    }
+
+    state.maskPositionAttribute.needsUpdate = true;
   }
 
   private updateCpuVision(
@@ -392,10 +377,32 @@ export class FogOfWarOverlay {
     texture.generateMipmaps = false;
     texture.needsUpdate = true;
 
+    const width = Math.max(1, this.bounds.maxX - this.bounds.minX);
+    const depth = Math.max(1, this.bounds.maxZ - this.bounds.minZ);
+
+    const mesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(width, depth),
+      new THREE.MeshBasicMaterial({
+        map: texture,
+        transparent: true,
+        depthWrite: false,
+        depthTest: true,
+      }),
+    );
+
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.set(
+      (this.bounds.minX + this.bounds.maxX) * 0.5,
+      0.06,
+      (this.bounds.minZ + this.bounds.maxZ) * 0.5,
+    );
+    mesh.renderOrder = 20;
+
     return {
       canvas,
       ctx,
       texture,
+      mesh,
       imageData,
       worldXByPixel,
       worldZByPixel,
@@ -404,75 +411,73 @@ export class FogOfWarOverlay {
     };
   }
 
-  private createGpuState(): GpuFogState {
-    const uniforms: GpuFogState["uniforms"] = {
-      uOrigin: { value: new THREE.Vector2(0, 0) },
-      uForward: { value: new THREE.Vector2(0, 1) },
-      uRange: { value: 1 },
-      uRangeInner: { value: 0.9 },
-      uCosInner: { value: Math.cos((45 * Math.PI) / 180) },
-      uCosOuter: { value: Math.cos((55 * Math.PI) / 180) },
-      uDarkAlpha: { value: this.profile.darkAlpha },
-      uVisibleCenterAlpha: { value: this.profile.visibleCenterAlpha },
-      uVisibleEdgeAlpha: { value: this.profile.visibleEdgeAlpha },
-    };
+  private createStencilState(): StencilFogState {
+    const width = Math.max(1, this.bounds.maxX - this.bounds.minX);
+    const depth = Math.max(1, this.bounds.maxZ - this.bounds.minZ);
 
-    const material = new THREE.ShaderMaterial({
-      uniforms,
+    const darkMaterial = new THREE.MeshBasicMaterial({
+      color: 0x000000,
       transparent: true,
+      opacity: this.profile.darkAlpha,
       depthWrite: false,
-      depthTest: true,
-      vertexShader: `
-        varying vec2 vWorldXZ;
-
-        void main() {
-          vec4 worldPos = modelMatrix * vec4(position, 1.0);
-          vWorldXZ = worldPos.xz;
-          gl_Position = projectionMatrix * viewMatrix * worldPos;
-        }
-      `,
-      fragmentShader: `
-        precision highp float;
-
-        varying vec2 vWorldXZ;
-
-        uniform vec2 uOrigin;
-        uniform vec2 uForward;
-        uniform float uRange;
-        uniform float uRangeInner;
-        uniform float uCosInner;
-        uniform float uCosOuter;
-        uniform float uDarkAlpha;
-        uniform float uVisibleCenterAlpha;
-        uniform float uVisibleEdgeAlpha;
-
-        void main() {
-          vec2 toPixel = vWorldXZ - uOrigin;
-          float dist = length(toPixel);
-
-          float alpha = uDarkAlpha;
-
-          if (dist <= uRange) {
-            vec2 dir = dist > 1e-5 ? (toPixel / dist) : uForward;
-            float forwardDot = dot(dir, uForward);
-
-            float angularWeight = smoothstep(uCosOuter, uCosInner, forwardDot);
-            float radialWeight = 1.0 - smoothstep(uRangeInner, uRange, dist);
-            float visibilityWeight = clamp(angularWeight * radialWeight, 0.0, 1.0);
-
-            float edgeT = clamp(dist / max(0.001, uRange), 0.0, 1.0);
-            float visibleAlpha = mix(uVisibleCenterAlpha, uVisibleEdgeAlpha, edgeT);
-            alpha = mix(uDarkAlpha, visibleAlpha, visibilityWeight);
-          }
-
-          gl_FragColor = vec4(0.0, 0.0, 0.0, alpha);
-        }
-      `,
+      depthTest: false,
     });
+    darkMaterial.stencilWrite = true;
+    darkMaterial.stencilRef = 1;
+    darkMaterial.stencilFunc = THREE.NotEqualStencilFunc;
+    darkMaterial.stencilFail = THREE.KeepStencilOp;
+    darkMaterial.stencilZFail = THREE.KeepStencilOp;
+    darkMaterial.stencilZPass = THREE.KeepStencilOp;
+
+    const darkMesh = new THREE.Mesh(new THREE.PlaneGeometry(width, depth), darkMaterial);
+    darkMesh.rotation.x = -Math.PI / 2;
+    darkMesh.position.set(
+      (this.bounds.minX + this.bounds.maxX) * 0.5,
+      0.06,
+      (this.bounds.minZ + this.bounds.maxZ) * 0.5,
+    );
+    darkMesh.renderOrder = 20;
+
+    const segmentCount = Math.max(8, this.profile.stencilArcSegments);
+    const maskPositions = new Float32Array((segmentCount + 2) * 3);
+    const maskPositionAttribute = new THREE.BufferAttribute(maskPositions, 3);
+
+    const indices = new Uint16Array(segmentCount * 3);
+    for (let i = 0; i < segmentCount; i += 1) {
+      const offset = i * 3;
+      indices[offset] = 0;
+      indices[offset + 1] = i + 1;
+      indices[offset + 2] = i + 2;
+    }
+
+    const maskGeometry = new THREE.BufferGeometry();
+    maskGeometry.setAttribute("position", maskPositionAttribute);
+    maskGeometry.setIndex(new THREE.BufferAttribute(indices, 1));
+
+    const maskMaterial = new THREE.MeshBasicMaterial({
+      color: 0x000000,
+      depthWrite: false,
+      depthTest: false,
+    });
+    maskMaterial.colorWrite = false;
+    maskMaterial.stencilWrite = true;
+    maskMaterial.stencilRef = 1;
+    maskMaterial.stencilFunc = THREE.AlwaysStencilFunc;
+    maskMaterial.stencilFail = THREE.KeepStencilOp;
+    maskMaterial.stencilZFail = THREE.KeepStencilOp;
+    maskMaterial.stencilZPass = THREE.ReplaceStencilOp;
+
+    const maskMesh = new THREE.Mesh(maskGeometry, maskMaterial);
+    maskMesh.renderOrder = 19;
+    maskMesh.frustumCulled = false;
 
     return {
-      material,
-      uniforms,
+      darkMesh,
+      maskMesh,
+      maskGeometry,
+      maskPositions,
+      maskPositionAttribute,
+      segmentCount,
     };
   }
 
@@ -520,19 +525,22 @@ export class FogOfWarOverlay {
   }
 
   dispose(scene: THREE.Scene): void {
-    scene.remove(this.mesh);
-    this.mesh.geometry.dispose();
+    scene.remove(this.root);
 
-    const material = this.mesh.material;
-    if (Array.isArray(material)) {
-      for (const item of material) {
-        item.dispose();
-      }
-    } else {
-      material.dispose();
+    if (this.cpuState) {
+      this.cpuState.mesh.geometry.dispose();
+      this.cpuState.mesh.material.dispose();
+      this.cpuState.texture.dispose();
     }
 
-    this.cpuState?.texture.dispose();
+    if (this.stencilState) {
+      this.stencilState.maskGeometry.dispose();
+      this.stencilState.maskMesh.material.dispose();
+      this.stencilState.darkMesh.geometry.dispose();
+      this.stencilState.darkMesh.material.dispose();
+    }
+
+    this.root.clear();
   }
 
   private precomputeWorldCoords(worldXByPixel: Float32Array, worldZByPixel: Float32Array): void {

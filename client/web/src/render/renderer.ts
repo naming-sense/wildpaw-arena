@@ -23,9 +23,18 @@ export class GameRenderer {
     private readonly canvas: HTMLCanvasElement,
     options: GameRendererOptions,
   ) {
+    const antialias = options.antialias ?? true;
+    const contextAttributes: WebGLContextAttributes = {
+      antialias,
+      alpha: true,
+      depth: true,
+      stencil: true,
+      powerPreference: "high-performance",
+    };
+
     const context =
-      (canvas.getContext("webgl2") as WebGL2RenderingContext | null) ??
-      (canvas.getContext("webgl") as WebGLRenderingContext | null);
+      (canvas.getContext("webgl2", contextAttributes) as WebGL2RenderingContext | null) ??
+      (canvas.getContext("webgl", contextAttributes) as WebGLRenderingContext | null);
 
     if (!context) {
       throw new Error(WEBGL_UNSUPPORTED_ERROR);
@@ -37,7 +46,7 @@ export class GameRenderer {
     this.renderer = new THREE.WebGLRenderer({
       canvas,
       context,
-      antialias: options.antialias ?? true,
+      antialias,
     });
 
     this.renderer.setPixelRatio(this.resolvePixelRatio());
