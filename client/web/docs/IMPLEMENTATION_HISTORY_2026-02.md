@@ -284,7 +284,7 @@ npm run test
 - 적용 경로
   - `src/level/runtime/fogOfWarOverlay.ts`
     - 품질별 프로파일(해상도/갱신 임계치/경계 feather) 분리
-    - `low`를 CPU 픽셀 루프에서 **stencil mask + dithered dark plane(비블렌딩)** 경로로 전환(로직 자체 최적화)
+    - `low`를 CPU 픽셀 루프에서 **cone fill + edge line(지오메트리 기반)** 경로로 전환(로직 자체 최적화)
     - `medium/high`는 기존 CPU + LOS 차폐(raycast) 경로 유지
     - `low`에서는 LOS 차폐(raycast) 연산 비활성화
   - `src/level/runtime/levelRuntime.ts`
@@ -297,7 +297,7 @@ npm run test
     - 마지막 선택값을 localStorage(`wildpaw.fowQuality`)에 저장해 재접속 시 유지
   - `src/render/renderer.ts`, `src/render/lights.ts`
     - `low` 렌더 경로에서 저전력 프로파일 적용(AA off, DPR 0.75 상한 허용, shadow off, light 수 축소)
-    - FOW stencil 경로를 위해 WebGL context를 stencil enabled로 요청
+    - WebGL context `powerPreference=high-performance`, `stencil=false`로 불필요 버퍼 비용 축소
 - 부트 옵션 확장
   - `src/app/bootstrap.ts`에 `fowQuality` 옵션 추가
 - 검증

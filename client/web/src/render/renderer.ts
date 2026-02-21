@@ -28,7 +28,7 @@ export class GameRenderer {
       antialias,
       alpha: true,
       depth: true,
-      stencil: true,
+      stencil: false,
       powerPreference: "high-performance",
     };
 

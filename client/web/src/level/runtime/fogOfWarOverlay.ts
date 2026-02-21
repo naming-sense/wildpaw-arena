@@ -20,7 +20,7 @@ export interface FogOfWarVisionParams {
 }
 
 interface FogOfWarQualityProfile {
-  backend: "cpu" | "stencil";
+  backend: "cpu" | "cone";
   resolution: number;
   updateIntervalMs: number;
   moveUpdateThreshold: number;
@@ -32,7 +32,9 @@ interface FogOfWarQualityProfile {
   darkAlpha: number;
   visibleCenterAlpha: number;
   visibleEdgeAlpha: number;
-  stencilArcSegments: number;
+  coneSegments: number;
+  coneFillOpacity: number;
+  coneEdgeOpacity: number;
 }
 
 interface CpuFogState {
@@ -47,12 +49,13 @@ interface CpuFogState {
   alphaBlurScratch: Uint8ClampedArray;
 }
 
-interface StencilFogState {
-  darkMesh: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
-  maskMesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
-  maskGeometry: THREE.BufferGeometry;
-  maskPositions: Float32Array;
-  maskPositionAttribute: THREE.BufferAttribute;
+interface ConeFogState {
+  fillMesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
+  fillPositions: Float32Array;
+  fillPositionAttribute: THREE.BufferAttribute;
+  edgeLine: THREE.LineLoop<THREE.BufferGeometry, THREE.LineBasicMaterial>;
+  edgePositions: Float32Array;
+  edgePositionAttribute: THREE.BufferAttribute;
   segmentCount: number;
 }
 
@@ -60,19 +63,21 @@ const LOS_PADDING = 0.02;
 
 const QUALITY_PROFILES: Record<FogOfWarQuality, FogOfWarQualityProfile> = {
   low: {
-    backend: "stencil",
+    backend: "cone",
     resolution: 128,
-    updateIntervalMs: 100,
-    moveUpdateThreshold: 0.12,
-    yawUpdateThresholdRad: (2.5 * Math.PI) / 180,
+    updateIntervalMs: 90,
+    moveUpdateThreshold: 0.1,
+    yawUpdateThresholdRad: (2 * Math.PI) / 180,
     edgeBlurEnabled: false,
     occlusionEnabled: false,
-    fovFeatherRad: (8 * Math.PI) / 180,
-    rangeFeatherRatio: 0.18,
+    fovFeatherRad: (6 * Math.PI) / 180,
+    rangeFeatherRatio: 0.14,
     darkAlpha: 0.64,
     visibleCenterAlpha: 0.05,
     visibleEdgeAlpha: 0.21,
-    stencilArcSegments: 42,
+    coneSegments: 30,
+    coneFillOpacity: 0.16,
+    coneEdgeOpacity: 0.42,
   },
   medium: {
     backend: "cpu",
@@ -87,7 +92,9 @@ const QUALITY_PROFILES: Record<FogOfWarQuality, FogOfWarQualityProfile> = {
     darkAlpha: 0.72,
     visibleCenterAlpha: 0.05,
     visibleEdgeAlpha: 0.24,
-    stencilArcSegments: 42,
+    coneSegments: 34,
+    coneFillOpacity: 0.16,
+    coneEdgeOpacity: 0.42,
   },
   high: {
     backend: "cpu",
@@ -102,7 +109,9 @@ const QUALITY_PROFILES: Record<FogOfWarQuality, FogOfWarQualityProfile> = {
     darkAlpha: 0.74,
     visibleCenterAlpha: 0.05,
     visibleEdgeAlpha: 0.24,
-    stencilArcSegments: 48,
+    coneSegments: 40,
+    coneFillOpacity: 0.16,
+    coneEdgeOpacity: 0.42,
   },
 };
 
@@ -121,7 +130,7 @@ export class FogOfWarOverlay {
   private readonly bounds: FogOfWarBounds;
   private readonly profile: FogOfWarQualityProfile;
   private readonly cpuState: CpuFogState | null;
-  private readonly stencilState: StencilFogState | null;
+  private readonly coneState: ConeFogState | null;
 
   private lastUpdateMs = Number.NEGATIVE_INFINITY;
   private lastOriginX = Number.NaN;
@@ -139,13 +148,13 @@ export class FogOfWarOverlay {
     this.resolution = this.profile.resolution;
     this.losColliders = this.profile.occlusionEnabled ? colliders.filter(isLosObstacle) : [];
 
-    if (this.profile.backend === "stencil") {
-      this.stencilState = this.createStencilState();
+    if (this.profile.backend === "cone") {
+      this.coneState = this.createConeState();
       this.cpuState = null;
-      this.root.add(this.stencilState.maskMesh, this.stencilState.darkMesh);
+      this.root.add(this.coneState.fillMesh, this.coneState.edgeLine);
     } else {
       this.cpuState = this.createCpuState();
-      this.stencilState = null;
+      this.coneState = null;
       this.root.add(this.cpuState.mesh);
     }
 
@@ -189,8 +198,8 @@ export class FogOfWarOverlay {
     this.lastOriginZ = originZ;
     this.lastYaw = yaw;
 
-    if (this.stencilState) {
-      this.updateStencilVision(originX, originZ, yaw, rangeMeters, halfFovRad);
+    if (this.coneState) {
+      this.updateConeVision(originX, originZ, yaw, rangeMeters, halfFovRad);
       return;
     }
 
@@ -199,38 +208,50 @@ export class FogOfWarOverlay {
     }
   }
 
-  private updateStencilVision(
+  private updateConeVision(
     originX: number,
     originZ: number,
     yaw: number,
     rangeMeters: number,
     halfFovRad: number,
   ): void {
-    const state = this.stencilState;
-    if (!state) {
+    const cone = this.coneState;
+    if (!cone) {
       return;
     }
 
-    const y = 0.061;
-    const positions = state.maskPositions;
-    positions[0] = originX;
-    positions[1] = y;
-    positions[2] = originZ;
-
-    const segmentCount = state.segmentCount;
+    const y = 0.08;
+    const segmentCount = cone.segmentCount;
     const start = yaw - halfFovRad;
     const span = halfFovRad * 2;
+
+    cone.fillPositions[0] = originX;
+    cone.fillPositions[1] = y;
+    cone.fillPositions[2] = originZ;
+
+    cone.edgePositions[0] = originX;
+    cone.edgePositions[1] = y + 0.002;
+    cone.edgePositions[2] = originZ;
 
     for (let i = 0; i <= segmentCount; i += 1) {
       const t = i / segmentCount;
       const angle = start + span * t;
-      const offset = (i + 1) * 3;
-      positions[offset] = originX + Math.sin(angle) * rangeMeters;
-      positions[offset + 1] = y;
-      positions[offset + 2] = originZ + Math.cos(angle) * rangeMeters;
+      const x = originX + Math.sin(angle) * rangeMeters;
+      const z = originZ + Math.cos(angle) * rangeMeters;
+
+      const fillOffset = (i + 1) * 3;
+      cone.fillPositions[fillOffset] = x;
+      cone.fillPositions[fillOffset + 1] = y;
+      cone.fillPositions[fillOffset + 2] = z;
+
+      const edgeOffset = (i + 1) * 3;
+      cone.edgePositions[edgeOffset] = x;
+      cone.edgePositions[edgeOffset + 1] = y + 0.002;
+      cone.edgePositions[edgeOffset + 2] = z;
     }
 
-    state.maskPositionAttribute.needsUpdate = true;
+    cone.fillPositionAttribute.needsUpdate = true;
+    cone.edgePositionAttribute.needsUpdate = true;
   }
 
   private updateCpuVision(
@@ -411,97 +432,63 @@ export class FogOfWarOverlay {
     };
   }
 
-  private createStencilState(): StencilFogState {
-    const width = Math.max(1, this.bounds.maxX - this.bounds.minX);
-    const depth = Math.max(1, this.bounds.maxZ - this.bounds.minZ);
+  private createConeState(): ConeFogState {
+    const segmentCount = Math.max(8, this.profile.coneSegments);
 
-    const darkMaterial = new THREE.ShaderMaterial({
-      uniforms: {
-        uCoverage: { value: Math.max(0, Math.min(1, this.profile.darkAlpha)) },
-      },
-      vertexShader: `
-        void main() {
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-      `,
-      fragmentShader: `
-        precision highp float;
+    const fillPositions = new Float32Array((segmentCount + 2) * 3);
+    const fillPositionAttribute = new THREE.BufferAttribute(fillPositions, 3);
+    fillPositionAttribute.setUsage(THREE.DynamicDrawUsage);
 
-        uniform float uCoverage;
-
-        float hash12(vec2 p) {
-          vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-          p3 += dot(p3, p3.yzx + 33.33);
-          return fract((p3.x + p3.y) * p3.z);
-        }
-
-        void main() {
-          float n = hash12(floor(gl_FragCoord.xy));
-          if (n > uCoverage) {
-            discard;
-          }
-          gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
-        }
-      `,
-      transparent: false,
-      depthWrite: false,
-      depthTest: false,
-    });
-    darkMaterial.stencilWrite = true;
-    darkMaterial.stencilRef = 1;
-    darkMaterial.stencilFunc = THREE.NotEqualStencilFunc;
-    darkMaterial.stencilFail = THREE.KeepStencilOp;
-    darkMaterial.stencilZFail = THREE.KeepStencilOp;
-    darkMaterial.stencilZPass = THREE.KeepStencilOp;
-
-    const darkMesh = new THREE.Mesh(new THREE.PlaneGeometry(width, depth), darkMaterial);
-    darkMesh.rotation.x = -Math.PI / 2;
-    darkMesh.position.set(
-      (this.bounds.minX + this.bounds.maxX) * 0.5,
-      0.06,
-      (this.bounds.minZ + this.bounds.maxZ) * 0.5,
-    );
-    darkMesh.renderOrder = 20;
-
-    const segmentCount = Math.max(8, this.profile.stencilArcSegments);
-    const maskPositions = new Float32Array((segmentCount + 2) * 3);
-    const maskPositionAttribute = new THREE.BufferAttribute(maskPositions, 3);
-
-    const indices = new Uint16Array(segmentCount * 3);
+    const fillIndices = new Uint16Array(segmentCount * 3);
     for (let i = 0; i < segmentCount; i += 1) {
       const offset = i * 3;
-      indices[offset] = 0;
-      indices[offset + 1] = i + 1;
-      indices[offset + 2] = i + 2;
+      fillIndices[offset] = 0;
+      fillIndices[offset + 1] = i + 1;
+      fillIndices[offset + 2] = i + 2;
     }
 
-    const maskGeometry = new THREE.BufferGeometry();
-    maskGeometry.setAttribute("position", maskPositionAttribute);
-    maskGeometry.setIndex(new THREE.BufferAttribute(indices, 1));
+    const fillGeometry = new THREE.BufferGeometry();
+    fillGeometry.setAttribute("position", fillPositionAttribute);
+    fillGeometry.setIndex(new THREE.BufferAttribute(fillIndices, 1));
 
-    const maskMaterial = new THREE.MeshBasicMaterial({
-      color: 0x000000,
+    const fillMaterial = new THREE.MeshBasicMaterial({
+      color: 0x0f1d2b,
+      transparent: true,
+      opacity: this.profile.coneFillOpacity,
       depthWrite: false,
       depthTest: false,
     });
-    maskMaterial.colorWrite = false;
-    maskMaterial.stencilWrite = true;
-    maskMaterial.stencilRef = 1;
-    maskMaterial.stencilFunc = THREE.AlwaysStencilFunc;
-    maskMaterial.stencilFail = THREE.KeepStencilOp;
-    maskMaterial.stencilZFail = THREE.KeepStencilOp;
-    maskMaterial.stencilZPass = THREE.ReplaceStencilOp;
 
-    const maskMesh = new THREE.Mesh(maskGeometry, maskMaterial);
-    maskMesh.renderOrder = 19;
-    maskMesh.frustumCulled = false;
+    const fillMesh = new THREE.Mesh(fillGeometry, fillMaterial);
+    fillMesh.renderOrder = 20;
+    fillMesh.frustumCulled = false;
+
+    const edgePositions = new Float32Array((segmentCount + 2) * 3);
+    const edgePositionAttribute = new THREE.BufferAttribute(edgePositions, 3);
+    edgePositionAttribute.setUsage(THREE.DynamicDrawUsage);
+
+    const edgeGeometry = new THREE.BufferGeometry();
+    edgeGeometry.setAttribute("position", edgePositionAttribute);
+
+    const edgeMaterial = new THREE.LineBasicMaterial({
+      color: 0x7fc4ff,
+      transparent: true,
+      opacity: this.profile.coneEdgeOpacity,
+      depthWrite: false,
+      depthTest: false,
+    });
+
+    const edgeLine = new THREE.LineLoop(edgeGeometry, edgeMaterial);
+    edgeLine.renderOrder = 21;
+    edgeLine.frustumCulled = false;
 
     return {
-      darkMesh,
-      maskMesh,
-      maskGeometry,
-      maskPositions,
-      maskPositionAttribute,
+      fillMesh,
+      fillPositions,
+      fillPositionAttribute,
+      edgeLine,
+      edgePositions,
+      edgePositionAttribute,
       segmentCount,
     };
   }
@@ -558,11 +545,11 @@ export class FogOfWarOverlay {
       this.cpuState.texture.dispose();
     }
 
-    if (this.stencilState) {
-      this.stencilState.maskGeometry.dispose();
-      this.stencilState.maskMesh.material.dispose();
-      this.stencilState.darkMesh.geometry.dispose();
-      this.stencilState.darkMesh.material.dispose();
+    if (this.coneState) {
+      this.coneState.fillMesh.geometry.dispose();
+      this.coneState.fillMesh.material.dispose();
+      this.coneState.edgeLine.geometry.dispose();
+      this.coneState.edgeLine.material.dispose();
     }
 
     this.root.clear();
