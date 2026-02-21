@@ -10,6 +10,7 @@ import { buildPrefab } from "../prefab/prefabFactory";
 import { createLaneOverlayGroup } from "./levelNavOverlay";
 import { createLineOfSightDebugGroup } from "./lineOfSightDebug";
 import { runSpawnSafetyCheck, type SpawnFallbackOffset } from "./spawnSafetyCheck";
+import { FogOfWarOverlay } from "./fogOfWarOverlay";
 import type { LevelStaticCollider } from "./levelCollision";
 
 export interface LevelRuntimeWorldBounds {
@@ -142,6 +143,7 @@ export class LevelRuntime {
   private crystalRushView: CrystalRushView | null = null;
   private switchZoneView: SwitchZoneView | null = null;
   private payloadView: PayloadView | null = null;
+  private fogOfWarOverlay: FogOfWarOverlay | null = null;
 
   constructor(scene: THREE.Scene, mapId?: string | null, debugVisible = false) {
     this.scene = scene;
@@ -202,6 +204,7 @@ export class LevelRuntime {
     };
 
     this.scene.add(this.root);
+    this.fogOfWarOverlay = new FogOfWarOverlay(this.scene, this.worldBounds, this.colliders);
   }
 
   setDebugVisible(visible: boolean): void {
@@ -216,6 +219,10 @@ export class LevelRuntime {
     this.payloadView?.setProgress(progress);
   }
 
+  updateFogOfWar(originX: number, originZ: number, rangeMeters: number, nowMs: number): void {
+    this.fogOfWarOverlay?.updateVision(originX, originZ, rangeMeters, nowMs);
+  }
+
   update(nowMs: number): void {
     this.crystalRushView?.update(nowMs);
     this.switchZoneView?.update(nowMs);
@@ -223,6 +230,11 @@ export class LevelRuntime {
   }
 
   dispose(): void {
+    if (this.fogOfWarOverlay) {
+      this.fogOfWarOverlay.dispose(this.scene);
+      this.fogOfWarOverlay = null;
+    }
+
     this.scene.remove(this.root);
     disposeObject3D(this.root);
     this.root.clear();

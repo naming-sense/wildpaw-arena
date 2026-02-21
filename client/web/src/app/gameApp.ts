@@ -407,6 +407,16 @@ export class GameApp {
       }
       this.cameraRig.update(frameMs);
 
+      const localTransformForLos = this.world.transforms.get(this.localPlayerEntityId);
+      if (localTransformForLos) {
+        this.levelRuntime.updateFogOfWar(
+          localTransformForLos.x,
+          localTransformForLos.z,
+          LOS_VISION_RANGE_METERS,
+          nowMs,
+        );
+      }
+
       this.syncCameraAspectToCanvas();
 
       if (nowMs - this.lastPingAt > 1000) {
