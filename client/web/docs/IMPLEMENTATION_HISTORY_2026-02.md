@@ -284,7 +284,7 @@ npm run test
 - 적용 경로
   - `src/level/runtime/fogOfWarOverlay.ts`
     - 품질별 프로파일(해상도/갱신 임계치/경계 feather) 분리
-    - `low`를 CPU 픽셀 루프에서 **stencil mask + dark plane** 경로로 전환(로직 자체 최적화)
+    - `low`를 CPU 픽셀 루프에서 **stencil mask + dithered dark plane(비블렌딩)** 경로로 전환(로직 자체 최적화)
     - `medium/high`는 기존 CPU + LOS 차폐(raycast) 경로 유지
     - `low`에서는 LOS 차폐(raycast) 연산 비활성화
   - `src/level/runtime/levelRuntime.ts`

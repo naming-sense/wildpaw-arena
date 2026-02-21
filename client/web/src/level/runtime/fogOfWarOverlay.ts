@@ -48,7 +48,7 @@ interface CpuFogState {
 }
 
 interface StencilFogState {
-  darkMesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+  darkMesh: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
   maskMesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
   maskGeometry: THREE.BufferGeometry;
   maskPositions: Float32Array;
@@ -415,10 +415,35 @@ export class FogOfWarOverlay {
     const width = Math.max(1, this.bounds.maxX - this.bounds.minX);
     const depth = Math.max(1, this.bounds.maxZ - this.bounds.minZ);
 
-    const darkMaterial = new THREE.MeshBasicMaterial({
-      color: 0x000000,
-      transparent: true,
-      opacity: this.profile.darkAlpha,
+    const darkMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        uCoverage: { value: Math.max(0, Math.min(1, this.profile.darkAlpha)) },
+      },
+      vertexShader: `
+        void main() {
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        precision highp float;
+
+        uniform float uCoverage;
+
+        float hash12(vec2 p) {
+          vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+          p3 += dot(p3, p3.yzx + 33.33);
+          return fract((p3.x + p3.y) * p3.z);
+        }
+
+        void main() {
+          float n = hash12(floor(gl_FragCoord.xy));
+          if (n > uCoverage) {
+            discard;
+          }
+          gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        }
+      `,
+      transparent: false,
       depthWrite: false,
       depthTest: false,
     });
