@@ -337,7 +337,7 @@ struct PrefabRuntimeSpec {
 
 const std::unordered_map<std::string, PrefabRuntimeSpec>& prefabSpecs() {
   static const std::unordered_map<std::string, PrefabRuntimeSpec> kSpecs = {
-      {"COV_L_2x1", PrefabRuntimeSpec{2.0f, 1.0f, true, true, false}},
+      {"COV_L_2x1", PrefabRuntimeSpec{2.0f, 1.0f, true, true, true}},
       {"COV_H_3x1", PrefabRuntimeSpec{3.0f, 1.0f, true, true, true}},
       {"WALL_6", PrefabRuntimeSpec{6.0f, 0.8f, true, true, true}},
       {"BUSH_S", PrefabRuntimeSpec{3.0f, 3.0f, false, false, false}},

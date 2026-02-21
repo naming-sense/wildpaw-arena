@@ -17,14 +17,23 @@ export interface FogOfWarVisionParams {
   nowMs: number;
 }
 
-const DEFAULT_RESOLUTION = 192;
+const DEFAULT_RESOLUTION = 256;
 const UPDATE_INTERVAL_MS = 90;
 const MOVE_UPDATE_THRESHOLD = 0.12;
 const YAW_UPDATE_THRESHOLD_RAD = (2.5 * Math.PI) / 180;
 const LOS_PADDING = 0.02;
+const EDGE_BLUR_ENABLED = true;
 const DARK_ALPHA = 0.94;
 const VISIBLE_CENTER_ALPHA = 0.06;
 const VISIBLE_EDGE_ALPHA = 0.26;
+
+function isLosObstacle(collider: LevelStaticCollider): boolean {
+  return (
+    collider.blocksLineOfSight ||
+    collider.blocksMovement ||
+    collider.blocksProjectile
+  );
+}
 
 export class FogOfWarOverlay {
   private readonly canvas: HTMLCanvasElement;
@@ -34,6 +43,8 @@ export class FogOfWarOverlay {
   private readonly imageData: ImageData;
   private readonly worldXByPixel: Float32Array;
   private readonly worldZByPixel: Float32Array;
+  private readonly alphaMask: Uint8ClampedArray;
+  private readonly alphaBlurScratch: Uint8ClampedArray;
   private readonly resolution: number;
   private readonly losColliders: readonly LevelStaticCollider[];
   private readonly bounds: FogOfWarBounds;
@@ -50,8 +61,8 @@ export class FogOfWarOverlay {
     resolution = DEFAULT_RESOLUTION,
   ) {
     this.bounds = bounds;
-    this.resolution = Math.max(96, Math.min(320, Math.round(resolution)));
-    this.losColliders = colliders.filter((collider) => collider.blocksLineOfSight);
+    this.resolution = Math.max(128, Math.min(512, Math.round(resolution)));
+    this.losColliders = colliders.filter(isLosObstacle);
 
     this.canvas = document.createElement("canvas");
     this.canvas.width = this.resolution;
@@ -68,6 +79,8 @@ export class FogOfWarOverlay {
     const pixelCount = this.resolution * this.resolution;
     this.worldXByPixel = new Float32Array(pixelCount);
     this.worldZByPixel = new Float32Array(pixelCount);
+    this.alphaMask = new Uint8ClampedArray(pixelCount);
+    this.alphaBlurScratch = new Uint8ClampedArray(pixelCount);
     this.precomputeWorldCoords();
 
     this.texture = new THREE.CanvasTexture(this.canvas);
@@ -193,15 +206,67 @@ export class FogOfWarOverlay {
         }
       }
 
+      this.alphaMask[i] = alpha;
+    }
+
+    const finalAlpha = EDGE_BLUR_ENABLED
+      ? this.applyBoxBlur3x3(this.alphaMask, this.alphaBlurScratch)
+      : this.alphaMask;
+
+    for (let i = 0; i < finalAlpha.length; i += 1) {
       const offset = i * 4;
       data[offset] = 0;
       data[offset + 1] = 0;
       data[offset + 2] = 0;
-      data[offset + 3] = alpha;
+      data[offset + 3] = finalAlpha[i] ?? darkAlpha255;
     }
 
     this.ctx.putImageData(this.imageData, 0, 0);
     this.texture.needsUpdate = true;
+  }
+
+  private applyBoxBlur3x3(
+    source: Uint8ClampedArray,
+    target: Uint8ClampedArray,
+  ): Uint8ClampedArray {
+    const width = this.resolution;
+    const height = this.resolution;
+
+    for (let y = 0; y < height; y += 1) {
+      const yPrev = y > 0 ? y - 1 : 0;
+      const yNext = y + 1 < height ? y + 1 : height - 1;
+
+      for (let x = 0; x < width; x += 1) {
+        const xPrev = x > 0 ? x - 1 : 0;
+        const xNext = x + 1 < width ? x + 1 : width - 1;
+
+        const i00 = yPrev * width + xPrev;
+        const i01 = yPrev * width + x;
+        const i02 = yPrev * width + xNext;
+        const i10 = y * width + xPrev;
+        const i11 = y * width + x;
+        const i12 = y * width + xNext;
+        const i20 = yNext * width + xPrev;
+        const i21 = yNext * width + x;
+        const i22 = yNext * width + xNext;
+
+        // 가중치 [1 2 1; 2 4 2; 1 2 1] / 16
+        const weighted =
+          (source[i00] ?? 0) +
+          (source[i01] ?? 0) * 2 +
+          (source[i02] ?? 0) +
+          (source[i10] ?? 0) * 2 +
+          (source[i11] ?? 0) * 4 +
+          (source[i12] ?? 0) * 2 +
+          (source[i20] ?? 0) +
+          (source[i21] ?? 0) * 2 +
+          (source[i22] ?? 0);
+
+        target[y * width + x] = Math.round(weighted / 16);
+      }
+    }
+
+    return target;
   }
 
   dispose(scene: THREE.Scene): void {

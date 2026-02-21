@@ -6,7 +6,7 @@ const CATALOG: PrefabCatalogItem[] = [
     collider: "box",
     size: { x: 2, y: 0.9, z: 1 },
     color: 0x4f6a83,
-    blocksLineOfSight: false,
+    blocksLineOfSight: true,
     blocksProjectile: true,
     blocksMovement: true,
     minimapLayer: "cover",

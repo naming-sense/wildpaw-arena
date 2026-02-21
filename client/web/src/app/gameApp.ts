@@ -882,7 +882,7 @@ export class GameApp {
     }
 
     for (const collider of this.levelRuntime.colliders) {
-      if (!collider.blocksLineOfSight) {
+      if (!collider.blocksLineOfSight && !collider.blocksMovement && !collider.blocksProjectile) {
         continue;
       }
 
