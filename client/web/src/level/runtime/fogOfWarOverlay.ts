@@ -8,13 +8,23 @@ export interface FogOfWarBounds {
   maxZ: number;
 }
 
+export interface FogOfWarVisionParams {
+  originX: number;
+  originZ: number;
+  yaw: number;
+  rangeMeters: number;
+  halfFovRad: number;
+  nowMs: number;
+}
+
 const DEFAULT_RESOLUTION = 192;
 const UPDATE_INTERVAL_MS = 90;
 const MOVE_UPDATE_THRESHOLD = 0.12;
+const YAW_UPDATE_THRESHOLD_RAD = (2.5 * Math.PI) / 180;
 const LOS_PADDING = 0.02;
-const DARK_ALPHA = 0.74;
-const VISIBLE_CENTER_ALPHA = 0.08;
-const VISIBLE_EDGE_ALPHA = 0.28;
+const DARK_ALPHA = 0.94;
+const VISIBLE_CENTER_ALPHA = 0.06;
+const VISIBLE_EDGE_ALPHA = 0.26;
 
 export class FogOfWarOverlay {
   private readonly canvas: HTMLCanvasElement;
@@ -31,6 +41,7 @@ export class FogOfWarOverlay {
   private lastUpdateMs = Number.NEGATIVE_INFINITY;
   private lastOriginX = Number.NaN;
   private lastOriginZ = Number.NaN;
+  private lastYaw = Number.NaN;
 
   constructor(
     scene: THREE.Scene,
@@ -90,8 +101,10 @@ export class FogOfWarOverlay {
     scene.add(this.mesh);
   }
 
-  updateVision(originX: number, originZ: number, rangeMeters: number, nowMs: number): void {
-    if (!Number.isFinite(originX) || !Number.isFinite(originZ)) {
+  updateVision(params: FogOfWarVisionParams): void {
+    const { originX, originZ, yaw, rangeMeters, halfFovRad, nowMs } = params;
+
+    if (!Number.isFinite(originX) || !Number.isFinite(originZ) || !Number.isFinite(yaw)) {
       return;
     }
 
@@ -99,22 +112,35 @@ export class FogOfWarOverlay {
       return;
     }
 
+    if (!Number.isFinite(halfFovRad) || halfFovRad <= 0 || halfFovRad >= Math.PI) {
+      return;
+    }
+
     const movedDistanceSq =
       (originX - this.lastOriginX) * (originX - this.lastOriginX) +
       (originZ - this.lastOriginZ) * (originZ - this.lastOriginZ);
 
+    const yawDelta = Number.isFinite(this.lastYaw)
+      ? Math.abs(Math.atan2(Math.sin(yaw - this.lastYaw), Math.cos(yaw - this.lastYaw)))
+      : Number.POSITIVE_INFINITY;
+
     const shouldSkipByTime = nowMs - this.lastUpdateMs < UPDATE_INTERVAL_MS;
     const shouldSkipByMove = movedDistanceSq < MOVE_UPDATE_THRESHOLD * MOVE_UPDATE_THRESHOLD;
-    if (shouldSkipByTime && shouldSkipByMove) {
+    const shouldSkipByYaw = yawDelta < YAW_UPDATE_THRESHOLD_RAD;
+    if (shouldSkipByTime && shouldSkipByMove && shouldSkipByYaw) {
       return;
     }
 
     this.lastUpdateMs = nowMs;
     this.lastOriginX = originX;
     this.lastOriginZ = originZ;
+    this.lastYaw = yaw;
 
     const data = this.imageData.data;
     const rangeSq = rangeMeters * rangeMeters;
+    const cosHalfFov = Math.cos(halfFovRad);
+    const forwardX = Math.sin(yaw);
+    const forwardZ = Math.cos(yaw);
 
     const darkAlpha255 = Math.round(DARK_ALPHA * 255);
     const visibleCenterAlpha255 = Math.round(VISIBLE_CENTER_ALPHA * 255);
@@ -131,30 +157,38 @@ export class FogOfWarOverlay {
       let alpha = darkAlpha255;
 
       if (distSq <= rangeSq) {
-        let blocked = false;
+        const dist = Math.sqrt(distSq);
+        const invDist = dist > 1e-6 ? 1 / dist : 0;
+        const dirX = dist > 1e-6 ? dx * invDist : forwardX;
+        const dirZ = dist > 1e-6 ? dz * invDist : forwardZ;
+        const forwardDot = dirX * forwardX + dirZ * forwardZ;
 
-        for (const collider of this.losColliders) {
-          if (
-            segmentIntersectsCollider2D(
-              originX,
-              originZ,
-              worldX,
-              worldZ,
-              collider,
-              LOS_PADDING,
-            )
-          ) {
-            blocked = true;
-            break;
+        if (forwardDot >= cosHalfFov) {
+          let blocked = false;
+
+          for (const collider of this.losColliders) {
+            if (
+              segmentIntersectsCollider2D(
+                originX,
+                originZ,
+                worldX,
+                worldZ,
+                collider,
+                LOS_PADDING,
+              )
+            ) {
+              blocked = true;
+              break;
+            }
           }
-        }
 
-        if (!blocked) {
-          const edgeT = Math.min(1, Math.sqrt(distSq) / Math.max(0.001, rangeMeters));
-          alpha = Math.round(
-            visibleCenterAlpha255 +
-              (visibleEdgeAlpha255 - visibleCenterAlpha255) * edgeT,
-          );
+          if (!blocked) {
+            const edgeT = Math.min(1, dist / Math.max(0.001, rangeMeters));
+            alpha = Math.round(
+              visibleCenterAlpha255 +
+                (visibleEdgeAlpha255 - visibleCenterAlpha255) * edgeT,
+            );
+          }
         }
       }
 

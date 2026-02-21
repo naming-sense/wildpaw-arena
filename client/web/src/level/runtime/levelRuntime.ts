@@ -219,8 +219,22 @@ export class LevelRuntime {
     this.payloadView?.setProgress(progress);
   }
 
-  updateFogOfWar(originX: number, originZ: number, rangeMeters: number, nowMs: number): void {
-    this.fogOfWarOverlay?.updateVision(originX, originZ, rangeMeters, nowMs);
+  updateFogOfWar(
+    originX: number,
+    originZ: number,
+    yaw: number,
+    rangeMeters: number,
+    halfFovRad: number,
+    nowMs: number,
+  ): void {
+    this.fogOfWarOverlay?.updateVision({
+      originX,
+      originZ,
+      yaw,
+      rangeMeters,
+      halfFovRad,
+      nowMs,
+    });
   }
 
   update(nowMs: number): void {

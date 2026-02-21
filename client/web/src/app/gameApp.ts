@@ -61,6 +61,7 @@ const DAMAGE_TEXT_FLOAT_SPEED = 1.35;
 const HIT_MARKER_LIFE_MS = 130;
 const DAMAGE_OVERLAY_LIFE_MS = 220;
 const LOS_VISION_RANGE_METERS = 22;
+const LOS_HALF_FOV_RAD = (55 * Math.PI) / 180;
 const LOS_COLLIDER_PADDING = 0.02;
 
 function normalizeHeroId(rawHeroId: string): string {
@@ -412,7 +413,9 @@ export class GameApp {
         this.levelRuntime.updateFogOfWar(
           localTransformForLos.x,
           localTransformForLos.z,
+          localTransformForLos.yaw,
           LOS_VISION_RANGE_METERS,
+          LOS_HALF_FOV_RAD,
           nowMs,
         );
       }
@@ -864,7 +867,17 @@ export class GameApp {
 
     const dx = player.x - localTransform.x;
     const dz = player.y - localTransform.z;
-    if (dx * dx + dz * dz > LOS_VISION_RANGE_METERS * LOS_VISION_RANGE_METERS) {
+    const distSq = dx * dx + dz * dz;
+    if (distSq > LOS_VISION_RANGE_METERS * LOS_VISION_RANGE_METERS) {
+      return false;
+    }
+
+    const dist = Math.sqrt(distSq);
+    const dirX = dist > 1e-6 ? dx / dist : 0;
+    const dirZ = dist > 1e-6 ? dz / dist : 1;
+    const forwardX = Math.sin(localTransform.yaw);
+    const forwardZ = Math.cos(localTransform.yaw);
+    if (dirX * forwardX + dirZ * forwardZ < Math.cos(LOS_HALF_FOV_RAD)) {
       return false;
     }
 
