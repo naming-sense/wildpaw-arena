@@ -283,14 +283,13 @@ npm run test
   - 기본값을 `low`로 설정해 프레임 우선 정책 적용
 - 적용 경로
   - `src/level/runtime/fogOfWarOverlay.ts`
-    - 해상도/갱신 주기/이동·회전 임계치/경계 블러 on/off를 품질별로 분리
+    - 품질별 프로파일(해상도/갱신 임계치/경계 feather) 분리
+    - `low`를 CPU 캔버스 루프에서 GPU `ShaderMaterial` 기반 부채꼴 오버레이로 전환(근본 최적화)
+    - `medium/high`는 기존 CPU + LOS 차폐(raycast) 경로 유지
+    - `low`에서는 LOS 차폐(raycast) 연산 비활성화
   - `src/level/runtime/levelRuntime.ts`
     - 장애물 가시성 판정도 품질별 프로파일 적용
     - `low`에서는 장애물 반투명 처리(가시성 페이드) 비활성화
-  - `src/level/runtime/fogOfWarOverlay.ts`
-    - `low`에서는 LOS 차폐(raycast) 연산을 끄고 단순 부채꼴 오버레이만 유지
-    - `low`에서도 경계 feather(거리/각도 완만화) 적용으로 품질 개선
-    - 저사양 프레임 회복을 위해 `low` 해상도/갱신 주기 재튜닝(128, 220ms) + 루프 연산 경량화
   - `src/app/gameApp.ts`
     - `?fow=low|medium|high` (`?fowQuality=`도 허용) 쿼리 파라미터로 품질 선택
     - `low`에서는 원격 플레이어 LOS 가시성 판정 비활성화(항상 표시)

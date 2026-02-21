@@ -20,6 +20,7 @@ export interface FogOfWarVisionParams {
 }
 
 interface FogOfWarQualityProfile {
+  backend: "cpu" | "gpu";
   resolution: number;
   updateIntervalMs: number;
   moveUpdateThreshold: number;
@@ -33,14 +34,41 @@ interface FogOfWarQualityProfile {
   visibleEdgeAlpha: number;
 }
 
+interface CpuFogState {
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D;
+  texture: THREE.CanvasTexture;
+  imageData: ImageData;
+  worldXByPixel: Float32Array;
+  worldZByPixel: Float32Array;
+  alphaMask: Uint8ClampedArray;
+  alphaBlurScratch: Uint8ClampedArray;
+}
+
+interface GpuFogState {
+  material: THREE.ShaderMaterial;
+  uniforms: {
+    uOrigin: { value: THREE.Vector2 };
+    uForward: { value: THREE.Vector2 };
+    uRange: { value: number };
+    uRangeInner: { value: number };
+    uCosInner: { value: number };
+    uCosOuter: { value: number };
+    uDarkAlpha: { value: number };
+    uVisibleCenterAlpha: { value: number };
+    uVisibleEdgeAlpha: { value: number };
+  };
+}
+
 const LOS_PADDING = 0.02;
 
 const QUALITY_PROFILES: Record<FogOfWarQuality, FogOfWarQualityProfile> = {
   low: {
+    backend: "gpu",
     resolution: 128,
-    updateIntervalMs: 220,
-    moveUpdateThreshold: 0.34,
-    yawUpdateThresholdRad: (7 * Math.PI) / 180,
+    updateIntervalMs: 180,
+    moveUpdateThreshold: 0.28,
+    yawUpdateThresholdRad: (6 * Math.PI) / 180,
     edgeBlurEnabled: false,
     occlusionEnabled: false,
     fovFeatherRad: (8 * Math.PI) / 180,
@@ -50,6 +78,7 @@ const QUALITY_PROFILES: Record<FogOfWarQuality, FogOfWarQualityProfile> = {
     visibleEdgeAlpha: 0.21,
   },
   medium: {
+    backend: "cpu",
     resolution: 192,
     updateIntervalMs: 120,
     moveUpdateThreshold: 0.2,
@@ -63,6 +92,7 @@ const QUALITY_PROFILES: Record<FogOfWarQuality, FogOfWarQualityProfile> = {
     visibleEdgeAlpha: 0.24,
   },
   high: {
+    backend: "cpu",
     resolution: 256,
     updateIntervalMs: 90,
     moveUpdateThreshold: 0.12,
@@ -86,19 +116,13 @@ function profileForQuality(quality: FogOfWarQuality): FogOfWarQualityProfile {
 }
 
 export class FogOfWarOverlay {
-  private readonly canvas: HTMLCanvasElement;
-  private readonly ctx: CanvasRenderingContext2D;
-  private readonly texture: THREE.CanvasTexture;
-  private readonly mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
-  private readonly imageData: ImageData;
-  private readonly worldXByPixel: Float32Array;
-  private readonly worldZByPixel: Float32Array;
-  private readonly alphaMask: Uint8ClampedArray;
-  private readonly alphaBlurScratch: Uint8ClampedArray;
+  private readonly mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.Material>;
   private readonly resolution: number;
   private readonly losColliders: readonly LevelStaticCollider[];
   private readonly bounds: FogOfWarBounds;
   private readonly profile: FogOfWarQualityProfile;
+  private readonly cpuState: CpuFogState | null;
+  private readonly gpuState: GpuFogState | null;
 
   private lastUpdateMs = Number.NEGATIVE_INFINITY;
   private lastOriginX = Number.NaN;
@@ -116,43 +140,30 @@ export class FogOfWarOverlay {
     this.resolution = this.profile.resolution;
     this.losColliders = this.profile.occlusionEnabled ? colliders.filter(isLosObstacle) : [];
 
-    this.canvas = document.createElement("canvas");
-    this.canvas.width = this.resolution;
-    this.canvas.height = this.resolution;
-
-    const ctx = this.canvas.getContext("2d", { alpha: true, willReadFrequently: true });
-    if (!ctx) {
-      throw new Error("fog-of-war canvas context unavailable");
-    }
-
-    this.ctx = ctx;
-    this.imageData = this.ctx.createImageData(this.resolution, this.resolution);
-
-    const pixelCount = this.resolution * this.resolution;
-    this.worldXByPixel = new Float32Array(pixelCount);
-    this.worldZByPixel = new Float32Array(pixelCount);
-    this.alphaMask = new Uint8ClampedArray(pixelCount);
-    this.alphaBlurScratch = new Uint8ClampedArray(pixelCount);
-    this.precomputeWorldCoords();
-
-    this.texture = new THREE.CanvasTexture(this.canvas);
-    this.texture.colorSpace = THREE.SRGBColorSpace;
-    this.texture.magFilter = THREE.LinearFilter;
-    this.texture.minFilter = THREE.LinearFilter;
-    this.texture.generateMipmaps = false;
-    this.texture.needsUpdate = true;
-
     const width = Math.max(1, this.bounds.maxX - this.bounds.minX);
     const depth = Math.max(1, this.bounds.maxZ - this.bounds.minZ);
 
-    this.mesh = new THREE.Mesh(
-      new THREE.PlaneGeometry(width, depth),
-      new THREE.MeshBasicMaterial({
-        map: this.texture,
+    let material: THREE.Material;
+    if (this.profile.backend === "gpu") {
+      const gpuState = this.createGpuState();
+      this.gpuState = gpuState;
+      this.cpuState = null;
+      material = gpuState.material;
+    } else {
+      const cpuState = this.createCpuState();
+      this.cpuState = cpuState;
+      this.gpuState = null;
+      material = new THREE.MeshBasicMaterial({
+        map: cpuState.texture,
         transparent: true,
         depthWrite: false,
         depthTest: true,
-      }),
+      });
+    }
+
+    this.mesh = new THREE.Mesh<THREE.PlaneGeometry, THREE.Material>(
+      new THREE.PlaneGeometry(width, depth),
+      material,
     );
 
     this.mesh.rotation.x = -Math.PI / 2;
@@ -202,7 +213,54 @@ export class FogOfWarOverlay {
     this.lastOriginZ = originZ;
     this.lastYaw = yaw;
 
-    const data = this.imageData.data;
+    if (this.gpuState) {
+      this.updateGpuVision(originX, originZ, yaw, rangeMeters, halfFovRad);
+      return;
+    }
+
+    if (this.cpuState) {
+      this.updateCpuVision(originX, originZ, yaw, rangeMeters, halfFovRad);
+    }
+  }
+
+  private updateGpuVision(
+    originX: number,
+    originZ: number,
+    yaw: number,
+    rangeMeters: number,
+    halfFovRad: number,
+  ): void {
+    const gpu = this.gpuState;
+    if (!gpu) {
+      return;
+    }
+
+    const rangeFeatherMeters = Math.max(0, rangeMeters * this.profile.rangeFeatherRatio);
+    const rangeInner = Math.max(0.001, rangeMeters - rangeFeatherMeters);
+    const fovInner = Math.max(0.001, halfFovRad - this.profile.fovFeatherRad);
+    const fovOuter = Math.min(Math.PI - 0.001, halfFovRad + this.profile.fovFeatherRad);
+
+    gpu.uniforms.uOrigin.value.set(originX, originZ);
+    gpu.uniforms.uForward.value.set(Math.sin(yaw), Math.cos(yaw));
+    gpu.uniforms.uRange.value = rangeMeters;
+    gpu.uniforms.uRangeInner.value = rangeInner;
+    gpu.uniforms.uCosInner.value = Math.cos(fovInner);
+    gpu.uniforms.uCosOuter.value = Math.cos(fovOuter);
+  }
+
+  private updateCpuVision(
+    originX: number,
+    originZ: number,
+    yaw: number,
+    rangeMeters: number,
+    halfFovRad: number,
+  ): void {
+    const cpu = this.cpuState;
+    if (!cpu) {
+      return;
+    }
+
+    const data = cpu.imageData.data;
     const rangeSq = rangeMeters * rangeMeters;
     const rangeFeatherMeters = Math.max(0, rangeMeters * this.profile.rangeFeatherRatio);
     const rangeInner = Math.max(0.001, rangeMeters - rangeFeatherMeters);
@@ -222,9 +280,9 @@ export class FogOfWarOverlay {
     const visibleCenterAlpha255 = Math.round(this.profile.visibleCenterAlpha * 255);
     const visibleEdgeAlpha255 = Math.round(this.profile.visibleEdgeAlpha * 255);
 
-    for (let i = 0; i < this.worldXByPixel.length; i += 1) {
-      const worldX = this.worldXByPixel[i];
-      const worldZ = this.worldZByPixel[i];
+    for (let i = 0; i < cpu.worldXByPixel.length; i += 1) {
+      const worldX = cpu.worldXByPixel[i];
+      const worldZ = cpu.worldZByPixel[i];
 
       const dx = worldX - originX;
       const dz = worldZ - originZ;
@@ -291,12 +349,12 @@ export class FogOfWarOverlay {
         }
       }
 
-      this.alphaMask[i] = alpha;
+      cpu.alphaMask[i] = alpha;
     }
 
     const finalAlpha = this.profile.edgeBlurEnabled
-      ? this.applyBoxBlur3x3(this.alphaMask, this.alphaBlurScratch)
-      : this.alphaMask;
+      ? this.applyBoxBlur3x3(cpu.alphaMask, cpu.alphaBlurScratch)
+      : cpu.alphaMask;
 
     for (let i = 0; i < finalAlpha.length; i += 1) {
       const offset = i * 4;
@@ -306,8 +364,116 @@ export class FogOfWarOverlay {
       data[offset + 3] = finalAlpha[i] ?? darkAlpha255;
     }
 
-    this.ctx.putImageData(this.imageData, 0, 0);
-    this.texture.needsUpdate = true;
+    cpu.ctx.putImageData(cpu.imageData, 0, 0);
+    cpu.texture.needsUpdate = true;
+  }
+
+  private createCpuState(): CpuFogState {
+    const canvas = document.createElement("canvas");
+    canvas.width = this.resolution;
+    canvas.height = this.resolution;
+
+    const ctx = canvas.getContext("2d", { alpha: true, willReadFrequently: true });
+    if (!ctx) {
+      throw new Error("fog-of-war canvas context unavailable");
+    }
+
+    const imageData = ctx.createImageData(this.resolution, this.resolution);
+    const pixelCount = this.resolution * this.resolution;
+
+    const worldXByPixel = new Float32Array(pixelCount);
+    const worldZByPixel = new Float32Array(pixelCount);
+    this.precomputeWorldCoords(worldXByPixel, worldZByPixel);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearFilter;
+    texture.generateMipmaps = false;
+    texture.needsUpdate = true;
+
+    return {
+      canvas,
+      ctx,
+      texture,
+      imageData,
+      worldXByPixel,
+      worldZByPixel,
+      alphaMask: new Uint8ClampedArray(pixelCount),
+      alphaBlurScratch: new Uint8ClampedArray(pixelCount),
+    };
+  }
+
+  private createGpuState(): GpuFogState {
+    const uniforms: GpuFogState["uniforms"] = {
+      uOrigin: { value: new THREE.Vector2(0, 0) },
+      uForward: { value: new THREE.Vector2(0, 1) },
+      uRange: { value: 1 },
+      uRangeInner: { value: 0.9 },
+      uCosInner: { value: Math.cos((45 * Math.PI) / 180) },
+      uCosOuter: { value: Math.cos((55 * Math.PI) / 180) },
+      uDarkAlpha: { value: this.profile.darkAlpha },
+      uVisibleCenterAlpha: { value: this.profile.visibleCenterAlpha },
+      uVisibleEdgeAlpha: { value: this.profile.visibleEdgeAlpha },
+    };
+
+    const material = new THREE.ShaderMaterial({
+      uniforms,
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      vertexShader: `
+        varying vec2 vWorldXZ;
+
+        void main() {
+          vec4 worldPos = modelMatrix * vec4(position, 1.0);
+          vWorldXZ = worldPos.xz;
+          gl_Position = projectionMatrix * viewMatrix * worldPos;
+        }
+      `,
+      fragmentShader: `
+        precision highp float;
+
+        varying vec2 vWorldXZ;
+
+        uniform vec2 uOrigin;
+        uniform vec2 uForward;
+        uniform float uRange;
+        uniform float uRangeInner;
+        uniform float uCosInner;
+        uniform float uCosOuter;
+        uniform float uDarkAlpha;
+        uniform float uVisibleCenterAlpha;
+        uniform float uVisibleEdgeAlpha;
+
+        void main() {
+          vec2 toPixel = vWorldXZ - uOrigin;
+          float dist = length(toPixel);
+
+          float alpha = uDarkAlpha;
+
+          if (dist <= uRange) {
+            vec2 dir = dist > 1e-5 ? (toPixel / dist) : uForward;
+            float forwardDot = dot(dir, uForward);
+
+            float angularWeight = smoothstep(uCosOuter, uCosInner, forwardDot);
+            float radialWeight = 1.0 - smoothstep(uRangeInner, uRange, dist);
+            float visibilityWeight = clamp(angularWeight * radialWeight, 0.0, 1.0);
+
+            float edgeT = clamp(dist / max(0.001, uRange), 0.0, 1.0);
+            float visibleAlpha = mix(uVisibleCenterAlpha, uVisibleEdgeAlpha, edgeT);
+            alpha = mix(uDarkAlpha, visibleAlpha, visibilityWeight);
+          }
+
+          gl_FragColor = vec4(0.0, 0.0, 0.0, alpha);
+        }
+      `,
+    });
+
+    return {
+      material,
+      uniforms,
+    };
   }
 
   private applyBoxBlur3x3(
@@ -356,11 +522,20 @@ export class FogOfWarOverlay {
   dispose(scene: THREE.Scene): void {
     scene.remove(this.mesh);
     this.mesh.geometry.dispose();
-    this.mesh.material.dispose();
-    this.texture.dispose();
+
+    const material = this.mesh.material;
+    if (Array.isArray(material)) {
+      for (const item of material) {
+        item.dispose();
+      }
+    } else {
+      material.dispose();
+    }
+
+    this.cpuState?.texture.dispose();
   }
 
-  private precomputeWorldCoords(): void {
+  private precomputeWorldCoords(worldXByPixel: Float32Array, worldZByPixel: Float32Array): void {
     const width = Math.max(0.001, this.bounds.maxX - this.bounds.minX);
     const depth = Math.max(0.001, this.bounds.maxZ - this.bounds.minZ);
 
@@ -372,8 +547,8 @@ export class FogOfWarOverlay {
         const u = (px + 0.5) / this.resolution;
         const worldX = this.bounds.minX + width * u;
         const index = py * this.resolution + px;
-        this.worldXByPixel[index] = worldX;
-        this.worldZByPixel[index] = worldZ;
+        worldXByPixel[index] = worldX;
+        worldZByPixel[index] = worldZ;
       }
     }
   }
