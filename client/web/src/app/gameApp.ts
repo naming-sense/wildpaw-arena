@@ -358,6 +358,7 @@ export class GameApp {
   private readonly localHeroAsset: HeroAssetManifest;
   private readonly localHeroAssetPath: string;
   private readonly losVisibilityEnabled: boolean;
+  private readonly fowHudModePrefix: string;
 
   private readonly remoteEntities = new Map<number, EntityId>();
   private readonly remoteVisibilityByPlayerId = new Map<number, boolean>();
@@ -371,6 +372,7 @@ export class GameApp {
   private serverTimeOffsetMs = 0;
   private hasServerTimeOffset = false;
   private lastHudPublishAtMs = Number.NEGATIVE_INFINITY;
+  private fowFrameMsSmoothed = 0;
   private readonly snapshotAmmoByPlayerId = new Map<number, number>();
   private readonly bulletTrailEffects: BulletTrailEffect[] = [];
   private readonly muzzleFlashEffects: MuzzleFlashEffect[] = [];
@@ -396,6 +398,7 @@ export class GameApp {
     );
     const buildTag = resolveBuildTag();
     const fowModeLabel = `${fogOfWarQuality}/${renderProfile.quality}`;
+    this.fowHudModePrefix = fowModeLabel;
 
     this.renderer = new GameRenderer(canvas, {
       shadowMapSize: renderProfile.shadowMapSize,
@@ -474,7 +477,8 @@ export class GameApp {
       maxAmmo: localWeapon.ammo,
       reloading: false,
       renderDpr: this.renderer.renderer.getPixelRatio(),
-      fowMode: fowModeLabel,
+      fowMode: `${this.fowHudModePrefix}/${this.levelRuntime.getFogDebugMode()}`,
+      fowFrameMs: 0,
       buildTag,
     });
 
@@ -542,6 +546,8 @@ export class GameApp {
           drawCalls: this.renderer.drawCalls,
           packetLossPct: this.netMetrics.packetLossPct,
           renderDpr: this.renderer.renderer.getPixelRatio(),
+          fowMode: `${this.fowHudModePrefix}/${this.levelRuntime.getFogDebugMode()}`,
+          fowFrameMs: this.fowFrameMsSmoothed,
         });
       }
 
@@ -570,6 +576,7 @@ export class GameApp {
 
       const localTransformForLos = this.world.transforms.get(this.localPlayerEntityId);
       if (localTransformForLos) {
+        const fowStartedAt = performance.now();
         this.levelRuntime.updateFogOfWar(
           localTransformForLos.x,
           localTransformForLos.z,
@@ -578,6 +585,8 @@ export class GameApp {
           LOS_HALF_FOV_RAD,
           nowMs,
         );
+        const fowFrameMs = performance.now() - fowStartedAt;
+        this.fowFrameMsSmoothed = this.fowFrameMsSmoothed * 0.8 + fowFrameMs * 0.2;
       }
 
       this.syncCameraAspectToCanvas();

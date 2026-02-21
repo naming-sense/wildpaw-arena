@@ -510,6 +510,10 @@ export class LevelRuntime {
     }
   }
 
+  getFogDebugMode(): string {
+    return this.fogOfWarOverlay?.getDebugMode() ?? "off";
+  }
+
   update(nowMs: number): void {
     this.crystalRushView?.update(nowMs);
     this.switchZoneView?.update(nowMs);

@@ -17,6 +17,7 @@ export function Hud(): JSX.Element {
     drawCalls,
     renderDpr,
     fowMode,
+    fowFrameMs,
     buildTag,
   } = useUiStore();
 
@@ -37,6 +38,7 @@ export function Hud(): JSX.Element {
           <p>DRAW: {drawCalls}</p>
           <p>DPR: {renderDpr.toFixed(2)}</p>
           <p>FOW: {fowMode}</p>
+          <p>FOWms: {fowFrameMs.toFixed(2)}</p>
           <p>VER: {buildTag}</p>
           <p>NET: {reconnectState}</p>
         </div>

@@ -45,6 +45,7 @@ interface HudSlice {
   drawCalls: number;
   renderDpr: number;
   fowMode: string;
+  fowFrameMs: number;
   buildTag: string;
   showDebug: boolean;
 }
@@ -101,6 +102,7 @@ export const useUiStore = create<UiState>((set) => ({
   drawCalls: 0,
   renderDpr: 1,
   fowMode: "-",
+  fowFrameMs: 0,
   buildTag: "-",
   showDebug: true,
 

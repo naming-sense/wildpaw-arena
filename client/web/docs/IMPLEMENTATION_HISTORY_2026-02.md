@@ -296,7 +296,7 @@ npm run test
     - `?fow=low|medium|high` (`?fowQuality=`도 허용) 쿼리 파라미터로 품질 선택
     - `low`에서는 원격 플레이어 LOS 가시성 판정 비활성화(항상 표시)
     - FOW 품질에 맞춰 렌더 프로파일(AA/pixel ratio/shadow/tone mapping)을 함께 적용
-    - HUD에 `DPR/FOW/VER` 표시를 추가해 실제 반영 버전/모드를 현장 확인 가능하게 개선
+    - HUD에 `DPR/FOW/VER/FOWms` 표시를 추가해 실제 반영 버전/모드/비용을 현장 확인 가능하게 개선
     - HUD 수치(setHud) 업데이트를 120ms 스로틀링해 React 업데이트 비용 감소
     - 마지막 선택값을 localStorage(`wildpaw.fowQuality`)에 저장해 재접속 시 유지
   - `src/render/renderer.ts`, `src/render/lights.ts`

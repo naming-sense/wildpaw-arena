@@ -556,6 +556,16 @@ export class FogOfWarOverlay {
     return target;
   }
 
+  getDebugMode(): string {
+    if (this.coneState) {
+      return this.coneState.fillEnabled ? "cone-fill" : "cone-edge";
+    }
+    if (this.cpuState) {
+      return this.profile.occlusionEnabled ? "cpu-occlusion" : "cpu";
+    }
+    return this.profile.backend;
+  }
+
   dispose(scene: THREE.Scene): void {
     scene.remove(this.root);
 
