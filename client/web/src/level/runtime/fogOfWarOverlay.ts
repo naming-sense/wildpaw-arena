@@ -53,6 +53,7 @@ interface ConeFogState {
   fillMesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
   fillPositions: Float32Array;
   fillPositionAttribute: THREE.BufferAttribute;
+  fillEnabled: boolean;
   edgeLine: THREE.LineLoop<THREE.BufferGeometry, THREE.LineBasicMaterial>;
   edgePositions: Float32Array;
   edgePositionAttribute: THREE.BufferAttribute;
@@ -75,9 +76,9 @@ const QUALITY_PROFILES: Record<FogOfWarQuality, FogOfWarQualityProfile> = {
     darkAlpha: 0.64,
     visibleCenterAlpha: 0.05,
     visibleEdgeAlpha: 0.21,
-    coneSegments: 30,
-    coneFillOpacity: 0.16,
-    coneEdgeOpacity: 0.42,
+    coneSegments: 24,
+    coneFillOpacity: 0,
+    coneEdgeOpacity: 1,
   },
   medium: {
     backend: "cpu",
@@ -225,9 +226,11 @@ export class FogOfWarOverlay {
     const start = yaw - halfFovRad;
     const span = halfFovRad * 2;
 
-    cone.fillPositions[0] = originX;
-    cone.fillPositions[1] = y;
-    cone.fillPositions[2] = originZ;
+    if (cone.fillEnabled) {
+      cone.fillPositions[0] = originX;
+      cone.fillPositions[1] = y;
+      cone.fillPositions[2] = originZ;
+    }
 
     cone.edgePositions[0] = originX;
     cone.edgePositions[1] = y + 0.002;
@@ -239,10 +242,12 @@ export class FogOfWarOverlay {
       const x = originX + Math.sin(angle) * rangeMeters;
       const z = originZ + Math.cos(angle) * rangeMeters;
 
-      const fillOffset = (i + 1) * 3;
-      cone.fillPositions[fillOffset] = x;
-      cone.fillPositions[fillOffset + 1] = y;
-      cone.fillPositions[fillOffset + 2] = z;
+      if (cone.fillEnabled) {
+        const fillOffset = (i + 1) * 3;
+        cone.fillPositions[fillOffset] = x;
+        cone.fillPositions[fillOffset + 1] = y;
+        cone.fillPositions[fillOffset + 2] = z;
+      }
 
       const edgeOffset = (i + 1) * 3;
       cone.edgePositions[edgeOffset] = x;
@@ -250,7 +255,9 @@ export class FogOfWarOverlay {
       cone.edgePositions[edgeOffset + 2] = z;
     }
 
-    cone.fillPositionAttribute.needsUpdate = true;
+    if (cone.fillEnabled) {
+      cone.fillPositionAttribute.needsUpdate = true;
+    }
     cone.edgePositionAttribute.needsUpdate = true;
   }
 
@@ -451,15 +458,18 @@ export class FogOfWarOverlay {
     fillGeometry.setAttribute("position", fillPositionAttribute);
     fillGeometry.setIndex(new THREE.BufferAttribute(fillIndices, 1));
 
+    const fillEnabled = this.profile.coneFillOpacity > 0.001;
+
     const fillMaterial = new THREE.MeshBasicMaterial({
       color: 0x0f1d2b,
-      transparent: true,
-      opacity: this.profile.coneFillOpacity,
+      transparent: fillEnabled,
+      opacity: fillEnabled ? this.profile.coneFillOpacity : 1,
       depthWrite: false,
       depthTest: false,
     });
 
     const fillMesh = new THREE.Mesh(fillGeometry, fillMaterial);
+    fillMesh.visible = fillEnabled;
     fillMesh.renderOrder = 20;
     fillMesh.frustumCulled = false;
 
@@ -470,10 +480,11 @@ export class FogOfWarOverlay {
     const edgeGeometry = new THREE.BufferGeometry();
     edgeGeometry.setAttribute("position", edgePositionAttribute);
 
+    const edgeTransparent = this.profile.coneEdgeOpacity < 0.999;
     const edgeMaterial = new THREE.LineBasicMaterial({
       color: 0x7fc4ff,
-      transparent: true,
-      opacity: this.profile.coneEdgeOpacity,
+      transparent: edgeTransparent,
+      opacity: edgeTransparent ? this.profile.coneEdgeOpacity : 1,
       depthWrite: false,
       depthTest: false,
     });
@@ -486,6 +497,7 @@ export class FogOfWarOverlay {
       fillMesh,
       fillPositions,
       fillPositionAttribute,
+      fillEnabled,
       edgeLine,
       edgePositions,
       edgePositionAttribute,

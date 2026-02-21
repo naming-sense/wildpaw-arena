@@ -26,7 +26,7 @@ export class GameRenderer {
     const antialias = options.antialias ?? true;
     const contextAttributes: WebGLContextAttributes = {
       antialias,
-      alpha: true,
+      alpha: false,
       depth: true,
       stencil: false,
       powerPreference: "high-performance",
