@@ -8,6 +8,8 @@ export interface FogOfWarBounds {
   maxZ: number;
 }
 
+export type FogOfWarQuality = "low" | "medium" | "high";
+
 export interface FogOfWarVisionParams {
   originX: number;
   originZ: number;
@@ -17,22 +19,58 @@ export interface FogOfWarVisionParams {
   nowMs: number;
 }
 
-const DEFAULT_RESOLUTION = 192;
-const UPDATE_INTERVAL_MS = 120;
-const MOVE_UPDATE_THRESHOLD = 0.2;
-const YAW_UPDATE_THRESHOLD_RAD = (4 * Math.PI) / 180;
+interface FogOfWarQualityProfile {
+  resolution: number;
+  updateIntervalMs: number;
+  moveUpdateThreshold: number;
+  yawUpdateThresholdRad: number;
+  edgeBlurEnabled: boolean;
+  darkAlpha: number;
+  visibleCenterAlpha: number;
+  visibleEdgeAlpha: number;
+}
+
 const LOS_PADDING = 0.02;
-const EDGE_BLUR_ENABLED = true;
-const DARK_ALPHA = 0.72;
-const VISIBLE_CENTER_ALPHA = 0.05;
-const VISIBLE_EDGE_ALPHA = 0.24;
+
+const QUALITY_PROFILES: Record<FogOfWarQuality, FogOfWarQualityProfile> = {
+  low: {
+    resolution: 128,
+    updateIntervalMs: 180,
+    moveUpdateThreshold: 0.3,
+    yawUpdateThresholdRad: (6 * Math.PI) / 180,
+    edgeBlurEnabled: false,
+    darkAlpha: 0.7,
+    visibleCenterAlpha: 0.05,
+    visibleEdgeAlpha: 0.24,
+  },
+  medium: {
+    resolution: 192,
+    updateIntervalMs: 120,
+    moveUpdateThreshold: 0.2,
+    yawUpdateThresholdRad: (4 * Math.PI) / 180,
+    edgeBlurEnabled: true,
+    darkAlpha: 0.72,
+    visibleCenterAlpha: 0.05,
+    visibleEdgeAlpha: 0.24,
+  },
+  high: {
+    resolution: 256,
+    updateIntervalMs: 90,
+    moveUpdateThreshold: 0.12,
+    yawUpdateThresholdRad: (2.5 * Math.PI) / 180,
+    edgeBlurEnabled: true,
+    darkAlpha: 0.74,
+    visibleCenterAlpha: 0.05,
+    visibleEdgeAlpha: 0.24,
+  },
+};
 
 function isLosObstacle(collider: LevelStaticCollider): boolean {
-  return (
-    collider.blocksLineOfSight ||
-    collider.blocksMovement ||
-    collider.blocksProjectile
-  );
+  return collider.blocksLineOfSight || collider.blocksMovement || collider.blocksProjectile;
+}
+
+function profileForQuality(quality: FogOfWarQuality): FogOfWarQualityProfile {
+  return QUALITY_PROFILES[quality] ?? QUALITY_PROFILES.medium;
 }
 
 export class FogOfWarOverlay {
@@ -48,6 +86,7 @@ export class FogOfWarOverlay {
   private readonly resolution: number;
   private readonly losColliders: readonly LevelStaticCollider[];
   private readonly bounds: FogOfWarBounds;
+  private readonly profile: FogOfWarQualityProfile;
 
   private lastUpdateMs = Number.NEGATIVE_INFINITY;
   private lastOriginX = Number.NaN;
@@ -58,10 +97,11 @@ export class FogOfWarOverlay {
     scene: THREE.Scene,
     bounds: FogOfWarBounds,
     colliders: readonly LevelStaticCollider[],
-    resolution = DEFAULT_RESOLUTION,
+    quality: FogOfWarQuality = "low",
   ) {
     this.bounds = bounds;
-    this.resolution = Math.max(128, Math.min(512, Math.round(resolution)));
+    this.profile = profileForQuality(quality);
+    this.resolution = this.profile.resolution;
     this.losColliders = colliders.filter(isLosObstacle);
 
     this.canvas = document.createElement("canvas");
@@ -104,7 +144,6 @@ export class FogOfWarOverlay {
     );
 
     this.mesh.rotation.x = -Math.PI / 2;
-    // 바닥면에 밀착시켜 떠 있는 느낌/캐릭터 가림 현상을 방지한다.
     this.mesh.position.set(
       (this.bounds.minX + this.bounds.maxX) * 0.5,
       0.06,
@@ -138,9 +177,10 @@ export class FogOfWarOverlay {
       ? Math.abs(Math.atan2(Math.sin(yaw - this.lastYaw), Math.cos(yaw - this.lastYaw)))
       : Number.POSITIVE_INFINITY;
 
-    const shouldSkipByTime = nowMs - this.lastUpdateMs < UPDATE_INTERVAL_MS;
-    const shouldSkipByMove = movedDistanceSq < MOVE_UPDATE_THRESHOLD * MOVE_UPDATE_THRESHOLD;
-    const shouldSkipByYaw = yawDelta < YAW_UPDATE_THRESHOLD_RAD;
+    const shouldSkipByTime = nowMs - this.lastUpdateMs < this.profile.updateIntervalMs;
+    const shouldSkipByMove =
+      movedDistanceSq < this.profile.moveUpdateThreshold * this.profile.moveUpdateThreshold;
+    const shouldSkipByYaw = yawDelta < this.profile.yawUpdateThresholdRad;
     if (shouldSkipByTime && shouldSkipByMove && shouldSkipByYaw) {
       return;
     }
@@ -156,9 +196,9 @@ export class FogOfWarOverlay {
     const forwardX = Math.sin(yaw);
     const forwardZ = Math.cos(yaw);
 
-    const darkAlpha255 = Math.round(DARK_ALPHA * 255);
-    const visibleCenterAlpha255 = Math.round(VISIBLE_CENTER_ALPHA * 255);
-    const visibleEdgeAlpha255 = Math.round(VISIBLE_EDGE_ALPHA * 255);
+    const darkAlpha255 = Math.round(this.profile.darkAlpha * 255);
+    const visibleCenterAlpha255 = Math.round(this.profile.visibleCenterAlpha * 255);
+    const visibleEdgeAlpha255 = Math.round(this.profile.visibleEdgeAlpha * 255);
 
     for (let i = 0; i < this.worldXByPixel.length; i += 1) {
       const worldX = this.worldXByPixel[i];
@@ -209,7 +249,7 @@ export class FogOfWarOverlay {
       this.alphaMask[i] = alpha;
     }
 
-    const finalAlpha = EDGE_BLUR_ENABLED
+    const finalAlpha = this.profile.edgeBlurEnabled
       ? this.applyBoxBlur3x3(this.alphaMask, this.alphaBlurScratch)
       : this.alphaMask;
 
@@ -250,7 +290,6 @@ export class FogOfWarOverlay {
         const i21 = yNext * width + x;
         const i22 = yNext * width + xNext;
 
-        // 가중치 [1 2 1; 2 4 2; 1 2 1] / 16
         const weighted =
           (source[i00] ?? 0) +
           (source[i01] ?? 0) * 2 +
@@ -282,7 +321,6 @@ export class FogOfWarOverlay {
 
     for (let py = 0; py < this.resolution; py += 1) {
       const v = (py + 0.5) / this.resolution;
-      // 캔버스 Y축(상→하)과 월드 Z축 투영을 맞춰 상/하 반전이 생기지 않도록 한다.
       const worldZ = this.bounds.minZ + depth * v;
 
       for (let px = 0; px < this.resolution; px += 1) {

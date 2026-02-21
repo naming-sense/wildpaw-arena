@@ -33,6 +33,7 @@ import { HERO_ASSET_MANIFEST, type HeroAssetManifest } from "../assets/manifests
 import { HERO_DEFS, HERO_DEF_BY_ID, type HeroDef } from "../gameplay/hero/heroDefs";
 import { WEAPON_DEFS, WEAPON_DEF_BY_ID } from "../gameplay/weapon/weaponDefs";
 import { LevelRuntime } from "../level/runtime/levelRuntime";
+import type { FogOfWarQuality } from "../level/runtime/fogOfWarOverlay";
 import { segmentIntersectsCollider2D } from "../level/runtime/levelCollision";
 import type { GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 
@@ -41,6 +42,7 @@ interface GameAppOptions {
   heroId?: string;
   roomToken?: string;
   mapId?: string;
+  fowQuality?: FogOfWarQuality;
 }
 
 const HERO_MOVE_ANIM_THRESHOLD = 0.15;
@@ -63,6 +65,7 @@ const DAMAGE_OVERLAY_LIFE_MS = 220;
 const LOS_VISION_RANGE_METERS = 22;
 const LOS_HALF_FOV_RAD = (55 * Math.PI) / 180;
 const LOS_COLLIDER_PADDING = 0.02;
+const FOW_QUALITY_STORAGE_KEY = "wildpaw.fowQuality";
 
 function normalizeHeroId(rawHeroId: string): string {
   const normalized = rawHeroId.trim();
@@ -114,6 +117,62 @@ function resolvePreferredMapId(explicitMapId?: string): string | undefined {
   }
 
   return undefined;
+}
+
+function normalizeFogOfWarQuality(raw: unknown): FogOfWarQuality | null {
+  if (typeof raw !== "string") {
+    return null;
+  }
+
+  const value = raw.trim().toLowerCase();
+  if (value === "low" || value === "l" || value === "performance") {
+    return "low";
+  }
+  if (value === "medium" || value === "m" || value === "balanced") {
+    return "medium";
+  }
+  if (value === "high" || value === "h" || value === "quality") {
+    return "high";
+  }
+  return null;
+}
+
+function resolvePreferredFogOfWarQuality(explicit?: string): FogOfWarQuality {
+  const fromExplicit = normalizeFogOfWarQuality(explicit);
+  if (fromExplicit) {
+    return fromExplicit;
+  }
+
+  if (typeof window === "undefined") {
+    return "low";
+  }
+
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const fromQuery = normalizeFogOfWarQuality(
+      params.get("fow") ?? params.get("fowQuality"),
+    );
+
+    if (fromQuery) {
+      try {
+        window.localStorage.setItem(FOW_QUALITY_STORAGE_KEY, fromQuery);
+      } catch {
+        // ignore storage failures
+      }
+      return fromQuery;
+    }
+
+    const fromStorage = normalizeFogOfWarQuality(
+      window.localStorage.getItem(FOW_QUALITY_STORAGE_KEY),
+    );
+    if (fromStorage) {
+      return fromStorage;
+    }
+  } catch {
+    // ignore parse/storage errors
+  }
+
+  return "low";
 }
 
 function pickHeroDef(heroId: string): HeroDef {
@@ -270,11 +329,15 @@ export class GameApp {
     createMainLights(this.sceneRoot.scene);
 
     const resolvedMapId = resolvePreferredMapId(options.mapId);
+    const fogOfWarQuality = resolvePreferredFogOfWarQuality(options.fowQuality);
     const levelDebugEnabled =
       typeof window !== "undefined" &&
       (new URLSearchParams(window.location.search).get("levelDebug") === "1" ||
         new URLSearchParams(window.location.search).get("debugLevel") === "1");
-    this.levelRuntime = new LevelRuntime(this.sceneRoot.scene, resolvedMapId, levelDebugEnabled);
+    this.levelRuntime = new LevelRuntime(this.sceneRoot.scene, resolvedMapId, {
+      debugVisible: levelDebugEnabled,
+      fogOfWarQuality,
+    });
     this.worldBounds = this.levelRuntime.worldBounds;
     console.info(
       `[level] loaded map=${this.levelRuntime.map.mapId} mode=${this.levelRuntime.map.mode} prefabs=${this.levelRuntime.map.prefabs.length}`,

@@ -10,7 +10,7 @@ import { buildPrefab } from "../prefab/prefabFactory";
 import { createLaneOverlayGroup } from "./levelNavOverlay";
 import { createLineOfSightDebugGroup } from "./lineOfSightDebug";
 import { runSpawnSafetyCheck, type SpawnFallbackOffset } from "./spawnSafetyCheck";
-import { FogOfWarOverlay } from "./fogOfWarOverlay";
+import { FogOfWarOverlay, type FogOfWarQuality } from "./fogOfWarOverlay";
 import { segmentIntersectsCollider2D, type LevelStaticCollider } from "./levelCollision";
 
 export interface LevelRuntimeWorldBounds {
@@ -22,6 +22,18 @@ export interface LevelRuntimeWorldBounds {
   maxZ: number;
 }
 
+export interface LevelRuntimeOptions {
+  debugVisible?: boolean;
+  fogOfWarQuality?: FogOfWarQuality;
+}
+
+interface ObstacleVisibilityProfile {
+  updateIntervalMs: number;
+  moveThreshold: number;
+  yawThresholdRad: number;
+  sampleMode: "center" | "full";
+}
+
 interface LosObstacleVisual {
   root: THREE.Object3D;
   colliders: readonly LevelStaticCollider[];
@@ -31,9 +43,27 @@ interface LosObstacleVisual {
 }
 
 const HIDDEN_OBSTACLE_OPACITY_FACTOR = 0.38;
-const OBSTACLE_VISIBILITY_UPDATE_INTERVAL_MS = 120;
-const OBSTACLE_VISIBILITY_MOVE_THRESHOLD = 0.22;
-const OBSTACLE_VISIBILITY_YAW_THRESHOLD_RAD = (4 * Math.PI) / 180;
+
+const OBSTACLE_VISIBILITY_PROFILES: Record<FogOfWarQuality, ObstacleVisibilityProfile> = {
+  low: {
+    updateIntervalMs: 220,
+    moveThreshold: 0.32,
+    yawThresholdRad: (7 * Math.PI) / 180,
+    sampleMode: "center",
+  },
+  medium: {
+    updateIntervalMs: 140,
+    moveThreshold: 0.22,
+    yawThresholdRad: (4 * Math.PI) / 180,
+    sampleMode: "full",
+  },
+  high: {
+    updateIntervalMs: 100,
+    moveThreshold: 0.14,
+    yawThresholdRad: (3 * Math.PI) / 180,
+    sampleMode: "full",
+  },
+};
 
 function isLosObstacle(collider: LevelStaticCollider): boolean {
   return (
@@ -43,8 +73,15 @@ function isLosObstacle(collider: LevelStaticCollider): boolean {
   );
 }
 
+function obstacleVisibilityProfileForQuality(
+  quality: FogOfWarQuality,
+): ObstacleVisibilityProfile {
+  return OBSTACLE_VISIBILITY_PROFILES[quality] ?? OBSTACLE_VISIBILITY_PROFILES.medium;
+}
+
 function buildObstacleSamplePoints(
   colliders: readonly LevelStaticCollider[],
+  sampleMode: "center" | "full",
 ): ReadonlyArray<{ x: number; z: number }> {
   const points: { x: number; z: number }[] = [];
   const seen = new Set<string>();
@@ -53,13 +90,16 @@ function buildObstacleSamplePoints(
     const centerX = (collider.minX + collider.maxX) * 0.5;
     const centerZ = (collider.minZ + collider.maxZ) * 0.5;
 
-    const candidates = [
-      { x: centerX, z: centerZ },
-      { x: collider.minX, z: collider.minZ },
-      { x: collider.minX, z: collider.maxZ },
-      { x: collider.maxX, z: collider.minZ },
-      { x: collider.maxX, z: collider.maxZ },
-    ];
+    const candidates =
+      sampleMode === "center"
+        ? [{ x: centerX, z: centerZ }]
+        : [
+            { x: centerX, z: centerZ },
+            { x: collider.minX, z: collider.minZ },
+            { x: collider.minX, z: collider.maxZ },
+            { x: collider.maxX, z: collider.minZ },
+            { x: collider.maxX, z: collider.maxZ },
+          ];
 
     for (const point of candidates) {
       const key = `${point.x.toFixed(3)}:${point.z.toFixed(3)}`;
@@ -235,15 +275,20 @@ export class LevelRuntime {
   private payloadView: PayloadView | null = null;
   private fogOfWarOverlay: FogOfWarOverlay | null = null;
   private readonly losObstacleVisuals: LosObstacleVisual[] = [];
+  private readonly obstacleVisibilityProfile: ObstacleVisibilityProfile;
 
   private lastObstacleVisibilityUpdateMs = Number.NEGATIVE_INFINITY;
   private lastObstacleOriginX = Number.NaN;
   private lastObstacleOriginZ = Number.NaN;
   private lastObstacleYaw = Number.NaN;
 
-  constructor(scene: THREE.Scene, mapId?: string | null, debugVisible = false) {
+  constructor(scene: THREE.Scene, mapId?: string | null, options: LevelRuntimeOptions = {}) {
     this.scene = scene;
     this.map = loadLevelMapDefinition(mapId);
+
+    const fogOfWarQuality: FogOfWarQuality = options.fogOfWarQuality ?? "low";
+    const debugVisible = options.debugVisible ?? false;
+    this.obstacleVisibilityProfile = obstacleVisibilityProfileForQuality(fogOfWarQuality);
 
     this.root.name = `level:${this.map.mapId}`;
     this.staticLayer.name = "level:static";
@@ -276,7 +321,10 @@ export class LevelRuntime {
           root: built.root,
           colliders: losColliders,
           ownColliderIds: new Set(losColliders.map((collider) => collider.id)),
-          samplePoints: buildObstacleSamplePoints(losColliders),
+          samplePoints: buildObstacleSamplePoints(
+            losColliders,
+            this.obstacleVisibilityProfile.sampleMode,
+          ),
           lastVisible: null,
         });
       }
@@ -311,7 +359,12 @@ export class LevelRuntime {
     };
 
     this.scene.add(this.root);
-    this.fogOfWarOverlay = new FogOfWarOverlay(this.scene, this.worldBounds, this.colliders);
+    this.fogOfWarOverlay = new FogOfWarOverlay(
+      this.scene,
+      this.worldBounds,
+      this.colliders,
+      fogOfWarQuality,
+    );
   }
 
   setDebugVisible(visible: boolean): void {
@@ -368,11 +421,12 @@ export class LevelRuntime {
       : Number.POSITIVE_INFINITY;
 
     const shouldSkipByTime =
-      nowMs - this.lastObstacleVisibilityUpdateMs < OBSTACLE_VISIBILITY_UPDATE_INTERVAL_MS;
+      nowMs - this.lastObstacleVisibilityUpdateMs < this.obstacleVisibilityProfile.updateIntervalMs;
     const shouldSkipByMove =
       movedDistanceSq <
-      OBSTACLE_VISIBILITY_MOVE_THRESHOLD * OBSTACLE_VISIBILITY_MOVE_THRESHOLD;
-    const shouldSkipByYaw = yawDelta < OBSTACLE_VISIBILITY_YAW_THRESHOLD_RAD;
+      this.obstacleVisibilityProfile.moveThreshold *
+      this.obstacleVisibilityProfile.moveThreshold;
+    const shouldSkipByYaw = yawDelta < this.obstacleVisibilityProfile.yawThresholdRad;
 
     if (shouldSkipByTime && shouldSkipByMove && shouldSkipByYaw) {
       return;

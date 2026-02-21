@@ -5,6 +5,7 @@ interface BootstrapOptions {
   heroId?: string;
   roomToken?: string;
   mapId?: string;
+  fowQuality?: "low" | "medium" | "high";
 }
 
 function resolveDefaultWsUrl(): string | undefined {
@@ -19,6 +20,7 @@ export async function bootstrap(canvas: HTMLCanvasElement, options: BootstrapOpt
     heroId: options.heroId,
     roomToken: options.roomToken,
     mapId: options.mapId,
+    fowQuality: options.fowQuality,
   });
 
   await app.start();

@@ -275,3 +275,22 @@ npm run test
   - `npm run level:validate` ✅ (NJD/HMY/FDD 모두 통과)
   - `npm run build` ✅
   - `npm run test` ✅
+
+## 19) FOW 품질 프리셋 도입 + 저사양 성능 모드
+
+- Fog of War 품질 레벨 추가
+  - `low` / `medium` / `high` 프리셋 지원
+  - 기본값을 `low`로 설정해 프레임 우선 정책 적용
+- 적용 경로
+  - `src/level/runtime/fogOfWarOverlay.ts`
+    - 해상도/갱신 주기/이동·회전 임계치/경계 블러 on/off를 품질별로 분리
+  - `src/level/runtime/levelRuntime.ts`
+    - 장애물 가시성 판정도 품질별 스로틀 프로파일 적용
+    - `low`에서는 샘플 포인트를 중심점 위주로 단순화
+  - `src/app/gameApp.ts`
+    - `?fow=low|medium|high` (`?fowQuality=`도 허용) 쿼리 파라미터로 품질 선택
+    - 마지막 선택값을 localStorage(`wildpaw.fowQuality`)에 저장해 재접속 시 유지
+- 부트 옵션 확장
+  - `src/app/bootstrap.ts`에 `fowQuality` 옵션 추가
+- 검증
+  - `npm run build` ✅
