@@ -216,7 +216,8 @@ export class FogOfWarOverlay {
 
     for (let py = 0; py < this.resolution; py += 1) {
       const v = (py + 0.5) / this.resolution;
-      const worldZ = this.bounds.maxZ - depth * v;
+      // 캔버스 Y축(상→하)과 월드 Z축 투영을 맞춰 상/하 반전이 생기지 않도록 한다.
+      const worldZ = this.bounds.minZ + depth * v;
 
       for (let px = 0; px < this.resolution; px += 1) {
         const u = (px + 0.5) / this.resolution;
