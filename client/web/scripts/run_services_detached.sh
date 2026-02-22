@@ -10,7 +10,6 @@ GATEWAY_PID_FILE="$RUN_DIR/gateway.pid"
 WEB_PORT=4173
 WS_PORT=8080
 WS_ADMIN_PORT="${WS_ADMIN_PORT:-9100}"
-WS_BACKEND="${WS_BACKEND:-cpp}"  # mock fallback intentionally disabled (cpp only)
 GATEWAY_PORT=7200
 GATEWAY_DIR="$(cd "$ROOT_DIR/../../server/gateway" && pwd)"
 ROOM_BUILD_DIR="$(cd "$ROOT_DIR/../../server/build/room" && pwd)"
@@ -126,11 +125,6 @@ start_ws() {
     echo "[ws] admin port $WS_ADMIN_PORT is busy -> fallback $admin_port"
   fi
 
-  if [[ "$WS_BACKEND" != "cpp" ]]; then
-    echo "[ws] unsupported WS_BACKEND=$WS_BACKEND (mock backend disabled)" >&2
-    return 1
-  fi
-
   if [[ ! -x "$ROOM_BINARY" ]]; then
     echo "[ws] cpp backend required but binary missing: $ROOM_BINARY" >&2
     return 1
@@ -146,7 +140,7 @@ start_ws() {
 
   pid="$(port_pid "$WS_PORT")"
   echo "$pid" > "$WS_PID_FILE"
-  echo "[ws] started pid=$pid (backend=$WS_BACKEND, admin_port=$admin_port)"
+  echo "[ws] started pid=$pid (admin_port=$admin_port)"
 }
 
 ensure_gateway_dependencies() {
