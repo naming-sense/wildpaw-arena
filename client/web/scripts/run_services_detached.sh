@@ -9,8 +9,14 @@ WS_PID_FILE="$RUN_DIR/ws.pid"
 GATEWAY_PID_FILE="$RUN_DIR/gateway.pid"
 WEB_PORT=4173
 WS_PORT=8080
+WS_ADMIN_PORT="${WS_ADMIN_PORT:-9100}"
+WS_BACKEND="${WS_BACKEND:-cpp}"  # mock fallback intentionally disabled (cpp only)
 GATEWAY_PORT=7200
 GATEWAY_DIR="$(cd "$ROOT_DIR/../../server/gateway" && pwd)"
+ROOM_BUILD_DIR="$(cd "$ROOT_DIR/../../server/build/room" && pwd)"
+ROOM_BINARY="$ROOM_BUILD_DIR/wildpaw-room"
+ROOM_RULES_PATH="$(cd "$ROOT_DIR/../../server/room/config" && pwd)/combat_rules.json"
+ROOM_MAP_DATA_ROOT="$(cd "$ROOT_DIR/src/level/data/maps" && pwd)"
 
 mkdir -p "$RUN_DIR" "$LOG_DIR"
 
@@ -84,6 +90,23 @@ start_web() {
   echo "[web] started pid=$pid"
 }
 
+pick_ws_admin_port() {
+  if [[ -z "$(port_pid "$WS_ADMIN_PORT")" ]]; then
+    echo "$WS_ADMIN_PORT"
+    return 0
+  fi
+
+  local candidate
+  for candidate in 19100 19101 19102 19103 19104 19105; do
+    if [[ -z "$(port_pid "$candidate")" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 start_ws() {
   local pid
   pid="$(port_pid "$WS_PORT")"
@@ -93,7 +116,27 @@ start_ws() {
     return
   fi
 
-  nohup bash -lc "cd '$ROOT_DIR' && exec node ./scripts/mock-room-server.mjs" \
+  local admin_port
+  if ! admin_port="$(pick_ws_admin_port)"; then
+    echo "[ws] failed to start (no available admin port; WS_ADMIN_PORT=$WS_ADMIN_PORT is busy)" >&2
+    return 1
+  fi
+
+  if [[ "$admin_port" != "$WS_ADMIN_PORT" ]]; then
+    echo "[ws] admin port $WS_ADMIN_PORT is busy -> fallback $admin_port"
+  fi
+
+  if [[ "$WS_BACKEND" != "cpp" ]]; then
+    echo "[ws] unsupported WS_BACKEND=$WS_BACKEND (mock backend disabled)" >&2
+    return 1
+  fi
+
+  if [[ ! -x "$ROOM_BINARY" ]]; then
+    echo "[ws] cpp backend required but binary missing: $ROOM_BINARY" >&2
+    return 1
+  fi
+
+  nohup bash -lc "cd '$ROOM_BUILD_DIR' && WILDPAW_ROOM_TOKEN_SECRET='${WILDPAW_ROOM_TOKEN_SECRET:-dev-room-secret}' WILDPAW_ADMIN_TOKEN='${WILDPAW_ADMIN_TOKEN:-}' exec '$ROOM_BINARY' '$WS_PORT' 2 30 '$admin_port' '$ROOM_RULES_PATH' 3 '$ROOM_MAP_DATA_ROOT'" \
     >"$LOG_DIR/ws.log" 2>&1 &
 
   if ! wait_port "$WS_PORT" 30; then
@@ -103,7 +146,7 @@ start_ws() {
 
   pid="$(port_pid "$WS_PORT")"
   echo "$pid" > "$WS_PID_FILE"
-  echo "[ws] started pid=$pid"
+  echo "[ws] started pid=$pid (backend=$WS_BACKEND, admin_port=$admin_port)"
 }
 
 ensure_gateway_dependencies() {
