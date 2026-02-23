@@ -13,6 +13,9 @@ export interface RawInputState {
 
 const TOUCH_STICK_MAX_DISTANCE = 72;
 const TOUCH_STICK_DEADZONE = 6;
+const TOUCH_MOVE_ZONE_RATIO = 0.5;
+
+type SkillSlot = "Q" | "E" | "R";
 
 export class KeyboardMouseInput {
   private readonly keys = new Set<string>();
@@ -34,6 +37,13 @@ export class KeyboardMouseInput {
   private touchFirePointerId: number | null = null;
   private fireButtonEl: HTMLElement | null = null;
 
+  private skillButtonEls: HTMLElement[] = [];
+  private touchSkillTapQueued: Record<SkillSlot, boolean> = {
+    Q: false,
+    E: false,
+    R: false,
+  };
+
   constructor(private readonly canvas: HTMLCanvasElement) {}
 
   attach(): void {
@@ -44,6 +54,7 @@ export class KeyboardMouseInput {
     window.addEventListener("pointerup", this.onPointerUp);
     window.addEventListener("pointercancel", this.onPointerUp);
     this.bindFireButton();
+    this.bindSkillButtons();
   }
 
   detach(): void {
@@ -54,6 +65,7 @@ export class KeyboardMouseInput {
     window.removeEventListener("pointerup", this.onPointerUp);
     window.removeEventListener("pointercancel", this.onPointerUp);
     this.unbindFireButton();
+    this.unbindSkillButtons();
 
     this.touchMovePointerId = null;
     this.touchAimPointerId = null;
@@ -62,10 +74,13 @@ export class KeyboardMouseInput {
     this.touchFire = false;
     this.touchFireTapQueued = false;
     this.touchFirePointerId = null;
+    this.touchSkillTapQueued.Q = false;
+    this.touchSkillTapQueued.E = false;
+    this.touchSkillTapQueued.R = false;
   }
 
   sample(): RawInputState {
-    this.ensureFireButtonBinding();
+    this.ensureControlButtonBinding();
 
     const keyboardMoveX = (this.keys.has("KeyD") ? 1 : 0) - (this.keys.has("KeyA") ? 1 : 0);
     // World forward is -Z in this camera setup, so invert keyboard Y mapping.
@@ -76,9 +91,22 @@ export class KeyboardMouseInput {
     const moveY = useKeyboard ? keyboardMoveY : this.touchMoveY;
 
     const fire = this.mouseDown || this.touchFire || this.touchFireTapQueued;
+    const skillQ = this.keys.has("KeyQ") || this.touchSkillTapQueued.Q;
+    const skillE = this.keys.has("KeyE") || this.touchSkillTapQueued.E;
+    const skillR = this.keys.has("KeyR") || this.touchSkillTapQueued.R;
+
     if (this.touchFireTapQueued) {
       // Ensure short taps are visible for at least one simulation tick.
       this.touchFireTapQueued = false;
+    }
+    if (this.touchSkillTapQueued.Q) {
+      this.touchSkillTapQueued.Q = false;
+    }
+    if (this.touchSkillTapQueued.E) {
+      this.touchSkillTapQueued.E = false;
+    }
+    if (this.touchSkillTapQueued.R) {
+      this.touchSkillTapQueued.R = false;
     }
 
     const preferMoveFacing =
@@ -93,9 +121,9 @@ export class KeyboardMouseInput {
       moveX,
       moveY,
       fire,
-      skillQ: this.keys.has("KeyQ"),
-      skillE: this.keys.has("KeyE"),
-      skillR: this.keys.has("KeyR"),
+      skillQ,
+      skillE,
+      skillR,
       aimNdcX: this.aimNdcX,
       aimNdcY: this.aimNdcY,
       preferMoveFacing,
@@ -103,15 +131,24 @@ export class KeyboardMouseInput {
     };
   }
 
-  private ensureFireButtonBinding(): void {
+  private ensureControlButtonBinding(): void {
     if (typeof document === "undefined") return;
 
     if (this.fireButtonEl && !this.fireButtonEl.isConnected) {
       this.unbindFireButton();
     }
 
-    if (this.fireButtonEl) return;
-    this.bindFireButton();
+    if (!this.fireButtonEl) {
+      this.bindFireButton();
+    }
+
+    if (this.skillButtonEls.length > 0 && this.skillButtonEls.some((button) => !button.isConnected)) {
+      this.unbindSkillButtons();
+    }
+
+    if (this.skillButtonEls.length === 0) {
+      this.bindSkillButtons();
+    }
   }
 
   private bindFireButton(): void {
@@ -137,6 +174,37 @@ export class KeyboardMouseInput {
     this.fireButtonEl = null;
   }
 
+  private bindSkillButtons(): void {
+    if (typeof document === "undefined") return;
+
+    const skillButtons = [...document.querySelectorAll<HTMLElement>("[data-skill-button]")];
+    if (skillButtons.length === 0) {
+      this.skillButtonEls = [];
+      return;
+    }
+
+    this.skillButtonEls = skillButtons;
+    for (const button of this.skillButtonEls) {
+      button.addEventListener("pointerdown", this.onSkillButtonDown);
+      button.addEventListener("pointerup", this.onSkillButtonUp);
+      button.addEventListener("pointercancel", this.onSkillButtonUp);
+      button.addEventListener("pointerleave", this.onSkillButtonUp);
+    }
+  }
+
+  private unbindSkillButtons(): void {
+    if (this.skillButtonEls.length === 0) return;
+
+    for (const button of this.skillButtonEls) {
+      button.removeEventListener("pointerdown", this.onSkillButtonDown);
+      button.removeEventListener("pointerup", this.onSkillButtonUp);
+      button.removeEventListener("pointercancel", this.onSkillButtonUp);
+      button.removeEventListener("pointerleave", this.onSkillButtonUp);
+    }
+
+    this.skillButtonEls = [];
+  }
+
   private onKeyDown = (event: KeyboardEvent): void => {
     this.keys.add(event.code);
   };
@@ -149,7 +217,7 @@ export class KeyboardMouseInput {
     if (event.pointerType === "touch") {
       const rect = this.canvas.getBoundingClientRect();
       const localX = event.clientX - rect.left;
-      const leftZoneMaxX = rect.width * 0.58;
+      const leftZoneMaxX = rect.width * TOUCH_MOVE_ZONE_RATIO;
 
       if (this.touchMovePointerId === null && localX <= leftZoneMaxX) {
         this.touchMovePointerId = event.pointerId;
@@ -196,7 +264,6 @@ export class KeyboardMouseInput {
         this.touchMoveCurrentX = event.clientX;
         this.touchMoveCurrentY = event.clientY;
         this.updateTouchStickVector();
-        this.updateAimFromClient(event.clientX, event.clientY);
         return;
       }
 
@@ -249,6 +316,58 @@ export class KeyboardMouseInput {
       }
     }
   };
+
+  private onSkillButtonDown = (event: PointerEvent): void => {
+    if (event.pointerType !== "touch" && event.pointerType !== "pen" && event.button !== 0) {
+      return;
+    }
+
+    const slot = this.resolveSkillSlot(event.currentTarget);
+    if (!slot) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    this.touchSkillTapQueued[slot] = true;
+
+    const target = event.currentTarget as HTMLElement | null;
+    if (target && typeof target.setPointerCapture === "function") {
+      try {
+        target.setPointerCapture(event.pointerId);
+      } catch {
+        // ignore capture failures
+      }
+    }
+  };
+
+  private onSkillButtonUp = (event: PointerEvent): void => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const target = event.currentTarget as HTMLElement | null;
+    if (target && typeof target.hasPointerCapture === "function" && target.hasPointerCapture(event.pointerId)) {
+      try {
+        target.releasePointerCapture(event.pointerId);
+      } catch {
+        // ignore release failures
+      }
+    }
+  };
+
+  private resolveSkillSlot(target: EventTarget | null): SkillSlot | null {
+    if (!(target instanceof HTMLElement)) {
+      return null;
+    }
+
+    const raw = target.dataset.skillButton?.trim().toUpperCase();
+    if (raw === "Q" || raw === "E" || raw === "R") {
+      return raw;
+    }
+
+    return null;
+  }
 
   private updateTouchStickVector(): void {
     const dx = this.touchMoveCurrentX - this.touchMoveStartX;

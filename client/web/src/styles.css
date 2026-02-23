@@ -124,6 +124,75 @@ body,
   filter: brightness(1.06);
 }
 
+.mobile-skill-cluster {
+  position: absolute;
+  right: 116px;
+  bottom: 82px;
+  z-index: 9;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: auto;
+}
+
+.mobile-skill-button {
+  position: relative;
+  width: 66px;
+  height: 66px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  background: linear-gradient(165deg, rgba(34, 44, 70, 0.96), rgba(13, 18, 32, 0.94));
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.32);
+  color: #eef4ff;
+  padding: 8px 6px 7px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.mobile-skill-button:active {
+  transform: scale(0.95);
+  filter: brightness(1.08);
+}
+
+.mobile-skill-button--q {
+  border-color: rgba(130, 240, 255, 0.56);
+}
+
+.mobile-skill-button--e {
+  border-color: rgba(156, 255, 171, 0.56);
+}
+
+.mobile-skill-button--r {
+  border-color: rgba(255, 195, 132, 0.62);
+}
+
+.mobile-skill-button__icon {
+  width: 26px;
+  height: 26px;
+  display: block;
+  pointer-events: none;
+}
+
+.mobile-skill-button__slot {
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  line-height: 1;
+}
+
+.mobile-skill-button__name {
+  font-size: 9px;
+  line-height: 1;
+  font-weight: 700;
+  opacity: 0.9;
+}
+
 .overlay-panel {
   position: absolute;
   top: 50%;
@@ -241,7 +310,8 @@ body,
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .mobile-fire-button {
+  .mobile-fire-button,
+  .mobile-skill-cluster {
     display: none;
   }
 }
@@ -547,6 +617,16 @@ body,
   background: rgba(66, 108, 180, 0.5);
 }
 
+.flow-select-chip.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+  border-style: dashed;
+}
+
+.flow-select-chip small {
+  color: rgba(255, 213, 138, 0.92);
+}
+
 .flow-lobby-grid {
   height: 100%;
   display: grid;
@@ -582,6 +662,12 @@ body,
   background: rgba(52, 83, 145, 0.54);
 }
 
+.flow-mode-card.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+  border-style: dashed;
+}
+
 .flow-hero-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -611,6 +697,12 @@ body,
 .flow-hero-card.is-selected {
   border-color: rgba(130, 188, 255, 0.95);
   background: rgba(57, 89, 152, 0.6);
+}
+
+.flow-hero-card.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+  border-style: dashed;
 }
 
 .flow-hero-card--draft.is-locked {
@@ -700,6 +792,39 @@ body,
 
 .flow-draft-header h2 {
   margin: 0;
+}
+
+.flow-draft-turn-banner {
+  margin-bottom: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(10, 15, 24, 0.9);
+  padding: 10px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  font-size: 13px;
+}
+
+.flow-draft-turn-banner strong {
+  font-size: 14px;
+}
+
+.flow-draft-turn-banner.is-my-turn {
+  border-color: rgba(124, 231, 255, 0.6);
+  background: rgba(22, 47, 58, 0.45);
+}
+
+.flow-draft-turn-banner.is-waiting {
+  border-color: rgba(255, 173, 102, 0.45);
+  background: rgba(56, 34, 21, 0.35);
+}
+
+.flow-draft-turn-token {
+  margin-left: auto;
+  opacity: 0.72;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 .flow-draft-grid {
@@ -792,6 +917,34 @@ body,
   .flow-bottom-nav button {
     flex: 1;
     min-width: 0;
+  }
+
+  .mobile-fire-button {
+    right: 14px;
+    bottom: 72px;
+    width: 82px;
+    height: 82px;
+  }
+
+  .mobile-skill-cluster {
+    right: 104px;
+    bottom: 78px;
+    gap: 8px;
+  }
+
+  .mobile-skill-button {
+    width: 60px;
+    height: 60px;
+    border-radius: 16px;
+  }
+
+  .mobile-skill-button__icon {
+    width: 23px;
+    height: 23px;
+  }
+
+  .mobile-skill-button__name {
+    font-size: 8px;
   }
 
   .match-end-button {

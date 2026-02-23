@@ -1,0 +1,18 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="e-bg" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(38 30) rotate(53) scale(116)">
+      <stop offset="0" stop-color="#C7FFD2"/>
+      <stop offset="0.46" stop-color="#66E886"/>
+      <stop offset="1" stop-color="#17492A"/>
+    </radialGradient>
+  </defs>
+  <rect x="6" y="6" width="116" height="116" rx="28" fill="url(#e-bg)"/>
+  <rect x="6" y="6" width="116" height="116" rx="28" stroke="white" stroke-opacity="0.65" stroke-width="6"/>
+
+  <path d="M64 34C75 42 84 53 84 64C84 75 75 86 64 94C53 86 44 75 44 64C44 53 53 42 64 34Z" fill="white" fill-opacity="0.88"/>
+  <path d="M57 58L69 58" stroke="#1E7A3A" stroke-width="6" stroke-linecap="round"/>
+  <path d="M54 68H72" stroke="#1E7A3A" stroke-width="6" stroke-linecap="round"/>
+  <circle cx="64" cy="64" r="24" stroke="white" stroke-opacity="0.36" stroke-width="4"/>
+
+  <text x="64" y="110" text-anchor="middle" fill="white" font-size="20" font-family="Inter, Pretendard, sans-serif" font-weight="800" letter-spacing="2">E</text>
+</svg>

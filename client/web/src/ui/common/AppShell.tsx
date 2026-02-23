@@ -12,6 +12,33 @@ function isRuntimeFlow(flowState: string): boolean {
   return flowState === "MATCH_LOADING" || flowState === "IN_MATCH" || flowState === "RECONNECTING";
 }
 
+type SkillSlot = "Q" | "E" | "R";
+
+const SKILL_SLOT_ORDER: SkillSlot[] = ["Q", "E", "R"];
+
+const DEFAULT_SKILL_LABELS: Record<SkillSlot, string> = {
+  Q: "스킬1",
+  E: "스킬2",
+  R: "궁극기",
+};
+
+const HERO_SKILL_LABELS: Record<string, Record<SkillSlot, string>> = {
+  coral_cat: {
+    Q: "관통 사격",
+    E: "사이드 스텝",
+    R: "집속 폭발",
+  },
+  bruno_bear: {
+    Q: "돌진 강타",
+    E: "야수 포효",
+    R: "지면 분쇄",
+  },
+};
+
+function getSkillLabels(heroId: string): Record<SkillSlot, string> {
+  return HERO_SKILL_LABELS[heroId] ?? DEFAULT_SKILL_LABELS;
+}
+
 export function AppShell(): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const appRef = useRef<GameApp | null>(null);
@@ -23,6 +50,7 @@ export function AppShell(): JSX.Element {
   const selectedHeroId = useAppFlowStore((state) => state.selectedHeroId);
   const loading = useAppFlowStore((state) => state.loading);
   const shouldBootstrapRuntime = isRuntimeFlow(flowState);
+  const skillLabels = getSkillLabels(selectedHeroId);
 
   const setLoadingVisual = useAppFlowStore((state) => state.setLoadingVisual);
   const bumpLoadingRetry = useAppFlowStore((state) => state.bumpLoadingRetry);
@@ -146,14 +174,38 @@ export function AppShell(): JSX.Element {
       ) : null}
 
       {showRuntimeUi ? (
-        <button
-          type="button"
-          className="mobile-fire-button"
-          data-fire-button
-          aria-label="공격"
-        >
-          공격
-        </button>
+        <>
+          <button
+            type="button"
+            className="mobile-fire-button"
+            data-fire-button
+            aria-label="공격"
+          >
+            공격
+          </button>
+
+          <div className="mobile-skill-cluster" aria-label="모바일 스킬 버튼">
+            {SKILL_SLOT_ORDER.map((slot) => (
+              <button
+                key={slot}
+                type="button"
+                className={`mobile-skill-button mobile-skill-button--${slot.toLowerCase()}`}
+                data-skill-button={slot}
+                aria-label={`${slot} 스킬 ${skillLabels[slot]}`}
+                title={`${slot} · ${skillLabels[slot]}`}
+              >
+                <img
+                  src={`/assets/ui/skills/skill-${slot.toLowerCase()}.svg`}
+                  alt=""
+                  aria-hidden="true"
+                  className="mobile-skill-button__icon"
+                />
+                <span className="mobile-skill-button__slot">{slot}</span>
+                <span className="mobile-skill-button__name">{skillLabels[slot]}</span>
+              </button>
+            ))}
+          </div>
+        </>
       ) : null}
 
       <AppFlowLayer />
