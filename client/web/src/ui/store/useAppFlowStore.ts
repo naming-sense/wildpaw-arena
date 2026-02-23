@@ -55,6 +55,9 @@ interface DraftTeamState {
   locked: string[];
 }
 
+type DraftTeamKey = "teamA" | "teamB";
+type DraftActionType = "BAN" | "PICK";
+
 interface DraftState {
   matchId: string | null;
   modeId: string | null;
@@ -63,6 +66,11 @@ interface DraftState {
   turnSeq: number;
   remainingSec: number;
   timePerTurnSec: number;
+  currentTurnToken: string;
+  currentTurnTeam: DraftTeamKey;
+  currentActionType: DraftActionType;
+  myTeamKey: DraftTeamKey | null;
+  isMyTurn: boolean;
   myHoverHeroId: string | null;
   myPendingAction: boolean;
   teamA: DraftTeamState;
@@ -120,7 +128,21 @@ function sendControlEvent(event: string, payload: unknown): boolean {
 
 const DEVICE_ID_STORAGE_KEY = "wildpaw-control-device-id";
 const ONBOARDING_DRAFT_STORAGE_KEY = "wildpaw-onboarding-draft-v1";
-const DEFAULT_HERO_ID = "coral_cat";
+const DEFAULT_HERO_ID = "bruno_bear";
+
+export const AVAILABLE_HERO_IDS = ["coral_cat", "bruno_bear"] as const;
+const AVAILABLE_HERO_ID_SET = new Set<string>(AVAILABLE_HERO_IDS);
+
+function normalizeHeroAvailabilityId(heroId: string): string {
+  if (heroId === "whitecat_commando") {
+    return "coral_cat";
+  }
+  return heroId;
+}
+
+export function isHeroAvailable(heroId: string): boolean {
+  return AVAILABLE_HERO_ID_SET.has(normalizeHeroAvailabilityId(heroId));
+}
 
 interface OnboardingDraftSnapshot {
   nickname: string;
@@ -141,10 +163,13 @@ function readOnboardingDraft(): OnboardingDraftSnapshot | null {
 
     const nickname = typeof parsed.nickname === "string" ? parsed.nickname.slice(0, 24) : "";
     const termsAccepted = Boolean(parsed.termsAccepted);
-    const starterHeroId =
+    const parsedStarterHeroId =
       typeof parsed.starterHeroId === "string" && parsed.starterHeroId.trim().length > 0
         ? parsed.starterHeroId
         : DEFAULT_HERO_ID;
+    const starterHeroId = isHeroAvailable(parsedStarterHeroId)
+      ? normalizeHeroAvailabilityId(parsedStarterHeroId)
+      : DEFAULT_HERO_ID;
     const resume = Boolean(parsed.resume);
 
     return {
@@ -212,6 +237,13 @@ export const MATCH_MODE_OPTIONS: MatchModeOption[] = [
     estimatedQueueSec: 10,
   },
 ];
+
+export const COMING_SOON_MODE_IDS: MatchModeId[] = ["3v3_normal", "3v3_rank", "5v5_event"];
+const COMING_SOON_MODE_ID_SET = new Set<MatchModeId>(COMING_SOON_MODE_IDS);
+
+export function isModeComingSoon(modeId: MatchModeId): boolean {
+  return COMING_SOON_MODE_ID_SET.has(modeId);
+}
 
 function getOrCreateDeviceId(): string {
   const fallback = `dev_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
@@ -306,6 +338,11 @@ function defaultDraftState(): DraftState {
     turnSeq: 1,
     remainingSec: 20,
     timePerTurnSec: 20,
+    currentTurnToken: "teamA_pick",
+    currentTurnTeam: "teamA",
+    currentActionType: "PICK",
+    myTeamKey: null,
+    isMyTurn: false,
     myHoverHeroId: null,
     myPendingAction: false,
     teamA: defaultDraftTeamState(),
@@ -348,7 +385,7 @@ function defaultPartyState(): PartyState {
   return {
     partyId: null,
     leaderId: null,
-    modeId: "3v3_normal",
+    modeId: "solo_test",
     members: [],
   };
 }
@@ -378,10 +415,41 @@ function normalizeOutcome(value: unknown): "WIN" | "DEFEAT" {
   return "DEFEAT";
 }
 
+function resolveDraftTurnToken(turnOrder: string[], turnSeq: number): string {
+  if (turnOrder.length === 0) return "teamA_pick";
+  return turnOrder[(turnSeq - 1) % turnOrder.length] ?? turnOrder[0] ?? "teamA_pick";
+}
+
+function resolveDraftTeamKeyFromTurnToken(turnToken: string): DraftTeamKey {
+  return turnToken.toLowerCase().startsWith("teamb") ? "teamB" : "teamA";
+}
+
+function resolveDraftActionTypeFromTurnToken(turnToken: string): DraftActionType {
+  return turnToken.toLowerCase().includes("ban") ? "BAN" : "PICK";
+}
+
+function normalizeDraftTeamKey(value: unknown): DraftTeamKey | null {
+  if (typeof value !== "string") return null;
+  const lower = value.trim().toLowerCase();
+  if (lower === "teama" || lower === "team_a") return "teamA";
+  if (lower === "teamb" || lower === "team_b") return "teamB";
+  return null;
+}
+
 function toReadableErrorMessage(payload: Record<string, unknown>): string {
   const code = typeof payload.errorCode === "string" ? payload.errorCode : "UNKNOWN";
   const message = typeof payload.message === "string" ? payload.message : "오류가 발생했습니다.";
-  return `[${code}] ${message}`;
+
+  switch (code) {
+    case "DRAFT_INVALID_TURN":
+      return "지금은 내 차례가 아니에요. 턴 표시를 확인해 주세요.";
+    case "DRAFT_HERO_UNAVAILABLE":
+      return "이미 선택/밴된 히어로예요. 다른 히어로를 골라 주세요.";
+    case "INVALID_STATE":
+      return "현재 단계에서는 해당 요청을 처리할 수 없어요.";
+    default:
+      return `[${code}] ${message}`;
+  }
 }
 
 interface AppFlowStore {
@@ -472,7 +540,7 @@ export const useAppFlowStore = create<AppFlowStore>((set, get) => ({
   onboardingStarterHeroId: initialOnboardingDraft?.starterHeroId ?? DEFAULT_HERO_ID,
   resumeOnboardingFromDraft: initialOnboardingDraft?.resume ?? false,
 
-  selectedModeId: "3v3_normal",
+  selectedModeId: "solo_test",
   selectedHeroId: DEFAULT_HERO_ID,
 
   party: defaultPartyState(),
@@ -763,6 +831,23 @@ export const useAppFlowStore = create<AppFlowStore>((set, get) => ({
         }
 
         case "S2C_DRAFT_START": {
+          const turnOrder = Array.isArray(payload.turnOrder)
+            ? payload.turnOrder.filter((entry): entry is string => typeof entry === "string")
+            : [];
+          const turnSeq = 1;
+          const fallbackTurnToken = resolveDraftTurnToken(turnOrder, turnSeq);
+          const currentTurnToken =
+            typeof payload.currentTurnToken === "string" && payload.currentTurnToken.trim().length > 0
+              ? payload.currentTurnToken
+              : fallbackTurnToken;
+          const currentTurnTeam =
+            normalizeDraftTeamKey(payload.currentTurnTeam) ?? resolveDraftTeamKeyFromTurnToken(currentTurnToken);
+          const myTeamKey = normalizeDraftTeamKey(payload.myTeamKey);
+          const isMyTurn =
+            typeof payload.isMyTurn === "boolean"
+              ? payload.isMyTurn
+              : myTeamKey !== null && myTeamKey === currentTurnTeam;
+
           return {
             ...baseState,
             previousFlowState: baseState.flowState,
@@ -772,12 +857,18 @@ export const useAppFlowStore = create<AppFlowStore>((set, get) => ({
               matchId: typeof payload.matchId === "string" ? payload.matchId : baseState.draft.matchId,
               modeId: typeof payload.modeId === "string" ? payload.modeId : null,
               draftType: typeof payload.draftType === "string" ? payload.draftType : "TURN_BAN_PICK",
-              turnOrder: Array.isArray(payload.turnOrder)
-                ? payload.turnOrder.filter((entry): entry is string => typeof entry === "string")
-                : [],
-              turnSeq: 1,
+              turnOrder,
+              turnSeq,
               remainingSec: typeof payload.timePerTurnSec === "number" ? payload.timePerTurnSec : 20,
               timePerTurnSec: typeof payload.timePerTurnSec === "number" ? payload.timePerTurnSec : 20,
+              currentTurnToken,
+              currentTurnTeam,
+              currentActionType:
+                typeof payload.currentActionType === "string" && payload.currentActionType.toUpperCase() === "BAN"
+                  ? "BAN"
+                  : resolveDraftActionTypeFromTurnToken(currentTurnToken),
+              myTeamKey,
+              isMyTurn,
               myHoverHeroId: baseState.selectedHeroId,
             },
             systemNotice: null,
@@ -791,14 +882,37 @@ export const useAppFlowStore = create<AppFlowStore>((set, get) => ({
           const teamB = payload.teamB && typeof payload.teamB === "object"
             ? payload.teamB as Record<string, unknown>
             : null;
+          const turnSeq =
+            typeof payload.turnSeq === "number" ? payload.turnSeq : baseState.draft.turnSeq;
+          const turnOrder = baseState.draft.turnOrder;
+          const fallbackTurnToken = resolveDraftTurnToken(turnOrder, turnSeq);
+          const currentTurnToken =
+            typeof payload.currentTurnToken === "string" && payload.currentTurnToken.trim().length > 0
+              ? payload.currentTurnToken
+              : fallbackTurnToken;
+          const currentTurnTeam =
+            normalizeDraftTeamKey(payload.currentTurnTeam) ?? resolveDraftTeamKeyFromTurnToken(currentTurnToken);
+          const myTeamKey = normalizeDraftTeamKey(payload.myTeamKey) ?? baseState.draft.myTeamKey;
+          const isMyTurn =
+            typeof payload.isMyTurn === "boolean"
+              ? payload.isMyTurn
+              : myTeamKey !== null && myTeamKey === currentTurnTeam;
 
           return {
             ...baseState,
             draft: {
               ...baseState.draft,
               matchId: typeof payload.matchId === "string" ? payload.matchId : baseState.draft.matchId,
-              turnSeq: typeof payload.turnSeq === "number" ? payload.turnSeq : baseState.draft.turnSeq,
+              turnSeq,
               remainingSec: typeof payload.remainingSec === "number" ? payload.remainingSec : baseState.draft.remainingSec,
+              currentTurnToken,
+              currentTurnTeam,
+              currentActionType:
+                typeof payload.currentActionType === "string" && payload.currentActionType.toUpperCase() === "BAN"
+                  ? "BAN"
+                  : resolveDraftActionTypeFromTurnToken(currentTurnToken),
+              myTeamKey,
+              isMyTurn,
               myPendingAction: false,
               teamA: {
                 bans: Array.isArray(teamA?.bans) ? teamA?.bans.filter((entry): entry is string => typeof entry === "string") : baseState.draft.teamA.bans,
@@ -1024,6 +1138,13 @@ export const useAppFlowStore = create<AppFlowStore>((set, get) => ({
         case "S2C_ERROR": {
           return {
             ...baseState,
+            draft:
+              baseState.flowState === "DRAFT"
+                ? {
+                  ...baseState.draft,
+                  myPendingAction: false,
+                }
+                : baseState.draft,
             systemNotice: toReadableErrorMessage(payload),
           };
         }
@@ -1124,17 +1245,25 @@ export const useAppFlowStore = create<AppFlowStore>((set, get) => ({
 
   setStarterHero: (heroId) => {
     set((state) => {
+      const normalizedHeroId = normalizeHeroAvailabilityId(heroId);
+      if (!isHeroAvailable(normalizedHeroId)) {
+        return {
+          ...state,
+          systemNotice: "해당 히어로는 현재 준비중입니다.",
+        };
+      }
+
       writeOnboardingDraft({
         nickname: state.onboardingNickname,
         termsAccepted: state.termsAccepted,
-        starterHeroId: heroId,
+        starterHeroId: normalizedHeroId,
         resume: true,
       });
 
       return {
         ...state,
-        onboardingStarterHeroId: heroId,
-        selectedHeroId: heroId,
+        onboardingStarterHeroId: normalizedHeroId,
+        selectedHeroId: normalizedHeroId,
         resumeOnboardingFromDraft: true,
       };
     });
@@ -1146,9 +1275,10 @@ export const useAppFlowStore = create<AppFlowStore>((set, get) => ({
 
     const nickname = state.onboardingNickname.trim();
     const nicknameValid = nickname.length >= 2 && nickname.length <= 12;
-    const hasStarter = state.onboardingStarterHeroId.trim().length > 0;
+    const normalizedStarterHeroId = normalizeHeroAvailabilityId(state.onboardingStarterHeroId);
+    const hasStarter = normalizedStarterHeroId.trim().length > 0;
 
-    if (!nicknameValid || !state.termsAccepted || !hasStarter) {
+    if (!nicknameValid || !state.termsAccepted || !hasStarter || !isHeroAvailable(normalizedStarterHeroId)) {
       set((prev) => ({
         ...prev,
         systemNotice: "닉네임/약관/스타터 히어로를 확인해 주세요.",
@@ -1159,7 +1289,7 @@ export const useAppFlowStore = create<AppFlowStore>((set, get) => ({
     const sent = sendControlEvent("C2S_ONBOARDING_COMPLETE", {
       nickname,
       tutorialDone: true,
-      starterHeroIds: [state.onboardingStarterHeroId],
+      starterHeroIds: [normalizedStarterHeroId],
       acceptedTermsVersion: "2026-02",
     });
 
@@ -1172,27 +1302,54 @@ export const useAppFlowStore = create<AppFlowStore>((set, get) => ({
   },
 
   setSelectedMode: (selectedModeId) => {
-    set((state) => ({
-      ...state,
-      selectedModeId,
-      party: {
-        ...state.party,
-        modeId: selectedModeId,
-      },
-    }));
+    set((state) => {
+      if (isModeComingSoon(selectedModeId)) {
+        return {
+          ...state,
+          systemNotice: "해당 모드는 준비중입니다.",
+        };
+      }
+
+      return {
+        ...state,
+        selectedModeId,
+        party: {
+          ...state.party,
+          modeId: selectedModeId,
+        },
+      };
+    });
   },
 
   setSelectedHero: (selectedHeroId) => {
-    set((state) => ({
-      ...state,
-      selectedHeroId,
-    }));
+    set((state) => {
+      const normalizedHeroId = normalizeHeroAvailabilityId(selectedHeroId);
+      if (!isHeroAvailable(normalizedHeroId)) {
+        return {
+          ...state,
+          systemNotice: "해당 히어로는 준비중입니다.",
+        };
+      }
+
+      return {
+        ...state,
+        selectedHeroId: normalizedHeroId,
+      };
+    });
   },
 
   requestQueueJoin: () => {
     const state = get();
 
     if (!["LOBBY", "PARTY", "RESULT"].includes(state.flowState)) {
+      return;
+    }
+
+    if (isModeComingSoon(state.selectedModeId)) {
+      set((prev) => ({
+        ...prev,
+        systemNotice: "선택한 모드는 현재 준비중입니다.",
+      }));
       return;
     }
 
@@ -1280,6 +1437,12 @@ export const useAppFlowStore = create<AppFlowStore>((set, get) => ({
   setDraftHoverHero: (heroId) => {
     set((state) => {
       if (state.flowState !== "DRAFT") return state;
+      if (!isHeroAvailable(heroId)) {
+        return {
+          ...state,
+          systemNotice: "해당 히어로는 준비중입니다.",
+        };
+      }
       return {
         ...state,
         draft: {
@@ -1295,13 +1458,49 @@ export const useAppFlowStore = create<AppFlowStore>((set, get) => ({
     if (state.flowState !== "DRAFT") return;
     if (!state.draft.matchId) return;
 
+    if (state.draft.myPendingAction) {
+      set((prev) => ({
+        ...prev,
+        systemNotice: "이전 드래프트 요청 처리 중입니다.",
+      }));
+      return;
+    }
+
+    if (!state.draft.isMyTurn) {
+      set((prev) => ({
+        ...prev,
+        systemNotice: "지금은 내 차례가 아니에요.",
+      }));
+      return;
+    }
+
     const heroId = state.draft.myHoverHeroId ?? state.selectedHeroId;
     if (!heroId) return;
 
-    const turnToken =
-      state.draft.turnOrder[(state.draft.turnSeq - 1) % Math.max(1, state.draft.turnOrder.length)] ??
-      "teamA_pick";
-    const actionType = turnToken.toLowerCase().includes("ban") ? "BAN" : "PICK";
+    if (!isHeroAvailable(heroId)) {
+      set((prev) => ({
+        ...prev,
+        systemNotice: "해당 히어로는 준비중입니다.",
+      }));
+      return;
+    }
+
+    const usedHeroes = new Set([
+      ...state.draft.teamA.bans,
+      ...state.draft.teamA.picks,
+      ...state.draft.teamB.bans,
+      ...state.draft.teamB.picks,
+    ]);
+
+    if (usedHeroes.has(heroId)) {
+      set((prev) => ({
+        ...prev,
+        systemNotice: "이미 선택/밴된 히어로예요.",
+      }));
+      return;
+    }
+
+    const actionType: DraftActionType = state.draft.currentActionType;
 
     const sent = sendControlEvent("C2S_DRAFT_ACTION", {
       matchId: state.draft.matchId,

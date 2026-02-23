@@ -1494,14 +1494,26 @@ function createDraftMatch(candidate) {
     session.teamInfo = { teamId: 2, slot: index + 1 };
   }
 
-  broadcastToMatch(match, "S2C_DRAFT_START", {
-    matchId,
-    modeId: match.modeId,
-    draftType: match.draftType,
-    turnOrder: match.turnOrder,
-    timePerTurnSec: match.timePerTurnSec,
-    matchQuality: match.quality,
-  });
+  for (const sessionId of match.participantSessionIds) {
+    const session = sessionsBySessionId.get(sessionId);
+    if (!session) continue;
+
+    const draftMeta = createDraftStatePayload(match, session);
+
+    sendPush(session, "S2C_DRAFT_START", {
+      matchId,
+      modeId: match.modeId,
+      draftType: match.draftType,
+      turnOrder: match.turnOrder,
+      timePerTurnSec: match.timePerTurnSec,
+      matchQuality: match.quality,
+      currentTurnToken: draftMeta.currentTurnToken,
+      currentTurnTeam: draftMeta.currentTurnTeam,
+      currentActionType: draftMeta.currentActionType,
+      myTeamKey: draftMeta.myTeamKey,
+      isMyTurn: draftMeta.isMyTurn,
+    });
+  }
 
   broadcastDraftState(match);
   scheduleDraftTurnTimeout(match);
@@ -1517,20 +1529,49 @@ function currentTurnTeamKey(match) {
   return "teamA";
 }
 
+function currentTurnActionType(match) {
+  return currentTurnToken(match).toLowerCase().includes("ban") ? "BAN" : "PICK";
+}
+
+function resolveSessionTeamKey(session) {
+  return session?.teamInfo?.teamId === 2 ? "teamB" : "teamA";
+}
+
+function createDraftStatePayload(match, session) {
+  const turnToken = currentTurnToken(match);
+  const turnTeamKey = currentTurnTeamKey(match);
+  const myTeamKey = resolveSessionTeamKey(session);
+
+  return {
+    matchId: match.matchId,
+    turnSeq: match.turnSeq,
+    remainingSec: remainingTurnSec(match),
+    currentTurnToken: turnToken,
+    currentTurnTeam: turnTeamKey,
+    currentActionType: currentTurnActionType(match),
+    myTeamKey,
+    isMyTurn: myTeamKey === turnTeamKey,
+    teamA: match.teamState.teamA,
+    teamB: match.teamState.teamB,
+  };
+}
+
 function remainingTurnSec(match) {
   const elapsedMs = nowMs() - match.turnStartedAt;
   const remain = Math.ceil(match.timePerTurnSec - elapsedMs / 1000);
   return Math.max(0, remain);
 }
 
+function sendDraftStateToSession(match, session) {
+  sendPush(session, "S2C_DRAFT_STATE", createDraftStatePayload(match, session));
+}
+
 function broadcastDraftState(match) {
-  broadcastToMatch(match, "S2C_DRAFT_STATE", {
-    matchId: match.matchId,
-    turnSeq: match.turnSeq,
-    remainingSec: remainingTurnSec(match),
-    teamA: match.teamState.teamA,
-    teamB: match.teamState.teamB,
-  });
+  for (const sessionId of match.participantSessionIds) {
+    const session = sessionsBySessionId.get(sessionId);
+    if (!session) continue;
+    sendDraftStateToSession(match, session);
+  }
 }
 
 function broadcastToMatch(match, event, payload) {
@@ -2475,9 +2516,13 @@ function handleDraftAction(ctx) {
     return;
   }
 
+  const rejectDraftAction = (errorCode, message) => {
+    sendError(ctx, errorCode, message);
+    sendDraftStateToSession(match, ctx.session);
+  };
+
   if (turnSeq !== match.turnSeq) {
-    sendError(
-      ctx,
+    rejectDraftAction(
       ERROR_CODES.DRAFT_INVALID_TURN,
       `turn mismatch (expected=${match.turnSeq}, got=${turnSeq})`,
     );
@@ -2496,10 +2541,9 @@ function handleDraftAction(ctx) {
   }
 
   const expectedTeamKey = currentTurnTeamKey(match);
-  const actorTeamKey = ctx.session.teamInfo?.teamId === 2 ? "teamB" : "teamA";
+  const actorTeamKey = resolveSessionTeamKey(ctx.session);
   if (actorTeamKey !== expectedTeamKey) {
-    sendError(
-      ctx,
+    rejectDraftAction(
       ERROR_CODES.DRAFT_INVALID_TURN,
       `Not your team turn (${expectedTeamKey})`,
     );
@@ -2519,13 +2563,13 @@ function handleDraftAction(ctx) {
   }
 
   if (!["BAN", "PICK", "LOCK"].includes(actionType)) {
-    sendError(ctx, ERROR_CODES.BAD_REQUEST, `Unsupported actionType=${actionType}`);
+    rejectDraftAction(ERROR_CODES.BAD_REQUEST, `Unsupported actionType=${actionType}`);
     return;
   }
 
   if (actionType !== "LOCK") {
     if (!heroId) {
-      sendError(ctx, ERROR_CODES.BAD_REQUEST, "heroId required");
+      rejectDraftAction(ERROR_CODES.BAD_REQUEST, "heroId required");
       return;
     }
 
@@ -2537,8 +2581,7 @@ function handleDraftAction(ctx) {
     ]);
 
     if (usedHeroes.has(heroId)) {
-      sendError(
-        ctx,
+      rejectDraftAction(
         ERROR_CODES.DRAFT_HERO_UNAVAILABLE,
         `hero unavailable: ${heroId}`,
       );

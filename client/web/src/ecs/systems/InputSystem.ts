@@ -10,7 +10,15 @@ export class InputSystem implements EcsSystem {
     const velocity = world.velocities.get(ctx.localPlayerId);
     if (!velocity) return;
 
-    velocity.x = ctx.command.moveX * this.moveSpeed;
-    velocity.z = ctx.command.moveY * this.moveSpeed;
+    let moveX = ctx.command.moveX;
+    let moveY = ctx.command.moveY;
+    const length = Math.hypot(moveX, moveY);
+    if (length > 1) {
+      moveX /= length;
+      moveY /= length;
+    }
+
+    velocity.x = moveX * this.moveSpeed;
+    velocity.z = moveY * this.moveSpeed;
   }
 }

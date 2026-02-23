@@ -49,6 +49,42 @@ const ASSET_PRESETS: readonly AssetPreset[] = [
     path: "/assets/heroes/cat-soldier-variant-regen-50k-webp2k-safe-nogun-anim-pack-mixamo-directrig-png.glb",
   },
   {
+    label: "Cat Soldier 50k (nogun raw)",
+    path: "/assets/heroes/cat-soldier-variant-regen-50k-webp2k-safe-nogun.glb",
+  },
+  {
+    label: "Wildpaw Lite - Bruno Bear (mixamo direct-rig)",
+    path: "/assets/heroes/bruno_bear_50k-nogun-anim-pack-mixamo-directrig-png.glb",
+  },
+  {
+    label: "Wildpaw Lite - Bruno Bear (nogun raw)",
+    path: "/assets/heroes/bruno_bear_50k-nogun.glb",
+  },
+  {
+    label: "Wildpaw Lite - Iris Wolf (nogun raw)",
+    path: "/assets/heroes/iris_wolf_50k-nogun.glb",
+  },
+  {
+    label: "Wildpaw Lite - Lumi Fox (nogun raw)",
+    path: "/assets/heroes/lumi_fox_50k-nogun.glb",
+  },
+  {
+    label: "Wildpaw Lite - Milky Rabbit (nogun raw)",
+    path: "/assets/heroes/milky_rabbit_50k-nogun.glb",
+  },
+  {
+    label: "Wildpaw Lite - Pearl Panda (nogun raw)",
+    path: "/assets/heroes/pearl_panda_50k-nogun.glb",
+  },
+  {
+    label: "Wildpaw Lite - Rockhorn Rhino (nogun raw)",
+    path: "/assets/heroes/rockhorn_rhino_50k-nogun.glb",
+  },
+  {
+    label: "Wildpaw Lite - Sting Weasel (nogun raw)",
+    path: "/assets/heroes/sting_weasel_50k-nogun.glb",
+  },
+  {
     label: "static mesh (baseline)",
     path: "/assets/heroes/cat-soldier-mobile-blender-6k-webp512.glb",
   },
@@ -211,6 +247,7 @@ class ModelLabApp {
     };
 
     this.assetInputSync();
+    this.applyAssetOverrideFromQuery();
     this.setStatus("Ready", "info");
 
     this.scene.background = new THREE.Color(0x10131a);
@@ -336,6 +373,26 @@ class ModelLabApp {
 
   private assetInputSync(): void {
     this.ui.assetInput.value = this.ui.presetSelect.value || ASSET_PRESETS[0]!.path;
+  }
+
+  private applyAssetOverrideFromQuery(): void {
+    let fromQuery = "";
+
+    try {
+      const params = new URLSearchParams(window.location.search);
+      fromQuery = (params.get("asset") ?? params.get("glb") ?? "").trim();
+    } catch {
+      fromQuery = "";
+    }
+
+    if (!fromQuery) return;
+
+    const hasPreset = ASSET_PRESETS.some((preset) => preset.path === fromQuery);
+    if (hasPreset) {
+      this.ui.presetSelect.value = fromQuery;
+    }
+
+    this.ui.assetInput.value = fromQuery;
   }
 
   private startRenderLoop(): void {
@@ -1052,7 +1109,8 @@ let app: ModelLabApp | null = null;
 try {
   app = new ModelLabApp(root);
 } catch (error) {
-  root.textContent = `Model Lab failed to start: ${String(error)}`;
+  const message = String(error);
+  root.textContent = `Model Lab failed to start: ${message}\n\n텔레그램 내장 브라우저 대신 Safari/Chrome 외부 브라우저로 열어 주세요.`;
 }
 
 window.addEventListener("beforeunload", () => {

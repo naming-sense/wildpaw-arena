@@ -4,6 +4,8 @@ import { ControlGatewayClient } from "../../net/controlGatewayClient";
 import { useUiStore } from "../store/useUiStore";
 import {
   bindGatewayTransport,
+  isHeroAvailable,
+  isModeComingSoon,
   MATCH_MODE_OPTIONS,
   type AppFlowState,
   type MatchLoadingPhase,
@@ -308,7 +310,8 @@ function OnboardingScreen(): JSX.Element {
 
   const trimmedNickname = onboardingNickname.trim();
   const nicknameValid = trimmedNickname.length >= 2 && trimmedNickname.length <= 12;
-  const canSubmit = nicknameValid && termsAccepted && starterHeroId.trim().length > 0;
+  const starterHeroAvailable = starterHeroId.trim().length > 0 && isHeroAvailable(starterHeroId);
+  const canSubmit = nicknameValid && termsAccepted && starterHeroAvailable;
 
   return (
     <section className="flow-screen flow-screen--centered" aria-label="온보딩 화면">
@@ -336,20 +339,25 @@ function OnboardingScreen(): JSX.Element {
         <fieldset className="flow-fieldset">
           <legend>스타터 히어로 선택 (1명)</legend>
           <p className="flow-muted">여기서 고른 히어로 1명이 초반 기본 히어로로 설정됩니다.</p>
+          <p className="flow-muted">현재는 코랄 캣 / 브루노 베어만 사용 가능합니다.</p>
           <div className="flow-chip-grid" role="radiogroup" aria-label="스타터 히어로 선택">
             {HERO_DEFS.slice(0, 6).map((hero) => {
               const selected = starterHeroId === hero.id;
+              const available = isHeroAvailable(hero.id);
               return (
                 <button
                   key={hero.id}
                   type="button"
                   role="radio"
                   aria-checked={selected}
-                  className={`flow-select-chip${selected ? " is-selected" : ""}`}
+                  aria-disabled={!available}
+                  disabled={!available}
+                  className={`flow-select-chip${selected ? " is-selected" : ""}${!available ? " is-disabled" : ""}`}
                   onClick={() => setStarterHero(hero.id)}
                 >
                   <strong>{hero.displayName}</strong>
                   <span>{hero.role}</span>
+                  {!available ? <small>준비중</small> : null}
                 </button>
               );
             })}
@@ -388,6 +396,8 @@ function LobbyScreen(): JSX.Element {
   const setSelectedHero = useAppFlowStore((state) => state.setSelectedHero);
   const requestQueueJoin = useAppFlowStore((state) => state.requestQueueJoin);
 
+  const selectedModeComingSoon = isModeComingSoon(selectedModeId);
+
   return (
     <section className="flow-screen flow-screen--lobby" aria-label="로비 화면">
       <div className="flow-lobby-grid">
@@ -396,18 +406,21 @@ function LobbyScreen(): JSX.Element {
           <div className="flow-mode-list" role="radiogroup" aria-label="게임 모드 선택">
             {MATCH_MODE_OPTIONS.map((mode) => {
               const selected = mode.id === selectedModeId;
+              const comingSoon = isModeComingSoon(mode.id);
               return (
                 <button
                   key={mode.id}
                   type="button"
                   role="radio"
                   aria-checked={selected}
-                  className={`flow-mode-card${selected ? " is-selected" : ""}`}
+                  aria-disabled={comingSoon}
+                  disabled={comingSoon}
+                  className={`flow-mode-card${selected ? " is-selected" : ""}${comingSoon ? " is-disabled" : ""}`}
                   onClick={() => setSelectedMode(mode.id)}
                 >
-                  <strong>{mode.title}</strong>
+                  <strong>{mode.title}{comingSoon ? " · 준비중" : ""}</strong>
                   <span>{mode.subtitle}</span>
-                  <small>예상 대기 {mode.estimatedQueueSec}초</small>
+                  <small>{comingSoon ? "콘텐츠 준비중" : `예상 대기 ${mode.estimatedQueueSec}초`}</small>
                 </button>
               );
             })}
@@ -417,12 +430,15 @@ function LobbyScreen(): JSX.Element {
             type="button"
             className="flow-button flow-button--primary"
             onClick={requestQueueJoin}
-            disabled={selectedModeId === "3v3_rank" && isGuest}
+            disabled={selectedModeComingSoon || (selectedModeId === "3v3_rank" && isGuest)}
             aria-label="선택된 모드로 큐 진입"
           >
             빠른 시작
           </button>
 
+          {selectedModeComingSoon ? (
+            <p className="flow-muted">현재는 솔로 테스트/1v1 개발 모드만 플레이할 수 있습니다.</p>
+          ) : null}
           {selectedModeId === "3v3_rank" && isGuest ? (
             <p className="flow-muted">게스트 계정은 랭크 모드를 시작할 수 없습니다.</p>
           ) : null}
@@ -433,20 +449,24 @@ function LobbyScreen(): JSX.Element {
           <div className="flow-hero-grid">
             {HERO_DEFS.map((hero) => {
               const selected = hero.id === selectedHeroId;
+              const available = isHeroAvailable(hero.id);
               return (
                 <button
                   key={hero.id}
                   type="button"
-                  className={`flow-hero-card${selected ? " is-selected" : ""}`}
+                  aria-disabled={!available}
+                  disabled={!available}
+                  className={`flow-hero-card${selected ? " is-selected" : ""}${!available ? " is-disabled" : ""}`}
                   onClick={() => setSelectedHero(hero.id)}
                 >
-                  <strong>{hero.displayName}</strong>
+                  <strong>{hero.displayName}{!available ? " · 준비중" : ""}</strong>
                   <span>{hero.role}</span>
-                  <small>HP {hero.baseHp.toLocaleString()}</small>
+                  <small>{available ? `HP ${hero.baseHp.toLocaleString()}` : "리소스 준비중"}</small>
                 </button>
               );
             })}
           </div>
+          <p className="flow-muted">현재 플레이 가능 히어로: 코랄 캣 / 브루노 베어</p>
         </article>
 
         <aside className="flow-card flow-card--narrow">
@@ -542,7 +562,8 @@ function DraftScreen(): JSX.Element {
 
   const focusedHeroId = draft.myHoverHeroId ?? selectedHeroId;
   const focusedHero = HERO_DEF_BY_ID.get(focusedHeroId);
-  const canCommit = Boolean(focusedHeroId) && !draft.myPendingAction;
+  const focusedHeroAvailable = Boolean(focusedHeroId) && isHeroAvailable(focusedHeroId);
+  const canCommit = focusedHeroAvailable && !draft.myPendingAction && draft.isMyTurn;
 
   const warnings: string[] = [];
   if (focusedHero && focusedHero.role !== "Vanguard") {
@@ -552,8 +573,11 @@ function DraftScreen(): JSX.Element {
     warnings.push("회복/유틸 역할이 부족할 수 있어요.");
   }
 
-  const turnToken = getCurrentTurnToken(draft.turnOrder, draft.turnSeq);
-  const actionLabel = turnToken.toLowerCase().includes("ban") ? "BAN" : "PICK";
+  const turnToken = draft.currentTurnToken || getCurrentTurnToken(draft.turnOrder, draft.turnSeq);
+  const actionLabel = draft.currentActionType;
+  const turnTeamLabel = draft.currentTurnTeam === "teamB" ? "TEAM B" : "TEAM A";
+  const myTeamLabel = draft.myTeamKey === null ? "확인 중" : draft.myTeamKey === "teamB" ? "TEAM B" : "TEAM A";
+  const turnNotice = draft.isMyTurn ? "지금 내 차례" : "상대 팀 차례";
 
   return (
     <section className="flow-screen flow-screen--draft" aria-label="드래프트 화면">
@@ -563,14 +587,20 @@ function DraftScreen(): JSX.Element {
           <strong className={draft.remainingSec <= 5 ? "flow-text-warn" : ""}>{draft.remainingSec}s</strong>
         </header>
 
-        <p className="flow-muted">현재 단계: {turnToken}</p>
+        <div className={`flow-draft-turn-banner ${draft.isMyTurn ? "is-my-turn" : "is-waiting"}`}>
+          <strong>{turnNotice}</strong>
+          <span>{actionLabel} · {turnTeamLabel}</span>
+          <span>내 팀: {myTeamLabel}</span>
+          <span className="flow-draft-turn-token">{turnToken}</span>
+        </div>
 
         <div className="flow-draft-grid">
           {HERO_DEFS.map((hero) => {
             const selected = hero.id === focusedHeroId;
+            const available = isHeroAvailable(hero.id);
             const banned = draft.teamA.bans.includes(hero.id) || draft.teamB.bans.includes(hero.id);
             const picked = draft.teamA.picks.includes(hero.id) || draft.teamB.picks.includes(hero.id);
-            const disabled = banned || picked;
+            const disabled = !available || banned || picked;
 
             return (
               <button
@@ -582,7 +612,7 @@ function DraftScreen(): JSX.Element {
                 aria-disabled={disabled}
                 disabled={disabled}
               >
-                <strong>{hero.displayName}</strong>
+                <strong>{hero.displayName}{!available ? " · 준비중" : ""}</strong>
                 <span>{hero.role}</span>
               </button>
             );
@@ -592,12 +622,15 @@ function DraftScreen(): JSX.Element {
         <div className="flow-draft-footer">
           <div className="flow-stack">
             <p className="flow-muted">선택: {focusedHero?.displayName ?? "미선택"}</p>
+            {!focusedHeroAvailable && focusedHero ? <p className="flow-muted">{focusedHero.displayName}는 현재 준비중입니다.</p> : null}
+            {!draft.isMyTurn ? <p className="flow-muted">지금은 {turnTeamLabel} 차례예요. 선픽만 정해두고 기다려 주세요.</p> : null}
+            {draft.myPendingAction ? <p className="flow-muted">요청 전송됨 · 서버 확인 중…</p> : null}
             {warnings.map((warning) => (
               <p key={warning} className="flow-text-warn">{warning}</p>
             ))}
           </div>
           <button type="button" className="flow-button flow-button--primary" disabled={!canCommit} onClick={requestDraftCommit}>
-            {actionLabel} 확정
+            {draft.myPendingAction ? "전송 중..." : `${actionLabel} 확정`}
           </button>
         </div>
       </div>

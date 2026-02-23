@@ -13,13 +13,7 @@ export class AnimationSystem implements EcsSystem {
       const animation = proxy.animation;
       if (!animation) continue;
 
-      const velocity = world.velocities.get(entityId);
-      const speed = velocity ? Math.hypot(velocity.x, velocity.z) : 0;
-      const moving = speed > animation.moveThreshold;
-
-      const targetClip = moving
-        ? this.pickClip(animation, animation.runClip)
-        : this.pickClip(animation, animation.idleClip);
+      const targetClip = this.resolveTargetClip(world, entityId, animation, ctx.nowMs);
 
       if (targetClip !== animation.activeClip) {
         this.crossFadeTo(animation, targetClip);
@@ -27,6 +21,31 @@ export class AnimationSystem implements EcsSystem {
 
       animation.mixer.update(dtSeconds);
     }
+  }
+
+  private resolveTargetClip(
+    world: import("../world").World,
+    entityId: number,
+    animation: RenderAnimationState,
+    nowMs: number,
+  ): string {
+    if (animation.isDead) {
+      return this.pickClip(animation, animation.dieClip ?? animation.idleClip);
+    }
+
+    if (animation.hitClip && nowMs < animation.hitReactUntilMs) {
+      return this.pickClip(animation, animation.hitClip);
+    }
+
+    const velocity = world.velocities.get(entityId);
+    const speed = velocity ? Math.hypot(velocity.x, velocity.z) : 0;
+    const moving = speed > animation.moveThreshold;
+
+    if (!moving) {
+      return this.pickClip(animation, animation.idleClip);
+    }
+
+    return this.pickClip(animation, animation.runClip);
   }
 
   private pickClip(animation: RenderAnimationState, preferred: string): string {

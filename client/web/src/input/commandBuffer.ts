@@ -3,6 +3,15 @@ import type { InputCommand } from "../net/protocol/schemas";
 import type { RawInputState } from "./keyboardMouse";
 import type { AimTarget } from "./aim";
 
+const MOVE_AXIS_DEADZONE = 0.1;
+
+function normalizeMoveAxis(value: number): -1 | 0 | 1 {
+  if (!Number.isFinite(value)) return 0;
+  if (value > MOVE_AXIS_DEADZONE) return 1;
+  if (value < -MOVE_AXIS_DEADZONE) return -1;
+  return 0;
+}
+
 export class CommandBuffer {
   private nextSeq = 1;
   private readonly pending = new RingBuffer<InputCommand>(256);
@@ -12,8 +21,10 @@ export class CommandBuffer {
     return {
       seq: this.nextSeq++,
       clientTime: nowMs,
-      moveX: raw.moveX,
-      moveY: raw.moveY,
+      // Keep local prediction movement quantized exactly like network payload.
+      // Otherwise local(sim) vs server(auth) diverges and causes jitter/reconcile snaps.
+      moveX: normalizeMoveAxis(raw.moveX),
+      moveY: normalizeMoveAxis(raw.moveY),
       aimX: aim.x,
       aimY: aim.y,
       fire: raw.fire,
