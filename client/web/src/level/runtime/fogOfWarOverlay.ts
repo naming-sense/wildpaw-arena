@@ -25,6 +25,7 @@ interface FogOfWarQualityProfile {
   moveUpdateThreshold: number;
   yawUpdateThresholdRad: number;
   edgeBlurEnabled: boolean;
+  blurPasses: number;
   occlusionEnabled: boolean;
   darkAlpha: number;
   visibleCenterAlpha: number;
@@ -36,11 +37,12 @@ const LOS_PADDING = 0.02;
 
 const QUALITY_PROFILES: Record<FogOfWarQuality, FogOfWarQualityProfile> = {
   low: {
-    resolution: 144,
-    updateIntervalMs: 180,
+    resolution: 160,
+    updateIntervalMs: 190,
     moveUpdateThreshold: 0.3,
     yawUpdateThresholdRad: (6 * Math.PI) / 180,
     edgeBlurEnabled: true,
+    blurPasses: 2,
     occlusionEnabled: true,
     darkAlpha: 0.7,
     visibleCenterAlpha: 0.05,
@@ -48,28 +50,30 @@ const QUALITY_PROFILES: Record<FogOfWarQuality, FogOfWarQualityProfile> = {
     transitionMs: 120,
   },
   medium: {
-    resolution: 208,
-    updateIntervalMs: 105,
-    moveUpdateThreshold: 0.17,
+    resolution: 224,
+    updateIntervalMs: 115,
+    moveUpdateThreshold: 0.18,
     yawUpdateThresholdRad: (3 * Math.PI) / 180,
     edgeBlurEnabled: true,
+    blurPasses: 3,
     occlusionEnabled: true,
     darkAlpha: 0.72,
     visibleCenterAlpha: 0.05,
     visibleEdgeAlpha: 0.24,
-    transitionMs: 90,
+    transitionMs: 92,
   },
   high: {
-    resolution: 272,
-    updateIntervalMs: 80,
-    moveUpdateThreshold: 0.1,
+    resolution: 288,
+    updateIntervalMs: 90,
+    moveUpdateThreshold: 0.12,
     yawUpdateThresholdRad: (2 * Math.PI) / 180,
     edgeBlurEnabled: true,
+    blurPasses: 3,
     occlusionEnabled: true,
     darkAlpha: 0.74,
     visibleCenterAlpha: 0.05,
     visibleEdgeAlpha: 0.24,
-    transitionMs: 70,
+    transitionMs: 74,
   },
 };
 
@@ -94,6 +98,7 @@ export class FogOfWarOverlay {
   private readonly alphaTarget: Uint8ClampedArray;
   private readonly alphaCurrent: Uint8ClampedArray;
   private readonly alphaTransitionFrom: Uint8ClampedArray;
+  private readonly occlusionCandidates: LevelStaticCollider[] = [];
   private readonly resolution: number;
   private readonly losColliders: readonly LevelStaticCollider[];
   private readonly bounds: FogOfWarBounds;
@@ -103,6 +108,7 @@ export class FogOfWarOverlay {
   private lastOriginX = Number.NaN;
   private lastOriginZ = Number.NaN;
   private lastYaw = Number.NaN;
+  private dynamicUpdateIntervalMs: number;
   private transitionStartedAtMs = Number.NEGATIVE_INFINITY;
   private transitionActive = false;
   private hasInitialFrame = false;
@@ -116,6 +122,7 @@ export class FogOfWarOverlay {
     this.bounds = bounds;
     this.profile = profileForQuality(quality);
     this.resolution = this.profile.resolution;
+    this.dynamicUpdateIntervalMs = this.profile.updateIntervalMs;
     this.losColliders = this.profile.occlusionEnabled ? colliders.filter(isLosObstacle) : [];
 
     this.canvas = document.createElement("canvas");
@@ -194,7 +201,7 @@ export class FogOfWarOverlay {
       ? Math.abs(Math.atan2(Math.sin(yaw - this.lastYaw), Math.cos(yaw - this.lastYaw)))
       : Number.POSITIVE_INFINITY;
 
-    const shouldSkipByTime = nowMs - this.lastUpdateMs < this.profile.updateIntervalMs;
+    const shouldSkipByTime = nowMs - this.lastUpdateMs < this.dynamicUpdateIntervalMs;
     const shouldSkipByMove =
       movedDistanceSq < this.profile.moveUpdateThreshold * this.profile.moveUpdateThreshold;
     const shouldSkipByYaw = yawDelta < this.profile.yawUpdateThresholdRad;
@@ -202,6 +209,8 @@ export class FogOfWarOverlay {
     const shouldRecompute = !(shouldSkipByTime && shouldSkipByMove && shouldSkipByYaw);
 
     if (shouldRecompute) {
+      const computeStartedAt = typeof performance !== "undefined" ? performance.now() : nowMs;
+
       this.lastUpdateMs = nowMs;
       this.lastOriginX = originX;
       this.lastOriginZ = originZ;
@@ -215,6 +224,9 @@ export class FogOfWarOverlay {
       const darkAlpha255 = Math.round(this.profile.darkAlpha * 255);
       const visibleCenterAlpha255 = Math.round(this.profile.visibleCenterAlpha * 255);
       const visibleEdgeAlpha255 = Math.round(this.profile.visibleEdgeAlpha * 255);
+      const occlusionCandidates = this.profile.occlusionEnabled
+        ? this.collectOcclusionCandidates(originX, originZ, rangeMeters)
+        : null;
 
       for (let i = 0; i < this.worldXByPixel.length; i += 1) {
         const worldX = this.worldXByPixel[i];
@@ -236,8 +248,8 @@ export class FogOfWarOverlay {
           if (forwardDot >= cosHalfFov) {
             let blocked = false;
 
-            if (this.profile.occlusionEnabled) {
-              for (const collider of this.losColliders) {
+            if (occlusionCandidates && occlusionCandidates.length > 0) {
+              for (const collider of occlusionCandidates) {
                 if (
                   segmentIntersectsCollider2D(
                     originX,
@@ -267,9 +279,7 @@ export class FogOfWarOverlay {
         this.alphaMask[i] = alpha;
       }
 
-      const finalAlpha = this.profile.edgeBlurEnabled
-        ? this.applyBoxBlur3x3(this.alphaMask, this.alphaBlurScratch)
-        : this.alphaMask;
+      const finalAlpha = this.applyBlurPasses(this.alphaMask);
 
       this.alphaTarget.set(finalAlpha);
 
@@ -285,6 +295,9 @@ export class FogOfWarOverlay {
         this.transitionStartedAtMs = nowMs;
         this.transitionActive = true;
       }
+
+      const computeEndedAt = typeof performance !== "undefined" ? performance.now() : nowMs;
+      this.tuneUpdateInterval(computeEndedAt - computeStartedAt);
     }
 
     if (!this.hasInitialFrame) {
@@ -330,6 +343,71 @@ export class FogOfWarOverlay {
 
     this.ctx.putImageData(this.imageData, 0, 0);
     this.texture.needsUpdate = true;
+  }
+
+  private collectOcclusionCandidates(
+    originX: number,
+    originZ: number,
+    rangeMeters: number,
+  ): readonly LevelStaticCollider[] {
+    this.occlusionCandidates.length = 0;
+
+    const paddedRange = rangeMeters + 0.75;
+    const rangeSq = paddedRange * paddedRange;
+
+    for (const collider of this.losColliders) {
+      const nearestX = THREE.MathUtils.clamp(originX, collider.minX, collider.maxX);
+      const nearestZ = THREE.MathUtils.clamp(originZ, collider.minZ, collider.maxZ);
+      const dx = nearestX - originX;
+      const dz = nearestZ - originZ;
+
+      if (dx * dx + dz * dz <= rangeSq) {
+        this.occlusionCandidates.push(collider);
+      }
+    }
+
+    return this.occlusionCandidates;
+  }
+
+  private tuneUpdateInterval(lastComputeMs: number): void {
+    if (!Number.isFinite(lastComputeMs) || lastComputeMs <= 0) {
+      return;
+    }
+
+    const minInterval = this.profile.updateIntervalMs;
+    const maxInterval = Math.round(this.profile.updateIntervalMs * 1.8);
+    const budgetMs = this.profile.updateIntervalMs * 0.42;
+
+    if (lastComputeMs > budgetMs) {
+      this.dynamicUpdateIntervalMs = Math.min(
+        maxInterval,
+        this.dynamicUpdateIntervalMs * 1.1 + 1,
+      );
+      return;
+    }
+
+    this.dynamicUpdateIntervalMs = Math.max(
+      minInterval,
+      this.dynamicUpdateIntervalMs * 0.94 - 0.5,
+    );
+  }
+
+  private applyBlurPasses(source: Uint8ClampedArray): Uint8ClampedArray {
+    if (!this.profile.edgeBlurEnabled || this.profile.blurPasses <= 0) {
+      return source;
+    }
+
+    let from = source;
+    let to = source === this.alphaMask ? this.alphaBlurScratch : this.alphaMask;
+
+    for (let pass = 0; pass < this.profile.blurPasses; pass += 1) {
+      this.applyBoxBlur3x3(from, to);
+      const nextFrom = to;
+      to = from;
+      from = nextFrom;
+    }
+
+    return from;
   }
 
   private applyBoxBlur3x3(
