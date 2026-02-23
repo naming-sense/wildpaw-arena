@@ -426,6 +426,8 @@ body,
   display: grid;
   place-items: center;
   padding: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .flow-screen--lobby {
@@ -452,6 +454,11 @@ body,
 
 .flow-card--wide {
   width: min(920px, 94vw);
+}
+
+.flow-screen--centered .flow-card--wide {
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
 }
 
 .flow-card--narrow {
@@ -577,6 +584,13 @@ body,
   align-items: center;
   gap: 8px;
   margin-bottom: 4px;
+}
+
+.flow-checkbox input {
+  width: 18px;
+  height: 18px;
+  accent-color: #8ec4ff;
+  flex: 0 0 auto;
 }
 
 .flow-legal-links {
@@ -896,6 +910,15 @@ body,
 
   .flow-screen--lobby {
     padding-top: 12px;
+  }
+
+  .flow-screen--centered {
+    place-items: start center;
+    padding: 12px 12px calc(20px + env(safe-area-inset-bottom));
+  }
+
+  .flow-screen--centered .flow-card--wide {
+    max-height: none;
   }
 
   .flow-chip-grid,
