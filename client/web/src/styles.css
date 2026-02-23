@@ -309,13 +309,6 @@ body,
   word-break: break-all;
 }
 
-@media (hover: hover) and (pointer: fine) {
-  .mobile-fire-button,
-  .mobile-skill-cluster {
-    display: none;
-  }
-}
-
 .game-canvas--hidden {
   opacity: 0;
   pointer-events: none;
