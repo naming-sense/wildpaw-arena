@@ -46,9 +46,12 @@ interface GameAppOptions {
 }
 
 const HERO_MOVE_ANIM_THRESHOLD = 0.15;
+const ROOM_SIM_MOVE_SPEED_MPS = 4.0;
+const HIT_REACT_MIN_MS = 180;
+const HIT_REACT_MAX_MS = 420;
 const LOCAL_MODE_STATE = "Local (No Server)";
 const LOCAL_MARKER_COLOR = 0x4ad8ff;
-const DEFAULT_HERO_ID = "coral_cat";
+const DEFAULT_HERO_ID = "bruno_bear";
 const BULLET_TRAIL_MUZZLE_HEIGHT = 1.05;
 const BULLET_PROJECTILE_SPEED = 28;
 const BULLET_TRAIL_LENGTH = 1.35;
@@ -62,6 +65,11 @@ const DAMAGE_TEXT_LIFE_MS = 680;
 const DAMAGE_TEXT_FLOAT_SPEED = 1.35;
 const HIT_MARKER_LIFE_MS = 130;
 const DAMAGE_OVERLAY_LIFE_MS = 220;
+const IMPACT_SPARK_GRAVITY = 9.8;
+const IMPACT_SPARK_DRAG_PER_SEC = 2.7;
+const IMPACT_PARTICLE_DRAG_PER_SEC = 1.9;
+const IMPACT_BLOOD_GRAVITY = 4.4;
+const IMPACT_DUST_GRAVITY = 1.5;
 const LOS_VISION_RANGE_METERS = 22;
 const LOS_HALF_FOV_RAD = (55 * Math.PI) / 180;
 const LOS_COLLIDER_PADDING = 0.02;
@@ -70,7 +78,8 @@ const FOW_QUALITY_STORAGE_KEY = "wildpaw.fowQuality";
 function normalizeHeroId(rawHeroId: string): string {
   const normalized = rawHeroId.trim();
   if (normalized === "whitecat_commando") {
-    return DEFAULT_HERO_ID;
+    // backward compatibility: old whitecat id maps to coral_cat
+    return "coral_cat";
   }
   return normalized;
 }
@@ -239,10 +248,39 @@ interface DamageNumberEffect {
   baseScale: number;
 }
 
+type ImpactBurstKind = "incoming" | "outgoing";
+
+interface ImpactBurstSpark {
+  mesh: THREE.Mesh<THREE.CylinderGeometry, THREE.MeshBasicMaterial>;
+  geometry: THREE.CylinderGeometry;
+  material: THREE.MeshBasicMaterial;
+  velocity: THREE.Vector3;
+  spinVelocity: number;
+  stretchRate: number;
+  baseOpacity: number;
+}
+
+interface ImpactBurstParticle {
+  mesh: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
+  geometry: THREE.SphereGeometry;
+  material: THREE.MeshBasicMaterial;
+  velocity: THREE.Vector3;
+  growthRate: number;
+  dragPerSec: number;
+  gravity: number;
+  baseOpacity: number;
+  fadePower: number;
+}
+
 interface ImpactBurstEffect {
   ring: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
   ringGeometry: THREE.RingGeometry;
   ringMaterial: THREE.MeshBasicMaterial;
+  core: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
+  coreGeometry: THREE.SphereGeometry;
+  coreMaterial: THREE.MeshBasicMaterial;
+  sparks: ImpactBurstSpark[];
+  particles: ImpactBurstParticle[];
   ageMs: number;
   lifeMs: number;
 }
@@ -253,10 +291,14 @@ interface CombatEventPayload {
   targetPlayerId?: unknown;
   damage?: unknown;
   critical?: unknown;
+  skillSlot?: unknown;
   targetX?: unknown;
   targetY?: unknown;
+  sourceX?: unknown;
+  sourceY?: unknown;
   attackerX?: unknown;
   attackerY?: unknown;
+  targetAlive?: unknown;
 }
 
 export class GameApp {
@@ -281,6 +323,7 @@ export class GameApp {
 
   private readonly socket: RealtimeSocketClient;
   private readonly hasRealtimeServer: boolean;
+  private readonly simulationMoveSpeedMps: number;
   private readonly roomToken: string;
   private readonly interpolationBuffer = new SnapshotInterpolationBuffer(
     this.config.net.interpolationDelayMs,
@@ -299,6 +342,8 @@ export class GameApp {
 
   private readonly remoteEntities = new Map<number, EntityId>();
   private readonly remoteVisibilityByPlayerId = new Map<number, boolean>();
+  private readonly heroIdByNetworkPlayerId = new Map<number, string>();
+  private readonly aliveByEntityId = new Map<EntityId, boolean>();
   private localPlayerEntityId: EntityId;
   private localNetworkPlayerId = 1;
   private running = false;
@@ -313,6 +358,12 @@ export class GameApp {
   private readonly muzzleFlashEffects: MuzzleFlashEffect[] = [];
   private readonly damageNumberEffects: DamageNumberEffect[] = [];
   private readonly impactBurstEffects: ImpactBurstEffect[] = [];
+  private readonly noClipFeedbackByEntityId = new Map<EntityId, {
+    hitUntilMs: number;
+    dead: boolean;
+    deadStartedAtMs: number;
+  }>();
+  private readonly proxyBaseScaleByEntityId = new Map<EntityId, THREE.Vector3>();
   private hitMarkerElement: HTMLDivElement | null = null;
   private hitMarkerAgeMs = Number.POSITIVE_INFINITY;
   private hitMarkerLifeMs = HIT_MARKER_LIFE_MS;
@@ -359,6 +410,9 @@ export class GameApp {
     this.localHeroAssetPath = this.localHeroAsset.gltfPath;
 
     this.hasRealtimeServer = Boolean(options.wsUrl);
+    this.simulationMoveSpeedMps = this.hasRealtimeServer
+      ? ROOM_SIM_MOVE_SPEED_MPS
+      : this.localHeroDef.moveSpeed;
     this.roomToken = options.roomToken?.trim() ? options.roomToken : "dev-room";
 
     this.socket = new RealtimeSocketClient({
@@ -380,6 +434,7 @@ export class GameApp {
       isLocal: true,
       color: 0x8ac0ff,
     });
+    this.heroIdByNetworkPlayerId.set(this.localNetworkPlayerId, this.localHeroDef.id);
 
     const localWeapon = WEAPON_DEF_BY_ID.get(this.localHeroDef.weaponId) ?? WEAPON_DEFS[0]!;
     useUiStore.getState().setHud({
@@ -422,6 +477,8 @@ export class GameApp {
     this.clearMuzzleFlashEffects();
     this.clearDamageNumberEffects();
     this.clearImpactBurstEffects();
+    this.noClipFeedbackByEntityId.clear();
+    this.proxyBaseScaleByEntityId.clear();
     this.removeHitMarkerElement();
     this.removeDamageOverlayElement();
     this.levelRuntime.dispose();
@@ -429,7 +486,7 @@ export class GameApp {
   }
 
   private setupSystems(): void {
-    this.world.addSystem(new InputSystem(this.localHeroDef.moveSpeed));
+    this.world.addSystem(new InputSystem(this.simulationMoveSpeedMps));
     this.world.addSystem(new MovementSystem());
     this.world.addSystem(new CollisionSystem());
     this.world.addSystem(new WeaponFireSystem());
@@ -463,6 +520,7 @@ export class GameApp {
       this.updateMuzzleFlashEffects(frameMs);
       this.updateDamageNumberEffects(frameMs);
       this.updateImpactBurstEffects(frameMs);
+      this.updateFallbackCombatFeedback(nowMs);
       this.updateHitMarker(frameMs);
       this.updateDamageTakenOverlay(frameMs);
 
@@ -619,7 +677,7 @@ export class GameApp {
 
     const moveLen = Math.hypot(command.moveX, command.moveY);
     const hasMoveInput = moveLen > 0.04;
-    const shouldFaceMove = hasMoveInput;
+    const shouldFaceMove = hasMoveInput && !rawInput.hasAimControl;
 
     if (shouldFaceMove) {
       const inv = 1 / Math.max(moveLen, 0.001);
@@ -658,7 +716,7 @@ export class GameApp {
 
     const moveLen = Math.hypot(command.moveX, command.moveY);
     const hasMoveInput = moveLen > 0.04;
-    const shouldFaceMove = hasMoveInput;
+    const shouldFaceMove = hasMoveInput && !rawInput.hasAimControl;
 
     if (shouldFaceMove) {
       transform.yaw = Math.atan2(command.moveX, command.moveY);
@@ -689,7 +747,13 @@ export class GameApp {
     if (name === "S2C_WELCOME") {
       const playerId = (payload as { playerId?: unknown }).playerId;
       if (typeof playerId === "number" && Number.isFinite(playerId)) {
+        const previousLocalNetworkPlayerId = this.localNetworkPlayerId;
         this.localNetworkPlayerId = playerId;
+
+        const knownHeroId =
+          this.heroIdByNetworkPlayerId.get(previousLocalNetworkPlayerId) ?? this.localHeroDef.id;
+        this.heroIdByNetworkPlayerId.delete(previousLocalNetworkPlayerId);
+        this.heroIdByNetworkPlayerId.set(this.localNetworkPlayerId, knownHeroId);
       }
 
       const serverTimeMs = (payload as { serverTimeMs?: unknown }).serverTimeMs;
@@ -699,7 +763,9 @@ export class GameApp {
 
       const heroId = (payload as { heroId?: unknown }).heroId;
       if (typeof heroId === "string" && heroId.trim().length > 0) {
-        const hero = pickHeroDef(heroId);
+        const normalizedHeroId = normalizeHeroId(heroId);
+        this.heroIdByNetworkPlayerId.set(this.localNetworkPlayerId, normalizedHeroId);
+        const hero = pickHeroDef(normalizedHeroId);
         useUiStore.getState().setHud({ heroName: hero.displayName });
       }
       return;
@@ -712,6 +778,49 @@ export class GameApp {
 
   private handleServerEvent(payload: CombatEventPayload): void {
     const kind = typeof payload.kind === "string" ? payload.kind : "";
+    const eventNowMs = performance.now();
+
+    if (kind === "skill-cast") {
+      const attackerPlayerId =
+        typeof payload.attackerPlayerId === "number" && Number.isFinite(payload.attackerPlayerId)
+          ? payload.attackerPlayerId
+          : null;
+      const rawSkillSlot = typeof payload.skillSlot === "string" ? payload.skillSlot.toUpperCase() : "";
+      const skillSlot = rawSkillSlot === "Q" || rawSkillSlot === "E" || rawSkillSlot === "R"
+        ? (rawSkillSlot as "Q" | "E" | "R")
+        : null;
+
+      if (attackerPlayerId === null || skillSlot === null) {
+        return;
+      }
+
+      let worldX =
+        typeof payload.sourceX === "number" && Number.isFinite(payload.sourceX)
+          ? payload.sourceX
+          : null;
+      let worldZ =
+        typeof payload.sourceY === "number" && Number.isFinite(payload.sourceY)
+          ? payload.sourceY
+          : null;
+
+      if ((worldX === null || worldZ === null) && attackerPlayerId !== null) {
+        const attackerEntityId = this.resolveEntityIdByNetworkPlayerId(attackerPlayerId);
+        if (attackerEntityId !== null) {
+          const transform = this.world.transforms.get(attackerEntityId);
+          if (transform) {
+            worldX = transform.x;
+            worldZ = transform.z;
+          }
+        }
+      }
+
+      if (worldX === null || worldZ === null) {
+        return;
+      }
+
+      this.spawnSkillCastCue(attackerPlayerId, skillSlot, worldX, worldZ);
+      return;
+    }
 
     if (kind === "hit-confirm") {
       const attackerPlayerId =
@@ -729,7 +838,23 @@ export class GameApp {
           : null;
       if (rawDamage === null || rawDamage <= 0) return;
 
+      const targetPlayerId =
+        typeof payload.targetPlayerId === "number" && Number.isFinite(payload.targetPlayerId)
+          ? payload.targetPlayerId
+          : null;
+      const targetAlive =
+        typeof payload.targetAlive === "boolean"
+          ? payload.targetAlive
+          : null;
       const critical = Boolean(payload.critical);
+      const attackerX =
+        typeof payload.attackerX === "number" && Number.isFinite(payload.attackerX)
+          ? payload.attackerX
+          : null;
+      const attackerZ =
+        typeof payload.attackerY === "number" && Number.isFinite(payload.attackerY)
+          ? payload.attackerY
+          : null;
 
       let worldX: number | null = null;
       let worldZ: number | null = null;
@@ -742,11 +867,6 @@ export class GameApp {
       }
 
       if (worldX === null || worldZ === null) {
-        const targetPlayerId =
-          typeof payload.targetPlayerId === "number" && Number.isFinite(payload.targetPlayerId)
-            ? payload.targetPlayerId
-            : null;
-
         if (targetPlayerId !== null) {
           const entityId = this.remoteEntities.get(targetPlayerId);
           if (entityId !== undefined) {
@@ -763,6 +883,32 @@ export class GameApp {
 
       if (worldX !== null && worldZ !== null) {
         this.spawnDamageNumber(worldX, worldZ, rawDamage, critical, "outgoing");
+        const impactDirection = this.resolveImpactDirection(
+          worldX,
+          worldZ,
+          attackerPlayerId,
+          attackerX,
+          attackerZ,
+        );
+        this.spawnImpactBurst(
+          worldX,
+          worldZ,
+          critical,
+          "outgoing",
+          impactDirection,
+          targetPlayerId,
+        );
+      }
+
+      if (targetPlayerId !== null) {
+        const targetEntityId = this.resolveEntityIdByNetworkPlayerId(targetPlayerId);
+        if (targetEntityId !== null) {
+          if (targetAlive === false) {
+            this.setEntityAliveState(targetEntityId, false);
+          } else {
+            this.triggerHitAnimation(targetEntityId, eventNowMs);
+          }
+        }
       }
       return;
     }
@@ -782,6 +928,22 @@ export class GameApp {
           : null;
       if (rawDamage === null || rawDamage <= 0) return;
 
+      const attackerPlayerId =
+        typeof payload.attackerPlayerId === "number" && Number.isFinite(payload.attackerPlayerId)
+          ? payload.attackerPlayerId
+          : null;
+      const attackerX =
+        typeof payload.attackerX === "number" && Number.isFinite(payload.attackerX)
+          ? payload.attackerX
+          : null;
+      const attackerZ =
+        typeof payload.attackerY === "number" && Number.isFinite(payload.attackerY)
+          ? payload.attackerY
+          : null;
+      const targetAlive =
+        typeof payload.targetAlive === "boolean"
+          ? payload.targetAlive
+          : null;
       const critical = Boolean(payload.critical);
       this.triggerDamageTakenOverlay(critical);
 
@@ -800,7 +962,82 @@ export class GameApp {
             : fallbackZ;
 
         this.spawnDamageNumber(worldX, worldZ, rawDamage, critical, "incoming");
-        this.spawnImpactBurst(worldX, worldZ, critical);
+        const impactDirection = this.resolveImpactDirection(
+          worldX,
+          worldZ,
+          attackerPlayerId,
+          attackerX,
+          attackerZ,
+        );
+        this.spawnImpactBurst(
+          worldX,
+          worldZ,
+          critical,
+          "incoming",
+          impactDirection,
+          targetPlayerId,
+        );
+      }
+
+      if (targetAlive === false) {
+        this.setEntityAliveState(this.localPlayerEntityId, false);
+      } else {
+        this.triggerHitAnimation(this.localPlayerEntityId, eventNowMs);
+      }
+      return;
+    }
+
+    if (kind === "knockout") {
+      const targetPlayerId =
+        typeof payload.targetPlayerId === "number" && Number.isFinite(payload.targetPlayerId)
+          ? payload.targetPlayerId
+          : null;
+      if (targetPlayerId === null) return;
+
+      const attackerPlayerId =
+        typeof payload.attackerPlayerId === "number" && Number.isFinite(payload.attackerPlayerId)
+          ? payload.attackerPlayerId
+          : null;
+      const attackerX =
+        typeof payload.attackerX === "number" && Number.isFinite(payload.attackerX)
+          ? payload.attackerX
+          : null;
+      const attackerZ =
+        typeof payload.attackerY === "number" && Number.isFinite(payload.attackerY)
+          ? payload.attackerY
+          : null;
+
+      const targetEntityId = this.resolveEntityIdByNetworkPlayerId(targetPlayerId);
+      if (targetEntityId !== null) {
+        const transform = this.world.transforms.get(targetEntityId);
+        const worldX =
+          typeof payload.targetX === "number" && Number.isFinite(payload.targetX)
+            ? payload.targetX
+            : transform?.x;
+        const worldZ =
+          typeof payload.targetY === "number" && Number.isFinite(payload.targetY)
+            ? payload.targetY
+            : transform?.z;
+
+        if (typeof worldX === "number" && typeof worldZ === "number") {
+          const impactDirection = this.resolveImpactDirection(
+            worldX,
+            worldZ,
+            attackerPlayerId,
+            attackerX,
+            attackerZ,
+          );
+          this.spawnImpactBurst(
+            worldX,
+            worldZ,
+            true,
+            targetPlayerId === this.localNetworkPlayerId ? "incoming" : "outgoing",
+            impactDirection,
+            targetPlayerId,
+          );
+        }
+
+        this.setEntityAliveState(targetEntityId, false);
       }
     }
   }
@@ -853,7 +1090,7 @@ export class GameApp {
       },
       pendingCommands: pending,
       dtSeconds: this.config.simulation.fixedDtMs / 1000,
-      moveSpeed: this.localHeroDef.moveSpeed,
+      moveSpeed: this.simulationMoveSpeedMps,
       hardSnapThreshold: this.config.simulation.hardSnapThreshold,
       smoothCorrectionAlpha: this.config.simulation.smoothCorrectionAlpha,
     });
@@ -871,14 +1108,6 @@ export class GameApp {
     velocity.x = reconciled.velocity.x;
     velocity.z = reconciled.velocity.y;
 
-    if (Number.isFinite(authoritative.rot)) {
-      const yawDelta = Math.atan2(
-        Math.sin(authoritative.rot - transform.yaw),
-        Math.cos(authoritative.rot - transform.yaw),
-      );
-      transform.yaw += yawDelta * 0.45;
-    }
-
     const localTeam = this.world.teams.get(this.localPlayerEntityId);
     if (localTeam) {
       localTeam.id = authoritative.team === 2 ? 2 : 1;
@@ -893,6 +1122,8 @@ export class GameApp {
       health.shield = authoritative.shield;
       useUiStore.getState().setHud({ hp: health.current, maxHp: health.max });
     }
+
+    this.setEntityAliveState(this.localPlayerEntityId, authoritative.alive);
 
     const weapon = this.world.weapons.get(this.localPlayerEntityId);
     const nextAmmo =
@@ -980,6 +1211,14 @@ export class GameApp {
     const seenRemotePlayerIds = new Set<number>();
 
     for (const player of sampled.players) {
+      const resolvedHeroId =
+        typeof player.heroId === "string" && player.heroId.trim().length > 0
+          ? normalizeHeroId(player.heroId)
+          : player.playerId === this.localNetworkPlayerId
+            ? this.localHeroDef.id
+            : this.heroIdByNetworkPlayerId.get(player.playerId) ?? DEFAULT_HERO_ID;
+      this.heroIdByNetworkPlayerId.set(player.playerId, resolvedHeroId);
+
       if (player.playerId === this.localNetworkPlayerId) continue;
       seenRemotePlayerIds.add(player.playerId);
 
@@ -1028,6 +1267,8 @@ export class GameApp {
         health.current = player.hp;
         health.shield = player.shield;
       }
+
+      this.setEntityAliveState(entityId, player.alive);
     }
 
     for (const networkPlayerId of [...this.remoteEntities.keys()]) {
@@ -1061,6 +1302,7 @@ export class GameApp {
 
     this.remoteEntities.delete(networkPlayerId);
     this.remoteVisibilityByPlayerId.delete(networkPlayerId);
+    this.heroIdByNetworkPlayerId.delete(networkPlayerId);
     this.snapshotAmmoByPlayerId.delete(networkPlayerId);
 
     const proxy = this.world.renderProxies.get(entityId);
@@ -1077,6 +1319,7 @@ export class GameApp {
     this.world.weapons.delete(entityId);
     this.world.skills.delete(entityId);
     this.world.statusEffects.delete(entityId);
+    this.aliveByEntityId.delete(entityId);
   }
 
   private createPlayerEntity(args: {
@@ -1119,6 +1362,7 @@ export class GameApp {
     this.sceneRoot.scene.add(fallbackVisual);
 
     this.world.renderProxies.set(entityId, { object3d: fallbackVisual });
+    this.aliveByEntityId.set(entityId, true);
 
     return entityId;
   }
@@ -1154,6 +1398,16 @@ export class GameApp {
     }
 
     const animation = this.createAnimationState(gltf, preparedModel, this.localHeroAsset);
+    const alive = this.aliveByEntityId.get(entityId) ?? true;
+
+    if (animation) {
+      animation.isDead = !alive;
+      if (!alive && animation.dieClip && animation.activeClip !== animation.dieClip) {
+        animation.actions.get(animation.activeClip)?.stop();
+        animation.actions.get(animation.dieClip)?.reset().play();
+        animation.activeClip = animation.dieClip;
+      }
+    }
 
     const previous = this.world.renderProxies.get(entityId);
     if (previous) {
@@ -1263,7 +1517,25 @@ export class GameApp {
     }
 
     const idleClip = actions.has(heroAsset.idleClip) ? heroAsset.idleClip : firstClip;
+    const walkClip =
+      heroAsset.walkClip && actions.has(heroAsset.walkClip)
+        ? heroAsset.walkClip
+        : undefined;
     const runClip = actions.has(heroAsset.runClip) ? heroAsset.runClip : idleClip;
+    const hitClip = this.pickActionClipByNameHints(actions, ["Hit", "HitReaction", "TakeDamage"]);
+    const dieClip = this.pickActionClipByNameHints(actions, ["Die", "Death", "Knockout", "DieForward"]);
+
+    this.configureActionLoop(actions, idleClip, THREE.LoopRepeat, false);
+    if (walkClip) {
+      this.configureActionLoop(actions, walkClip, THREE.LoopRepeat, false);
+    }
+    this.configureActionLoop(actions, runClip, THREE.LoopRepeat, false);
+    if (hitClip) {
+      this.configureActionLoop(actions, hitClip, THREE.LoopOnce, true);
+    }
+    if (dieClip) {
+      this.configureActionLoop(actions, dieClip, THREE.LoopOnce, true);
+    }
 
     const activeClip = idleClip;
     actions.get(activeClip)?.reset().play();
@@ -1277,10 +1549,194 @@ export class GameApp {
       mixer,
       actions,
       idleClip,
+      walkClip,
       runClip,
+      hitClip,
+      dieClip,
       activeClip,
       moveThreshold: HERO_MOVE_ANIM_THRESHOLD,
+      hitReactUntilMs: 0,
+      isDead: false,
     };
+  }
+
+  private pickActionClipByNameHints(
+    actions: Map<string, THREE.AnimationAction>,
+    preferredNames: string[],
+  ): string | undefined {
+    const normalize = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+    for (const preferred of preferredNames) {
+      if (actions.has(preferred)) {
+        return preferred;
+      }
+
+      const preferredNorm = normalize(preferred);
+      for (const actionName of actions.keys()) {
+        if (normalize(actionName) === preferredNorm) {
+          return actionName;
+        }
+      }
+      for (const actionName of actions.keys()) {
+        if (normalize(actionName).includes(preferredNorm)) {
+          return actionName;
+        }
+      }
+    }
+
+    return undefined;
+  }
+
+  private configureActionLoop(
+    actions: Map<string, THREE.AnimationAction>,
+    clipName: string,
+    loop: THREE.AnimationActionLoopStyles,
+    clampWhenFinished: boolean,
+  ): void {
+    const action = actions.get(clipName);
+    if (!action) return;
+    action.clampWhenFinished = clampWhenFinished;
+    action.setLoop(loop, loop === THREE.LoopRepeat ? Infinity : 1);
+  }
+
+  private resolveEntityIdByNetworkPlayerId(networkPlayerId: number): EntityId | null {
+    if (networkPlayerId === this.localNetworkPlayerId) {
+      return this.localPlayerEntityId;
+    }
+    return this.remoteEntities.get(networkPlayerId) ?? null;
+  }
+
+  private setEntityAliveState(entityId: EntityId, alive: boolean): void {
+    const previous = this.aliveByEntityId.get(entityId);
+    this.aliveByEntityId.set(entityId, alive);
+
+    if (previous === alive) {
+      return;
+    }
+
+    const proxy = this.world.renderProxies.get(entityId);
+    const animation = proxy?.animation;
+    if (animation) {
+      animation.isDead = !alive;
+      animation.hitReactUntilMs = 0;
+    }
+
+    this.applyNoClipDeathState(entityId, !alive);
+  }
+
+  private ensureNoClipFeedbackState(entityId: EntityId): {
+    hitUntilMs: number;
+    dead: boolean;
+    deadStartedAtMs: number;
+  } {
+    let state = this.noClipFeedbackByEntityId.get(entityId);
+    if (!state) {
+      state = {
+        hitUntilMs: Number.NEGATIVE_INFINITY,
+        dead: false,
+        deadStartedAtMs: 0,
+      };
+      this.noClipFeedbackByEntityId.set(entityId, state);
+    }
+    return state;
+  }
+
+  private applyNoClipDeathState(entityId: EntityId, dead: boolean): void {
+    const proxy = this.world.renderProxies.get(entityId);
+    const hasDieClip = Boolean(proxy?.animation?.dieClip);
+    const state = this.ensureNoClipFeedbackState(entityId);
+
+    if (!dead || hasDieClip) {
+      state.dead = false;
+      state.deadStartedAtMs = 0;
+      return;
+    }
+
+    const now = performance.now();
+    state.dead = true;
+    state.deadStartedAtMs = now;
+    state.hitUntilMs = Math.max(state.hitUntilMs, now + 120);
+  }
+
+  private markNoClipHitFeedback(entityId: EntityId, nowMs: number): void {
+    const state = this.ensureNoClipFeedbackState(entityId);
+    state.hitUntilMs = Math.max(state.hitUntilMs, nowMs + 180);
+  }
+
+  private updateFallbackCombatFeedback(nowMs: number): void {
+    for (const [entityId] of this.noClipFeedbackByEntityId) {
+      if (!this.world.renderProxies.has(entityId)) {
+        this.noClipFeedbackByEntityId.delete(entityId);
+        this.proxyBaseScaleByEntityId.delete(entityId);
+      }
+    }
+
+    for (const [entityId, proxy] of this.world.renderProxies) {
+      let baseScale = this.proxyBaseScaleByEntityId.get(entityId);
+      if (!baseScale) {
+        baseScale = proxy.object3d.scale.clone();
+        this.proxyBaseScaleByEntityId.set(entityId, baseScale);
+      }
+
+      const state = this.noClipFeedbackByEntityId.get(entityId);
+      if (!state) {
+        proxy.object3d.scale.copy(baseScale);
+        continue;
+      }
+
+      const hasHitClip = Boolean(proxy.animation?.hitClip);
+      const hasDieClip = Boolean(proxy.animation?.dieClip);
+      const hitActive = !hasHitClip && state.hitUntilMs > nowMs;
+      const deadActive = state.dead && !hasDieClip;
+
+      if (!hitActive && !deadActive) {
+        proxy.object3d.scale.copy(baseScale);
+        this.noClipFeedbackByEntityId.delete(entityId);
+        continue;
+      }
+
+      let scaleMultiplier = 1;
+      let yOffset = 0;
+
+      if (hitActive) {
+        const remainRatio = THREE.MathUtils.clamp((state.hitUntilMs - nowMs) / 180, 0, 1);
+        scaleMultiplier += 0.13 * remainRatio;
+        yOffset += 0.045 * remainRatio;
+      }
+
+      if (deadActive) {
+        const deadProgress = state.deadStartedAtMs > 0
+          ? THREE.MathUtils.clamp((nowMs - state.deadStartedAtMs) / 300, 0, 1)
+          : 1;
+        scaleMultiplier *= 1 - 0.22 * deadProgress;
+        yOffset -= 0.16 * deadProgress;
+      }
+
+      proxy.object3d.scale.copy(baseScale).multiplyScalar(Math.max(0.72, scaleMultiplier));
+      proxy.object3d.position.y += yOffset;
+    }
+  }
+
+  private triggerHitAnimation(entityId: EntityId, nowMs: number): void {
+    if (!Number.isFinite(nowMs)) return;
+
+    const proxy = this.world.renderProxies.get(entityId);
+    const animation = proxy?.animation;
+    if (!animation || animation.isDead) {
+      return;
+    }
+
+    if (!animation.hitClip) {
+      this.markNoClipHitFeedback(entityId, nowMs);
+      return;
+    }
+
+    const hitAction = animation.actions.get(animation.hitClip);
+    const hitDurationMs = hitAction
+      ? Math.round(hitAction.getClip().duration * 1000)
+      : HIT_REACT_MIN_MS;
+    const reactMs = THREE.MathUtils.clamp(hitDurationMs, HIT_REACT_MIN_MS, HIT_REACT_MAX_MS);
+    animation.hitReactUntilMs = Math.max(animation.hitReactUntilMs, nowMs + reactMs);
   }
 
   private lockClipRootMotion(sourceClip: THREE.AnimationClip): THREE.AnimationClip {
@@ -1455,6 +1911,115 @@ export class GameApp {
       this.spawnMuzzleFlash(origin, dir, trailColor);
       this.spawnBulletTrail(origin, dir, range, trailColor);
     }
+  }
+
+  private spawnSkillCastCue(
+    attackerPlayerId: number,
+    skillSlot: "Q" | "E" | "R",
+    worldX: number,
+    worldZ: number,
+  ): void {
+    const attackerEntityId = this.resolveEntityIdByNetworkPlayerId(attackerPlayerId);
+    if (attackerEntityId === null) {
+      return;
+    }
+
+    const transform = this.world.transforms.get(attackerEntityId);
+    const teamId =
+      this.world.teams.get(attackerEntityId)?.id ??
+      (attackerPlayerId === this.localNetworkPlayerId ? 1 : 2);
+
+    const direction = new THREE.Vector2(
+      transform ? Math.sin(transform.yaw) : 0,
+      transform ? Math.cos(transform.yaw) : 1,
+    );
+    if (direction.lengthSq() < 1e-6) {
+      direction.set(0, 1);
+    }
+
+    const isLocalCaster = attackerPlayerId === this.localNetworkPlayerId;
+    const attackerHeroId =
+      this.heroIdByNetworkPlayerId.get(attackerPlayerId) ??
+      (isLocalCaster ? this.localHeroDef.id : null);
+    const impactKind: ImpactBurstKind = isLocalCaster ? "outgoing" : "incoming";
+    const origin = new THREE.Vector3(worldX, BULLET_TRAIL_MUZZLE_HEIGHT, worldZ);
+
+    if (attackerHeroId === "coral_cat") {
+      const coralColor = skillSlot === "R" ? 0x8cc8ff : 0x80e8ff;
+
+      if (skillSlot === "Q") {
+        this.spawnMuzzleFlash(origin, direction, coralColor);
+        this.spawnBulletTrail(origin, direction, 12.5, coralColor);
+        this.spawnImpactBurst(worldX, worldZ, false, impactKind, direction, attackerPlayerId);
+        return;
+      }
+
+      if (skillSlot === "E") {
+        const left = direction.clone().rotateAround(new THREE.Vector2(0, 0), Math.PI * 0.5).normalize();
+        const right = direction.clone().rotateAround(new THREE.Vector2(0, 0), -Math.PI * 0.5).normalize();
+
+        this.spawnImpactBurst(worldX, worldZ, false, impactKind, direction, attackerPlayerId);
+        this.spawnImpactBurst(worldX + left.x * 0.7, worldZ + left.y * 0.7, false, impactKind, left, attackerPlayerId);
+        this.spawnImpactBurst(worldX + right.x * 0.7, worldZ + right.y * 0.7, false, impactKind, right, attackerPlayerId);
+        return;
+      }
+
+      this.spawnMuzzleFlash(origin, direction, coralColor);
+      this.spawnBulletTrail(origin, direction, 8.4, coralColor);
+      this.spawnImpactBurst(worldX, worldZ, true, impactKind, direction, attackerPlayerId);
+      this.spawnImpactBurst(worldX + direction.x * 0.95, worldZ + direction.y * 0.95, true, impactKind, direction, attackerPlayerId);
+      this.spawnImpactBurst(worldX - direction.x * 0.55, worldZ - direction.y * 0.55, true, impactKind, direction, attackerPlayerId);
+      return;
+    }
+
+    if (attackerHeroId === "bruno_bear") {
+      const brunoColor = skillSlot === "R" ? 0xffc68a : 0xffb277;
+
+      if (skillSlot === "Q") {
+        this.spawnMuzzleFlash(origin, direction, brunoColor);
+        this.spawnImpactBurst(worldX, worldZ, false, impactKind, direction, attackerPlayerId);
+        this.spawnImpactBurst(worldX + direction.x * 0.75, worldZ + direction.y * 0.75, true, impactKind, direction, attackerPlayerId);
+        return;
+      }
+
+      if (skillSlot === "E") {
+        this.spawnImpactBurst(worldX, worldZ, false, impactKind, null, attackerPlayerId);
+        this.spawnImpactBurst(worldX, worldZ, true, impactKind, null, attackerPlayerId);
+        return;
+      }
+
+      this.spawnMuzzleFlash(origin, direction, brunoColor);
+      this.spawnImpactBurst(worldX, worldZ, true, impactKind, direction, attackerPlayerId);
+      this.spawnImpactBurst(worldX + direction.x * 0.8, worldZ + direction.y * 0.8, true, impactKind, direction, attackerPlayerId);
+      this.spawnImpactBurst(worldX - direction.x * 0.8, worldZ - direction.y * 0.8, true, impactKind, direction, attackerPlayerId);
+      return;
+    }
+
+    const fallbackColor =
+      skillSlot === "E"
+        ? teamId === 1
+          ? 0x8cffb2
+          : 0xff9aa2
+        : skillSlot === "R"
+          ? teamId === 1
+            ? 0x7db8ff
+            : 0xffb47d
+          : getTeamTrailColor(teamId);
+
+    if (skillSlot === "Q") {
+      this.spawnMuzzleFlash(origin, direction, fallbackColor);
+      this.spawnBulletTrail(origin, direction, 7.8, fallbackColor);
+      this.spawnImpactBurst(worldX, worldZ, false, impactKind, direction, attackerPlayerId);
+      return;
+    }
+
+    if (skillSlot === "E") {
+      this.spawnImpactBurst(worldX, worldZ, false, impactKind, direction, attackerPlayerId);
+      return;
+    }
+
+    this.spawnMuzzleFlash(origin, direction, fallbackColor);
+    this.spawnImpactBurst(worldX, worldZ, true, impactKind, direction, attackerPlayerId);
   }
 
   private spawnMuzzleFlash(origin: THREE.Vector3, directionXZ: THREE.Vector2, flashColor: number): void {
@@ -1920,12 +2485,91 @@ export class GameApp {
     }
   }
 
-  private spawnImpactBurst(worldX: number, worldZ: number, critical: boolean): void {
-    const innerRadius = critical ? 0.26 : 0.22;
-    const outerRadius = critical ? 0.49 : 0.42;
-    const ringGeometry = new THREE.RingGeometry(innerRadius, outerRadius, 28);
+  private resolveImpactDirection(
+    targetX: number,
+    targetZ: number,
+    attackerPlayerId: number | null,
+    attackerX: number | null,
+    attackerZ: number | null,
+  ): THREE.Vector2 | null {
+    let sourceX = attackerX;
+    let sourceZ = attackerZ;
+
+    if ((sourceX === null || sourceZ === null) && attackerPlayerId !== null) {
+      const entityId = this.resolveEntityIdByNetworkPlayerId(attackerPlayerId);
+      if (entityId !== null) {
+        const transform = this.world.transforms.get(entityId);
+        if (transform) {
+          sourceX = transform.x;
+          sourceZ = transform.z;
+        } else {
+          const proxy = this.world.renderProxies.get(entityId);
+          if (proxy) {
+            sourceX = proxy.object3d.position.x;
+            sourceZ = proxy.object3d.position.z;
+          }
+        }
+      }
+    }
+
+    if (sourceX === null || sourceZ === null) {
+      return null;
+    }
+
+    const direction = new THREE.Vector2(targetX - sourceX, targetZ - sourceZ);
+    if (direction.lengthSq() < 1e-6) {
+      return null;
+    }
+
+    direction.normalize();
+    return direction;
+  }
+
+  private resolveImpactOrigin(worldX: number, worldZ: number, targetPlayerId: number | null): THREE.Vector3 {
+    let baseY = 0.94;
+
+    if (targetPlayerId !== null) {
+      const entityId = this.resolveEntityIdByNetworkPlayerId(targetPlayerId);
+      if (entityId !== null) {
+        const proxy = this.world.renderProxies.get(entityId);
+        if (proxy) {
+          baseY = proxy.object3d.position.y + 0.94;
+        }
+      }
+    }
+
+    return new THREE.Vector3(worldX, baseY, worldZ);
+  }
+
+  private spawnImpactBurst(
+    worldX: number,
+    worldZ: number,
+    critical: boolean,
+    kind: ImpactBurstKind,
+    impactDirectionXZ: THREE.Vector2 | null,
+    targetPlayerId: number | null,
+  ): void {
+    const origin = this.resolveImpactOrigin(worldX, worldZ, targetPlayerId);
+    const worldUp = new THREE.Vector3(0, 1, 0);
+    const directionalBias =
+      impactDirectionXZ && impactDirectionXZ.lengthSq() > 1e-6
+        ? new THREE.Vector3(impactDirectionXZ.x, 0, impactDirectionXZ.y).normalize()
+        : null;
+
+    const ringInner = critical ? 0.24 : 0.2;
+    const ringOuter = critical ? 0.52 : 0.45;
+    const ringColor =
+      kind === "outgoing"
+        ? critical
+          ? 0xffd99a
+          : 0xffc480
+        : critical
+          ? 0xffb0b0
+          : 0xff7474;
+
+    const ringGeometry = new THREE.RingGeometry(ringInner, ringOuter, 32);
     const ringMaterial = new THREE.MeshBasicMaterial({
-      color: critical ? 0xffb0b0 : 0xff6f6f,
+      color: ringColor,
       transparent: true,
       opacity: 0.92,
       depthWrite: false,
@@ -1935,36 +2579,265 @@ export class GameApp {
 
     const ring = new THREE.Mesh(ringGeometry, ringMaterial);
     ring.rotation.x = -Math.PI / 2;
-    ring.position.set(worldX, 0.06, worldZ);
+    ring.position.set(worldX, Math.max(0.04, origin.y - 0.88), worldZ);
     ring.renderOrder = 59;
     ring.frustumCulled = false;
 
+    const coreGeometry = new THREE.SphereGeometry(critical ? 0.16 : 0.12, 10, 10);
+    const coreMaterial = new THREE.MeshBasicMaterial({
+      color: kind === "outgoing" ? 0xfff1d6 : 0xffd0d0,
+      transparent: true,
+      opacity: critical ? 0.95 : 0.88,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+
+    const core = new THREE.Mesh(coreGeometry, coreMaterial);
+    core.position.copy(origin);
+    core.renderOrder = 60;
+    core.frustumCulled = false;
+
     this.sceneRoot.scene.add(ring);
+    this.sceneRoot.scene.add(core);
+
+    const sparks: ImpactBurstSpark[] = [];
+    const sparkCount = critical ? 12 : 8;
+    const sparkColor = kind === "outgoing" ? 0xffefb8 : 0xffd6c8;
+
+    for (let i = 0; i < sparkCount; i += 1) {
+      const sparkLength = (critical ? 0.26 : 0.2) + Math.random() * (critical ? 0.24 : 0.16);
+      const sparkGeometry = new THREE.CylinderGeometry(0.009, 0.02, sparkLength, 8, 1, true);
+      const sparkMaterial = new THREE.MeshBasicMaterial({
+        color: sparkColor,
+        transparent: true,
+        opacity: critical ? 0.98 : 0.9,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
+      });
+
+      const spark = new THREE.Mesh(sparkGeometry, sparkMaterial);
+      spark.renderOrder = 63;
+      spark.frustumCulled = false;
+
+      const spread = (Math.random() - 0.5) * Math.PI * (critical ? 0.65 : 0.85);
+      const horizontal = new THREE.Vector3(Math.random() - 0.5, 0, Math.random() - 0.5);
+      if (horizontal.lengthSq() < 1e-6) {
+        horizontal.set(0.01, 0, 1);
+      }
+      horizontal.normalize();
+
+      if (directionalBias) {
+        const biased = directionalBias.clone().applyAxisAngle(worldUp, spread);
+        horizontal.lerp(biased, 0.66).normalize();
+      }
+
+      const velocity = horizontal.multiplyScalar((critical ? 3.8 : 3.1) + Math.random() * 2.0);
+      velocity.y = 0.4 + Math.random() * 1.15 + (critical ? 0.25 : 0);
+
+      spark.position.copy(origin);
+      spark.position.x += (Math.random() - 0.5) * 0.12;
+      spark.position.y += (Math.random() - 0.5) * 0.08;
+      spark.position.z += (Math.random() - 0.5) * 0.12;
+      spark.quaternion.setFromUnitVectors(worldUp, velocity.clone().normalize());
+
+      this.sceneRoot.scene.add(spark);
+
+      sparks.push({
+        mesh: spark,
+        geometry: sparkGeometry,
+        material: sparkMaterial,
+        velocity,
+        spinVelocity: (Math.random() - 0.5) * 7.2,
+        stretchRate: 1.25 + Math.random() * 0.95,
+        baseOpacity: critical ? 0.98 : 0.9,
+      });
+    }
+
+    const particles: ImpactBurstParticle[] = [];
+    const bloodColor = kind === "outgoing" ? 0xd14b55 : 0xb64a4a;
+    const bloodCount = critical ? 7 : 5;
+
+    for (let i = 0; i < bloodCount; i += 1) {
+      const radius = (critical ? 0.06 : 0.05) + Math.random() * 0.05;
+      const particleGeometry = new THREE.SphereGeometry(radius, 8, 8);
+      const particleMaterial = new THREE.MeshBasicMaterial({
+        color: bloodColor,
+        transparent: true,
+        opacity: critical ? 0.72 : 0.62,
+        depthWrite: false,
+        blending: THREE.NormalBlending,
+      });
+
+      const particle = new THREE.Mesh(particleGeometry, particleMaterial);
+      particle.position.copy(origin);
+      particle.position.x += (Math.random() - 0.5) * 0.16;
+      particle.position.y += (Math.random() - 0.5) * 0.14;
+      particle.position.z += (Math.random() - 0.5) * 0.16;
+      particle.renderOrder = 58;
+      particle.frustumCulled = false;
+
+      const velocity = new THREE.Vector3(Math.random() - 0.5, 0, Math.random() - 0.5);
+      if (velocity.lengthSq() < 1e-6) {
+        velocity.set(0.01, 0, 1);
+      }
+      velocity.normalize();
+
+      if (directionalBias) {
+        velocity.lerp(directionalBias, 0.35).normalize();
+      }
+
+      velocity.multiplyScalar(0.9 + Math.random() * 1.4);
+      velocity.y = 0.48 + Math.random() * 1.06;
+
+      this.sceneRoot.scene.add(particle);
+
+      particles.push({
+        mesh: particle,
+        geometry: particleGeometry,
+        material: particleMaterial,
+        velocity,
+        growthRate: 1.15 + Math.random() * 1.25,
+        dragPerSec: IMPACT_PARTICLE_DRAG_PER_SEC,
+        gravity: IMPACT_BLOOD_GRAVITY,
+        baseOpacity: critical ? 0.72 : 0.62,
+        fadePower: 1.6,
+      });
+    }
+
+    const dustColor = critical ? 0xd4c2a2 : 0xc7b08c;
+    const dustCount = critical ? 6 : 4;
+    const dustY = Math.max(0.05, origin.y - 0.88);
+
+    for (let i = 0; i < dustCount; i += 1) {
+      const radius = 0.06 + Math.random() * 0.06;
+      const particleGeometry = new THREE.SphereGeometry(radius, 7, 7);
+      const particleMaterial = new THREE.MeshBasicMaterial({
+        color: dustColor,
+        transparent: true,
+        opacity: critical ? 0.52 : 0.44,
+        depthWrite: false,
+        blending: THREE.NormalBlending,
+      });
+
+      const particle = new THREE.Mesh(particleGeometry, particleMaterial);
+      particle.position.set(
+        worldX + (Math.random() - 0.5) * 0.18,
+        dustY + (Math.random() - 0.5) * 0.05,
+        worldZ + (Math.random() - 0.5) * 0.18,
+      );
+      particle.renderOrder = 57;
+      particle.frustumCulled = false;
+
+      const velocity = new THREE.Vector3(Math.random() - 0.5, 0, Math.random() - 0.5);
+      if (velocity.lengthSq() < 1e-6) {
+        velocity.set(0.01, 0, 1);
+      }
+      velocity.normalize();
+
+      if (directionalBias) {
+        velocity.lerp(directionalBias, 0.22).normalize();
+      }
+
+      velocity.multiplyScalar(0.65 + Math.random() * 1.05);
+      velocity.y = 0.14 + Math.random() * 0.34;
+
+      this.sceneRoot.scene.add(particle);
+
+      particles.push({
+        mesh: particle,
+        geometry: particleGeometry,
+        material: particleMaterial,
+        velocity,
+        growthRate: 1.9 + Math.random() * 1.35,
+        dragPerSec: IMPACT_PARTICLE_DRAG_PER_SEC,
+        gravity: IMPACT_DUST_GRAVITY,
+        baseOpacity: critical ? 0.52 : 0.44,
+        fadePower: 2.1,
+      });
+    }
 
     this.impactBurstEffects.push({
       ring,
       ringGeometry,
       ringMaterial,
+      core,
+      coreGeometry,
+      coreMaterial,
+      sparks,
+      particles,
       ageMs: 0,
-      lifeMs: critical ? 260 : 210,
+      lifeMs: critical ? 360 : 300,
     });
   }
 
+  private disposeImpactBurstEffect(effect: ImpactBurstEffect): void {
+    this.sceneRoot.scene.remove(effect.ring);
+    this.sceneRoot.scene.remove(effect.core);
+    effect.ringGeometry.dispose();
+    effect.ringMaterial.dispose();
+    effect.coreGeometry.dispose();
+    effect.coreMaterial.dispose();
+
+    for (const spark of effect.sparks) {
+      this.sceneRoot.scene.remove(spark.mesh);
+      spark.geometry.dispose();
+      spark.material.dispose();
+    }
+
+    for (const particle of effect.particles) {
+      this.sceneRoot.scene.remove(particle.mesh);
+      particle.geometry.dispose();
+      particle.material.dispose();
+    }
+  }
+
   private updateImpactBurstEffects(frameMs: number): void {
+    const dtSec = Math.max(0, frameMs) / 1000;
+    const sparkDrag = Math.max(0, 1 - IMPACT_SPARK_DRAG_PER_SEC * dtSec);
+    const worldUp = new THREE.Vector3(0, 1, 0);
+
     for (let i = this.impactBurstEffects.length - 1; i >= 0; i -= 1) {
       const effect = this.impactBurstEffects[i]!;
       effect.ageMs += frameMs;
       const t = Math.min(1, effect.ageMs / effect.lifeMs);
       const fade = 1 - t;
 
-      effect.ringMaterial.opacity = 0.92 * fade;
-      const scale = 1 + t * 1.8;
-      effect.ring.scale.setScalar(scale);
+      effect.ringMaterial.opacity = 0.9 * fade * fade;
+      effect.ring.scale.setScalar(1 + t * 2.15);
+
+      effect.coreMaterial.opacity = 0.92 * fade;
+      effect.core.scale.setScalar(1 + t * 0.9);
+
+      for (const spark of effect.sparks) {
+        spark.mesh.position.addScaledVector(spark.velocity, dtSec);
+        spark.velocity.y -= IMPACT_SPARK_GRAVITY * dtSec;
+        spark.velocity.multiplyScalar(sparkDrag);
+
+        if (spark.velocity.lengthSq() > 1e-6) {
+          spark.mesh.quaternion.setFromUnitVectors(worldUp, spark.velocity.clone().normalize());
+        }
+
+        const width = Math.max(0.18, 1 - t * 0.78);
+        const stretch = 1 + t * spark.stretchRate;
+        spark.mesh.scale.set(width, stretch, width);
+        spark.mesh.rotateY(spark.spinVelocity * dtSec);
+        spark.material.opacity = spark.baseOpacity * fade * fade;
+      }
+
+      for (const particle of effect.particles) {
+        particle.mesh.position.addScaledVector(particle.velocity, dtSec);
+        particle.velocity.y -= particle.gravity * dtSec;
+        const drag = Math.max(0, 1 - particle.dragPerSec * dtSec);
+        particle.velocity.multiplyScalar(drag);
+
+        const particleScale = 1 + particle.growthRate * t;
+        particle.mesh.scale.setScalar(particleScale);
+        particle.material.opacity = particle.baseOpacity * Math.pow(fade, particle.fadePower);
+      }
 
       if (t >= 1 || fade <= 0.01) {
-        this.sceneRoot.scene.remove(effect.ring);
-        effect.ringGeometry.dispose();
-        effect.ringMaterial.dispose();
+        this.disposeImpactBurstEffect(effect);
         this.impactBurstEffects.splice(i, 1);
       }
     }
@@ -1972,9 +2845,7 @@ export class GameApp {
 
   private clearImpactBurstEffects(): void {
     for (const effect of this.impactBurstEffects) {
-      this.sceneRoot.scene.remove(effect.ring);
-      effect.ringGeometry.dispose();
-      effect.ringMaterial.dispose();
+      this.disposeImpactBurstEffect(effect);
     }
 
     this.impactBurstEffects.length = 0;

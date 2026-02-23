@@ -3,6 +3,7 @@ import * as flatbuffers from "flatbuffers";
 import { ActionCommandPayload } from "../netcode/gen/wildpaw/protocol/action-command-payload";
 import { CombatEventPayload } from "../netcode/gen/wildpaw/protocol/combat-event-payload";
 import { CombatEventType } from "../netcode/gen/wildpaw/protocol/combat-event-type";
+import { SkillSlot } from "../netcode/gen/wildpaw/protocol/skill-slot";
 import { Envelope } from "../netcode/gen/wildpaw/protocol/envelope";
 import { EventPayload } from "../netcode/gen/wildpaw/protocol/event-payload";
 import { HelloPayload } from "../netcode/gen/wildpaw/protocol/hello-payload";
@@ -72,10 +73,12 @@ function getPreferredHeroId(explicit?: string): string {
 function resolveServerProfileId(heroId: string): string {
   switch (heroId) {
     case "bruno_bear":
+      return "bruno_bear";
+    case "coral_cat":
+      return "coral_cat";
     case "rockhorn_rhino":
       return "bruiser";
     case "lumifox":
-    case "coral_cat":
       return "skirmisher";
     default:
       return "ranger";
@@ -591,12 +594,25 @@ export class RealtimeSocketClient {
         }
 
         const eventType = combatPayload.eventType();
+        const rawSkillSlot = combatPayload.skillSlot();
+        const skillSlot =
+          rawSkillSlot === SkillSlot.Q
+            ? "Q"
+            : rawSkillSlot === SkillSlot.E
+              ? "E"
+              : rawSkillSlot === SkillSlot.R
+                ? "R"
+                : "None";
+
         const payload = {
           eventType,
           attackerPlayerId: combatPayload.sourcePlayerId(),
           targetPlayerId: combatPayload.targetPlayerId(),
           targetX: combatPayload.x(),
           targetY: combatPayload.y(),
+          sourceX: combatPayload.x(),
+          sourceY: combatPayload.y(),
+          skillSlot,
           damage: combatPayload.damage(),
           critical: combatPayload.isCritical(),
           serverTick: combatPayload.serverTick(),
@@ -618,6 +634,14 @@ export class RealtimeSocketClient {
         if (eventType === CombatEventType.Knockout) {
           this.options.onEvent?.("S2C_EVENT", {
             kind: "knockout",
+            ...payload,
+          });
+          return;
+        }
+
+        if (eventType === CombatEventType.SkillCast) {
+          this.options.onEvent?.("S2C_EVENT", {
+            kind: "skill-cast",
             ...payload,
           });
           return;

@@ -538,24 +538,214 @@ void RoomSimulation::processCombat() {
     }
   };
 
-  auto executeSkill = [&](PlayerState& source, SkillSlot slot) {
+  auto movePlayerByDelta = [&](PlayerState& player, const Vec2& delta) {
+    Vec2 resolved = player.position;
+    Vec2 desired = {
+        .x = std::clamp(resolved.x + delta.x, worldMinX_, worldMaxX_),
+        .y = std::clamp(resolved.y + delta.y, worldMinY_, worldMaxY_),
+    };
+
+    if (!isBlockedByMovement(desired, staticColliders_)) {
+      resolved = desired;
+    } else {
+      Vec2 slideX = {
+          .x = std::clamp(resolved.x + delta.x, worldMinX_, worldMaxX_),
+          .y = resolved.y,
+      };
+      if (!isBlockedByMovement(slideX, staticColliders_)) {
+        resolved = slideX;
+      }
+
+      Vec2 slideY = {
+          .x = resolved.x,
+          .y = std::clamp(resolved.y + delta.y, worldMinY_, worldMaxY_),
+      };
+      if (!isBlockedByMovement(slideY, staticColliders_)) {
+        resolved = slideY;
+      }
+    }
+
+    resolveMovementPenetration(resolved, staticColliders_);
+    player.position.x = std::clamp(resolved.x, worldMinX_, worldMaxX_);
+    player.position.y = std::clamp(resolved.y, worldMinY_, worldMaxY_);
+  };
+
+  auto executeSkill = [&](PlayerState& source, SkillSlot slot, float aimRadian) {
     if (!source.alive) {
       return;
     }
 
     const auto sourceRules = combatRuleForProfile(source.profileId);
+    const Vec2 aimDirection = directionFromRadian(aimRadian);
 
+    const bool isBrunoProfile = source.profileId == "bruno_bear";
+    const bool isCoralProfile = source.profileId == "coral_cat";
+
+    if (isBrunoProfile) {
+      if (slot == SkillSlot::Q) {
+        const auto& rule = sourceRules.skillQ;
+        const float dashDistance =
+            std::clamp(rule.rangeMeters * 0.45f, 2.0f, 4.2f);
+        movePlayerByDelta(source, Vec2{.x = aimDirection.x * dashDistance,
+                                       .y = aimDirection.y * dashDistance});
+
+        const float hitRadius =
+            std::max(1.8f, rule.radiusMeters > 0.0f ? rule.radiusMeters : 2.6f);
+        const float hitRadiusSq = hitRadius * hitRadius;
+
+        float bestDistSq = std::numeric_limits<float>::max();
+        PlayerState* bestTarget = nullptr;
+
+        for (auto& [targetId, target] : players_) {
+          if (targetId == source.playerId || !target.alive ||
+              (source.teamId != 0 && target.teamId == source.teamId)) {
+            continue;
+          }
+
+          const float d = distSq(source.position, target.position);
+          if (d <= hitRadiusSq && d < bestDistSq) {
+            bestDistSq = d;
+            bestTarget = &target;
+          }
+        }
+
+        if (bestTarget != nullptr) {
+          pushDamageEvents(source, *bestTarget, rule.damage, SkillSlot::Q,
+                           rule.critical);
+        }
+        return;
+      }
+
+      if (slot == SkillSlot::E) {
+        const auto& rule = sourceRules.skillE;
+        const float radius =
+            std::max(2.2f, rule.radiusMeters > 0.0f ? rule.radiusMeters : 3.4f);
+        const float radiusSq = radius * radius;
+
+        source.reloading = false;
+        source.reloadRemainingTicks = 0;
+
+        const auto ammoBoost = std::max<std::uint16_t>(1, rule.ammoCost);
+        source.ammo = std::min<std::uint16_t>(
+            source.maxAmmo,
+            static_cast<std::uint16_t>(source.ammo + ammoBoost));
+
+        constexpr std::uint16_t kServerMaxHp = 100;
+        const auto healAmount = std::max<std::uint16_t>(4, rule.damage / 2);
+        source.hp = std::min<std::uint16_t>(
+            kServerMaxHp,
+            static_cast<std::uint16_t>(source.hp + healAmount));
+
+        for (auto& [targetId, target] : players_) {
+          if (targetId == source.playerId || !target.alive ||
+              (source.teamId != 0 && target.teamId == source.teamId)) {
+            continue;
+          }
+
+          if (distSq(source.position, target.position) <= radiusSq) {
+            pushDamageEvents(source, target, rule.damage, SkillSlot::E,
+                             rule.critical);
+          }
+        }
+        return;
+      }
+
+      if (slot == SkillSlot::R) {
+        const auto& rule = sourceRules.skillR;
+        const float radius = std::max(3.8f, rule.radiusMeters);
+        const float radiusSq = radius * radius;
+
+        for (auto& [targetId, target] : players_) {
+          if (targetId == source.playerId || !target.alive ||
+              (source.teamId != 0 && target.teamId == source.teamId)) {
+            continue;
+          }
+
+          if (distSq(source.position, target.position) <= radiusSq) {
+            pushDamageEvents(source, target, rule.damage, SkillSlot::R,
+                             rule.critical);
+          }
+        }
+        return;
+      }
+    }
+
+    if (isCoralProfile) {
+      if (slot == SkillSlot::Q) {
+        const auto& rule = sourceRules.skillQ;
+        const float range = std::max(rule.rangeMeters, sourceRules.shotRangeMeters + 2.0f);
+
+        if (auto* target = findShotTarget(source, range, aimRadian);
+            target != nullptr) {
+          pushDamageEvents(source, *target, rule.damage, SkillSlot::Q,
+                           rule.critical);
+        }
+        return;
+      }
+
+      if (slot == SkillSlot::E) {
+        const auto& rule = sourceRules.skillE;
+
+        const float sign = ((tick_ + source.playerId) % 2 == 0) ? 1.0f : -1.0f;
+        const Vec2 sideDirection = {
+            .x = -aimDirection.y * sign,
+            .y = aimDirection.x * sign,
+        };
+
+        const float dashDistance = std::clamp(rule.rangeMeters * 0.45f, 1.4f, 3.2f);
+        movePlayerByDelta(source, Vec2{.x = sideDirection.x * dashDistance,
+                                       .y = sideDirection.y * dashDistance});
+
+        const float pokeRange =
+            std::max(2.0f, rule.radiusMeters > 0.0f ? rule.radiusMeters : 2.4f);
+        if (auto* target = findNearestTargetInRange(source, pokeRange);
+            target != nullptr) {
+          const std::uint16_t pokeDamage =
+              std::max<std::uint16_t>(1, static_cast<std::uint16_t>(rule.damage / 2));
+          pushDamageEvents(source, *target, pokeDamage, SkillSlot::E,
+                           rule.critical);
+        }
+        return;
+      }
+
+      if (slot == SkillSlot::R) {
+        const auto& rule = sourceRules.skillR;
+        const float range = std::max(8.0f, rule.rangeMeters);
+        const float radius = std::max(2.6f, rule.radiusMeters);
+        const float radiusSq = radius * radius;
+
+        const Vec2 burstCenter = {
+            .x = source.position.x + aimDirection.x * range,
+            .y = source.position.y + aimDirection.y * range,
+        };
+
+        for (auto& [targetId, target] : players_) {
+          if (targetId == source.playerId || !target.alive ||
+              (source.teamId != 0 && target.teamId == source.teamId)) {
+            continue;
+          }
+
+          if (distSq(burstCenter, target.position) <= radiusSq) {
+            pushDamageEvents(source, target, rule.damage, SkillSlot::R,
+                             rule.critical);
+          }
+        }
+        return;
+      }
+    }
+
+    // 기본 프로필 fallback
     if (slot == SkillSlot::Q) {
       const auto& rule = sourceRules.skillQ;
       if (auto* target = findNearestTargetInRange(source, rule.rangeMeters);
           target != nullptr) {
-        pushDamageEvents(source, *target, rule.damage, SkillSlot::Q, rule.critical);
+        pushDamageEvents(source, *target, rule.damage, SkillSlot::Q,
+                         rule.critical);
       }
       return;
     }
 
     if (slot == SkillSlot::E) {
-      // E는 이동/유틸 스킬 자리. 현재 스캐폴드에서는 상태 이벤트만 발행.
       return;
     }
 
@@ -640,7 +830,7 @@ void RoomSimulation::processCombat() {
 
       source.castingSkill = SkillSlot::None;
       source.castRemainingTicks = 0;
-      executeSkill(source, cast.slot);
+      executeSkill(source, cast.slot, cast.aimRadian);
     }
 
     pendingSkillCasts_.swap(stillPending);
@@ -764,7 +954,7 @@ void RoomSimulation::processCombat() {
             .aimRadian = input.aimRadian,
         });
       } else {
-        executeSkill(player, slot);
+        executeSkill(player, slot, input.aimRadian);
       }
     };
 

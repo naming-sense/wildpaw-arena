@@ -81,6 +81,75 @@
         "ammo_cost": 4,
         "critical": true
       }
+    },
+    "coral_cat": {
+      "max_ammo": 12,
+      "ammo_per_shot": 1,
+      "fire_interval_ticks": 4,
+      "reload_ticks": 34,
+      "shot_range_meters": 16.0,
+      "shot_damage": 14,
+      "projectile_speed": 24.0,
+      "skill_q": {
+        "cooldown_ticks": 26,
+        "cast_time_ticks": 2,
+        "range_meters": 18.0,
+        "damage": 28,
+        "ammo_cost": 2,
+        "critical": true
+      },
+      "skill_e": {
+        "cooldown_ticks": 40,
+        "cast_time_ticks": 0,
+        "range_meters": 6.0,
+        "radius_meters": 2.5,
+        "damage": 12,
+        "ammo_cost": 1,
+        "critical": false
+      },
+      "skill_r": {
+        "cooldown_ticks": 130,
+        "cast_time_ticks": 14,
+        "range_meters": 13.0,
+        "radius_meters": 3.2,
+        "damage": 36,
+        "ammo_cost": 4,
+        "critical": true
+      }
+    },
+    "bruno_bear": {
+      "max_ammo": 8,
+      "ammo_per_shot": 1,
+      "fire_interval_ticks": 5,
+      "reload_ticks": 34,
+      "shot_range_meters": 10.0,
+      "shot_damage": 18,
+      "projectile_speed": 18.0,
+      "skill_q": {
+        "cooldown_ticks": 32,
+        "cast_time_ticks": 4,
+        "range_meters": 8.0,
+        "radius_meters": 2.8,
+        "damage": 30,
+        "ammo_cost": 2,
+        "critical": false
+      },
+      "skill_e": {
+        "cooldown_ticks": 42,
+        "cast_time_ticks": 3,
+        "radius_meters": 3.6,
+        "damage": 16,
+        "ammo_cost": 1,
+        "critical": false
+      },
+      "skill_r": {
+        "cooldown_ticks": 120,
+        "cast_time_ticks": 16,
+        "radius_meters": 5.2,
+        "damage": 38,
+        "ammo_cost": 4,
+        "critical": true
+      }
     }
   }
 }
