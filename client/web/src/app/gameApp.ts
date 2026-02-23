@@ -73,6 +73,7 @@ const IMPACT_DUST_GRAVITY = 1.5;
 const LOS_VISION_RANGE_METERS = 22;
 const LOS_HALF_FOV_RAD = (55 * Math.PI) / 180;
 const LOS_COLLIDER_PADDING = 0.02;
+const LOS_REMOTE_VISIBILITY_HOLD_MS = 160;
 const FOW_QUALITY_STORAGE_KEY = "wildpaw.fowQuality";
 
 function normalizeHeroId(rawHeroId: string): string {
@@ -153,8 +154,12 @@ function resolvePreferredFogOfWarQuality(explicit?: string): FogOfWarQuality {
   }
 
   if (typeof window === "undefined") {
-    return "low";
+    return "medium";
   }
+
+  const hasTouchInput =
+    (typeof navigator !== "undefined" && navigator.maxTouchPoints > 0) ||
+    (typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches);
 
   try {
     const params = new URLSearchParams(window.location.search);
@@ -175,13 +180,17 @@ function resolvePreferredFogOfWarQuality(explicit?: string): FogOfWarQuality {
       window.localStorage.getItem(FOW_QUALITY_STORAGE_KEY),
     );
     if (fromStorage) {
+      // 구버전 기본값(low)이 저장되어 있는 경우, 데스크톱에서는 기본을 medium으로 승격.
+      if (!hasTouchInput && fromStorage === "low") {
+        return "medium";
+      }
       return fromStorage;
     }
   } catch {
     // ignore parse/storage errors
   }
 
-  return "low";
+  return hasTouchInput ? "low" : "medium";
 }
 
 function isLosVisibilityEnabled(_quality: FogOfWarQuality): boolean {
@@ -342,6 +351,7 @@ export class GameApp {
 
   private readonly remoteEntities = new Map<number, EntityId>();
   private readonly remoteVisibilityByPlayerId = new Map<number, boolean>();
+  private readonly remoteVisibilityHoldUntilByPlayerId = new Map<number, number>();
   private readonly heroIdByNetworkPlayerId = new Map<number, string>();
   private readonly aliveByEntityId = new Map<EntityId, boolean>();
   private localPlayerEntityId: EntityId;
@@ -479,6 +489,7 @@ export class GameApp {
     this.clearImpactBurstEffects();
     this.noClipFeedbackByEntityId.clear();
     this.proxyBaseScaleByEntityId.clear();
+    this.remoteVisibilityHoldUntilByPlayerId.clear();
     this.removeHitMarkerElement();
     this.removeDamageOverlayElement();
     this.levelRuntime.dispose();
@@ -1241,7 +1252,17 @@ export class GameApp {
         team.id = player.team === 2 ? 2 : 1;
       }
 
-      const visible = this.isRemoteVisibleToLocal(player);
+      const directVisible = this.isRemoteVisibleToLocal(player);
+      if (directVisible) {
+        this.remoteVisibilityHoldUntilByPlayerId.set(
+          player.playerId,
+          nowMs + LOS_REMOTE_VISIBILITY_HOLD_MS,
+        );
+      }
+
+      const holdUntil = this.remoteVisibilityHoldUntilByPlayerId.get(player.playerId) ?? Number.NEGATIVE_INFINITY;
+      const visible = directVisible || holdUntil >= nowMs;
+
       this.remoteVisibilityByPlayerId.set(player.playerId, visible);
       const renderProxy = this.world.renderProxies.get(entityId);
       if (renderProxy) {
@@ -1302,6 +1323,7 @@ export class GameApp {
 
     this.remoteEntities.delete(networkPlayerId);
     this.remoteVisibilityByPlayerId.delete(networkPlayerId);
+    this.remoteVisibilityHoldUntilByPlayerId.delete(networkPlayerId);
     this.heroIdByNetworkPlayerId.delete(networkPlayerId);
     this.snapshotAmmoByPlayerId.delete(networkPlayerId);
 

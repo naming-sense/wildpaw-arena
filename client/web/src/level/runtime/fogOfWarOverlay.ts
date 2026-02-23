@@ -29,43 +29,47 @@ interface FogOfWarQualityProfile {
   darkAlpha: number;
   visibleCenterAlpha: number;
   visibleEdgeAlpha: number;
+  transitionMs: number;
 }
 
 const LOS_PADDING = 0.02;
 
 const QUALITY_PROFILES: Record<FogOfWarQuality, FogOfWarQualityProfile> = {
   low: {
-    resolution: 128,
-    updateIntervalMs: 220,
-    moveUpdateThreshold: 0.42,
-    yawUpdateThresholdRad: (7 * Math.PI) / 180,
+    resolution: 144,
+    updateIntervalMs: 180,
+    moveUpdateThreshold: 0.3,
+    yawUpdateThresholdRad: (6 * Math.PI) / 180,
     edgeBlurEnabled: true,
     occlusionEnabled: true,
     darkAlpha: 0.7,
     visibleCenterAlpha: 0.05,
     visibleEdgeAlpha: 0.24,
+    transitionMs: 120,
   },
   medium: {
-    resolution: 192,
-    updateIntervalMs: 120,
-    moveUpdateThreshold: 0.2,
-    yawUpdateThresholdRad: (4 * Math.PI) / 180,
+    resolution: 208,
+    updateIntervalMs: 105,
+    moveUpdateThreshold: 0.17,
+    yawUpdateThresholdRad: (3 * Math.PI) / 180,
     edgeBlurEnabled: true,
     occlusionEnabled: true,
     darkAlpha: 0.72,
     visibleCenterAlpha: 0.05,
     visibleEdgeAlpha: 0.24,
+    transitionMs: 90,
   },
   high: {
-    resolution: 256,
-    updateIntervalMs: 90,
-    moveUpdateThreshold: 0.12,
-    yawUpdateThresholdRad: (2.5 * Math.PI) / 180,
+    resolution: 272,
+    updateIntervalMs: 80,
+    moveUpdateThreshold: 0.1,
+    yawUpdateThresholdRad: (2 * Math.PI) / 180,
     edgeBlurEnabled: true,
     occlusionEnabled: true,
     darkAlpha: 0.74,
     visibleCenterAlpha: 0.05,
     visibleEdgeAlpha: 0.24,
+    transitionMs: 70,
   },
 };
 
@@ -87,6 +91,9 @@ export class FogOfWarOverlay {
   private readonly worldZByPixel: Float32Array;
   private readonly alphaMask: Uint8ClampedArray;
   private readonly alphaBlurScratch: Uint8ClampedArray;
+  private readonly alphaTarget: Uint8ClampedArray;
+  private readonly alphaCurrent: Uint8ClampedArray;
+  private readonly alphaTransitionFrom: Uint8ClampedArray;
   private readonly resolution: number;
   private readonly losColliders: readonly LevelStaticCollider[];
   private readonly bounds: FogOfWarBounds;
@@ -96,6 +103,9 @@ export class FogOfWarOverlay {
   private lastOriginX = Number.NaN;
   private lastOriginZ = Number.NaN;
   private lastYaw = Number.NaN;
+  private transitionStartedAtMs = Number.NEGATIVE_INFINITY;
+  private transitionActive = false;
+  private hasInitialFrame = false;
 
   constructor(
     scene: THREE.Scene,
@@ -125,6 +135,9 @@ export class FogOfWarOverlay {
     this.worldZByPixel = new Float32Array(pixelCount);
     this.alphaMask = new Uint8ClampedArray(pixelCount);
     this.alphaBlurScratch = new Uint8ClampedArray(pixelCount);
+    this.alphaTarget = new Uint8ClampedArray(pixelCount);
+    this.alphaCurrent = new Uint8ClampedArray(pixelCount);
+    this.alphaTransitionFrom = new Uint8ClampedArray(pixelCount);
     this.precomputeWorldCoords();
 
     this.texture = new THREE.CanvasTexture(this.canvas);
@@ -185,86 +198,134 @@ export class FogOfWarOverlay {
     const shouldSkipByMove =
       movedDistanceSq < this.profile.moveUpdateThreshold * this.profile.moveUpdateThreshold;
     const shouldSkipByYaw = yawDelta < this.profile.yawUpdateThresholdRad;
-    if (shouldSkipByTime && shouldSkipByMove && shouldSkipByYaw) {
+
+    const shouldRecompute = !(shouldSkipByTime && shouldSkipByMove && shouldSkipByYaw);
+
+    if (shouldRecompute) {
+      this.lastUpdateMs = nowMs;
+      this.lastOriginX = originX;
+      this.lastOriginZ = originZ;
+      this.lastYaw = yaw;
+
+      const rangeSq = rangeMeters * rangeMeters;
+      const cosHalfFov = Math.cos(halfFovRad);
+      const forwardX = Math.sin(yaw);
+      const forwardZ = Math.cos(yaw);
+
+      const darkAlpha255 = Math.round(this.profile.darkAlpha * 255);
+      const visibleCenterAlpha255 = Math.round(this.profile.visibleCenterAlpha * 255);
+      const visibleEdgeAlpha255 = Math.round(this.profile.visibleEdgeAlpha * 255);
+
+      for (let i = 0; i < this.worldXByPixel.length; i += 1) {
+        const worldX = this.worldXByPixel[i];
+        const worldZ = this.worldZByPixel[i];
+
+        const dx = worldX - originX;
+        const dz = worldZ - originZ;
+        const distSq = dx * dx + dz * dz;
+
+        let alpha = darkAlpha255;
+
+        if (distSq <= rangeSq) {
+          const dist = Math.sqrt(distSq);
+          const invDist = dist > 1e-6 ? 1 / dist : 0;
+          const dirX = dist > 1e-6 ? dx * invDist : forwardX;
+          const dirZ = dist > 1e-6 ? dz * invDist : forwardZ;
+          const forwardDot = dirX * forwardX + dirZ * forwardZ;
+
+          if (forwardDot >= cosHalfFov) {
+            let blocked = false;
+
+            if (this.profile.occlusionEnabled) {
+              for (const collider of this.losColliders) {
+                if (
+                  segmentIntersectsCollider2D(
+                    originX,
+                    originZ,
+                    worldX,
+                    worldZ,
+                    collider,
+                    LOS_PADDING,
+                  )
+                ) {
+                  blocked = true;
+                  break;
+                }
+              }
+            }
+
+            if (!blocked) {
+              const edgeT = Math.min(1, dist / Math.max(0.001, rangeMeters));
+              alpha = Math.round(
+                visibleCenterAlpha255 +
+                  (visibleEdgeAlpha255 - visibleCenterAlpha255) * edgeT,
+              );
+            }
+          }
+        }
+
+        this.alphaMask[i] = alpha;
+      }
+
+      const finalAlpha = this.profile.edgeBlurEnabled
+        ? this.applyBoxBlur3x3(this.alphaMask, this.alphaBlurScratch)
+        : this.alphaMask;
+
+      this.alphaTarget.set(finalAlpha);
+
+      if (!this.hasInitialFrame) {
+        this.alphaCurrent.set(this.alphaTarget);
+        this.hasInitialFrame = true;
+        this.transitionActive = false;
+      } else if (this.profile.transitionMs <= 1) {
+        this.alphaCurrent.set(this.alphaTarget);
+        this.transitionActive = false;
+      } else {
+        this.alphaTransitionFrom.set(this.alphaCurrent);
+        this.transitionStartedAtMs = nowMs;
+        this.transitionActive = true;
+      }
+    }
+
+    if (!this.hasInitialFrame) {
       return;
     }
 
-    this.lastUpdateMs = nowMs;
-    this.lastOriginX = originX;
-    this.lastOriginZ = originZ;
-    this.lastYaw = yaw;
+    let needsPresent = shouldRecompute;
 
-    const data = this.imageData.data;
-    const rangeSq = rangeMeters * rangeMeters;
-    const cosHalfFov = Math.cos(halfFovRad);
-    const forwardX = Math.sin(yaw);
-    const forwardZ = Math.cos(yaw);
+    if (this.transitionActive) {
+      const rawT = (nowMs - this.transitionStartedAtMs) / Math.max(1, this.profile.transitionMs);
+      const t = THREE.MathUtils.clamp(rawT, 0, 1);
 
-    const darkAlpha255 = Math.round(this.profile.darkAlpha * 255);
-    const visibleCenterAlpha255 = Math.round(this.profile.visibleCenterAlpha * 255);
-    const visibleEdgeAlpha255 = Math.round(this.profile.visibleEdgeAlpha * 255);
-
-    for (let i = 0; i < this.worldXByPixel.length; i += 1) {
-      const worldX = this.worldXByPixel[i];
-      const worldZ = this.worldZByPixel[i];
-
-      const dx = worldX - originX;
-      const dz = worldZ - originZ;
-      const distSq = dx * dx + dz * dz;
-
-      let alpha = darkAlpha255;
-
-      if (distSq <= rangeSq) {
-        const dist = Math.sqrt(distSq);
-        const invDist = dist > 1e-6 ? 1 / dist : 0;
-        const dirX = dist > 1e-6 ? dx * invDist : forwardX;
-        const dirZ = dist > 1e-6 ? dz * invDist : forwardZ;
-        const forwardDot = dirX * forwardX + dirZ * forwardZ;
-
-        if (forwardDot >= cosHalfFov) {
-          let blocked = false;
-
-          if (this.profile.occlusionEnabled) {
-            for (const collider of this.losColliders) {
-              if (
-                segmentIntersectsCollider2D(
-                  originX,
-                  originZ,
-                  worldX,
-                  worldZ,
-                  collider,
-                  LOS_PADDING,
-                )
-              ) {
-                blocked = true;
-                break;
-              }
-            }
-          }
-
-          if (!blocked) {
-            const edgeT = Math.min(1, dist / Math.max(0.001, rangeMeters));
-            alpha = Math.round(
-              visibleCenterAlpha255 +
-                (visibleEdgeAlpha255 - visibleCenterAlpha255) * edgeT,
-            );
-          }
+      if (t >= 1) {
+        this.alphaCurrent.set(this.alphaTarget);
+        this.transitionActive = false;
+      } else {
+        for (let i = 0; i < this.alphaCurrent.length; i += 1) {
+          const from = this.alphaTransitionFrom[i] ?? 0;
+          const to = this.alphaTarget[i] ?? 0;
+          this.alphaCurrent[i] = Math.round(from + (to - from) * t);
         }
       }
 
-      this.alphaMask[i] = alpha;
+      needsPresent = true;
     }
 
-    const finalAlpha = this.profile.edgeBlurEnabled
-      ? this.applyBoxBlur3x3(this.alphaMask, this.alphaBlurScratch)
-      : this.alphaMask;
+    if (needsPresent) {
+      this.presentAlpha(this.alphaCurrent);
+    }
+  }
 
-    for (let i = 0; i < finalAlpha.length; i += 1) {
+  private presentAlpha(alphaValues: Uint8ClampedArray): void {
+    const data = this.imageData.data;
+    const darkAlpha255 = Math.round(this.profile.darkAlpha * 255);
+
+    for (let i = 0; i < alphaValues.length; i += 1) {
       const offset = i * 4;
       data[offset] = 0;
       data[offset + 1] = 0;
       data[offset + 2] = 0;
-      data[offset + 3] = finalAlpha[i] ?? darkAlpha255;
+      data[offset + 3] = alphaValues[i] ?? darkAlpha255;
     }
 
     this.ctx.putImageData(this.imageData, 0, 0);

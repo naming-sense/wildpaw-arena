@@ -33,6 +33,7 @@ interface ObstacleVisibilityProfile {
   moveThreshold: number;
   yawThresholdRad: number;
   sampleMode: "center" | "full";
+  transitionMs: number;
 }
 
 interface LosObstacleVisual {
@@ -41,6 +42,8 @@ interface LosObstacleVisual {
   ownColliderIds: ReadonlySet<string>;
   samplePoints: ReadonlyArray<{ x: number; z: number }>;
   lastVisible: boolean | null;
+  currentOpacityFactor: number;
+  targetOpacityFactor: number;
 }
 
 const HIDDEN_OBSTACLE_OPACITY_FACTOR = 0.38;
@@ -48,24 +51,27 @@ const HIDDEN_OBSTACLE_OPACITY_FACTOR = 0.38;
 const OBSTACLE_VISIBILITY_PROFILES: Record<FogOfWarQuality, ObstacleVisibilityProfile> = {
   low: {
     enabled: true,
-    updateIntervalMs: 220,
-    moveThreshold: 0.32,
-    yawThresholdRad: (7 * Math.PI) / 180,
+    updateIntervalMs: 180,
+    moveThreshold: 0.28,
+    yawThresholdRad: (6 * Math.PI) / 180,
     sampleMode: "center",
+    transitionMs: 140,
   },
   medium: {
     enabled: true,
-    updateIntervalMs: 140,
-    moveThreshold: 0.22,
-    yawThresholdRad: (4 * Math.PI) / 180,
+    updateIntervalMs: 110,
+    moveThreshold: 0.18,
+    yawThresholdRad: (3 * Math.PI) / 180,
     sampleMode: "full",
+    transitionMs: 100,
   },
   high: {
     enabled: true,
-    updateIntervalMs: 100,
-    moveThreshold: 0.14,
-    yawThresholdRad: (3 * Math.PI) / 180,
+    updateIntervalMs: 85,
+    moveThreshold: 0.12,
+    yawThresholdRad: (2.2 * Math.PI) / 180,
     sampleMode: "full",
+    transitionMs: 80,
   },
 };
 
@@ -143,15 +149,23 @@ function applyOpacityToObject(root: THREE.Object3D, opacityFactor: number): void
       const baseOpacity = userData.fowBaseOpacity;
       const baseTransparent = Boolean(userData.fowBaseTransparent);
 
-      if (opacityFactor >= 0.999) {
-        material.opacity = baseOpacity;
-        material.transparent = baseTransparent || baseOpacity < 0.999;
-      } else {
-        material.opacity = Math.max(0.05, baseOpacity * opacityFactor);
-        material.transparent = true;
+      const nextOpacity =
+        opacityFactor >= 0.999
+          ? baseOpacity
+          : Math.max(0.05, baseOpacity * opacityFactor);
+      const nextTransparent =
+        opacityFactor >= 0.999
+          ? baseTransparent || baseOpacity < 0.999
+          : true;
+
+      if (Math.abs(material.opacity - nextOpacity) > 0.001) {
+        material.opacity = nextOpacity;
       }
 
-      material.needsUpdate = true;
+      if (material.transparent !== nextTransparent) {
+        material.transparent = nextTransparent;
+        material.needsUpdate = true;
+      }
     }
   });
 }
@@ -285,6 +299,7 @@ export class LevelRuntime {
   private lastObstacleOriginX = Number.NaN;
   private lastObstacleOriginZ = Number.NaN;
   private lastObstacleYaw = Number.NaN;
+  private lastObstacleOpacityUpdateMs = Number.NaN;
 
   constructor(scene: THREE.Scene, mapId?: string | null, options: LevelRuntimeOptions = {}) {
     this.scene = scene;
@@ -330,6 +345,8 @@ export class LevelRuntime {
             this.obstacleVisibilityProfile.sampleMode,
           ),
           lastVisible: null,
+          currentOpacityFactor: 1,
+          targetOpacityFactor: 1,
         });
       }
     }
@@ -402,6 +419,7 @@ export class LevelRuntime {
 
     if (this.obstacleVisibilityProfile.enabled) {
       this.updateObstacleVisibility(originX, originZ, yaw, rangeMeters, halfFovRad, nowMs);
+      this.updateObstacleOpacityTransitions(nowMs);
     }
   }
 
@@ -503,10 +521,40 @@ export class LevelRuntime {
       }
 
       visual.lastVisible = hasVisibleSample;
-      applyOpacityToObject(
-        visual.root,
-        hasVisibleSample ? 1 : HIDDEN_OBSTACLE_OPACITY_FACTOR,
+      visual.targetOpacityFactor = hasVisibleSample ? 1 : HIDDEN_OBSTACLE_OPACITY_FACTOR;
+    }
+  }
+
+  private updateObstacleOpacityTransitions(nowMs: number): void {
+    const hasPrev = Number.isFinite(this.lastObstacleOpacityUpdateMs);
+    const dtMs = hasPrev
+      ? THREE.MathUtils.clamp(nowMs - this.lastObstacleOpacityUpdateMs, 0, 80)
+      : 16;
+    this.lastObstacleOpacityUpdateMs = nowMs;
+
+    if (dtMs <= 0) {
+      return;
+    }
+
+    const smoothing = 1 - Math.exp(-dtMs / Math.max(1, this.obstacleVisibilityProfile.transitionMs));
+
+    for (const visual of this.losObstacleVisuals) {
+      const delta = visual.targetOpacityFactor - visual.currentOpacityFactor;
+      if (Math.abs(delta) <= 0.002) {
+        if (visual.currentOpacityFactor !== visual.targetOpacityFactor) {
+          visual.currentOpacityFactor = visual.targetOpacityFactor;
+          applyOpacityToObject(visual.root, visual.currentOpacityFactor);
+        }
+        continue;
+      }
+
+      visual.currentOpacityFactor = THREE.MathUtils.clamp(
+        visual.currentOpacityFactor + delta * smoothing,
+        HIDDEN_OBSTACLE_OPACITY_FACTOR,
+        1,
       );
+
+      applyOpacityToObject(visual.root, visual.currentOpacityFactor);
     }
   }
 
