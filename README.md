@@ -28,6 +28,8 @@
   - 팀 공유/발표용 **요약 슬라이드**
 - `docs/scripts/generate_ai_agent_game_dev_team_one_page_pptx.py`
   - 위 PPT를 다시 생성하는 스크립트
+- `docs/ai-agent-game-dev-guidelines-case-facegood-audio2face.md`
+  - FACEGOOD Audio2Face 기반 온디바이스 립싱크 개발과 기존 프로젝트 마이그레이션을 정리한 **실제 적용 사례**
 
 ---
 
