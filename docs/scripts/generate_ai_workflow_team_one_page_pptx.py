@@ -109,23 +109,22 @@ def make_slides() -> list[tuple[str, str]]:
         textbox(3, 'Subtitle', 1500000, 2000000, 9000000, 1800000, [
             paragraph('팀 공유용 1페이지 요약', 1800, True, 'ctr'),
             paragraph('A는 검증용, B는 편입용', 1600, False, 'ctr'),
-            paragraph('둘 다 같은 기본 작업 흐름을 따른다', 1600, False, 'ctr'),
+            paragraph('AI는 블랙박스 자동 구현 도구가 아니다', 1600, False, 'ctr'),
         ]),
     ]
     slides.append(('표지', slide_xml(shapes)))
 
     # Slide 2
     shapes = [
-        textbox(2, 'Title', 700000, 400000, 10800000, 700000, [paragraph('핵심 요약', 2400, True)]),
+        textbox(2, 'Title', 700000, 400000, 10800000, 700000, [paragraph('먼저 깔고 가야 할 생각', 2400, True)]),
         textbox(3, 'Body', 900000, 1400000, 10400000, 4200000, [
-            paragraph('• A: 빠르게 검증하는 방식', 1800, True),
-            paragraph('• B: 메인 프로젝트에 편입하는 방식', 1800, True),
-            paragraph('• 둘 다 같은 기본 작업 흐름을 따른다', 1800),
-            paragraph('• 차이는 무엇을 기준으로 수정하느냐다', 1800),
-            paragraph('• A는 문서 기준, B는 코드와 구조 기준으로 수정한다', 1800),
+            paragraph('• AI 활용의 핵심은 내 지식베이스를 넓히는 데 있다', 1800),
+            paragraph('• AI가 만든 내용은 가능한 한 내가 이해할 수 있어야 한다', 1800),
+            paragraph('• B에서는 AI보다 직접 개발이 더 빠를 때도 있다', 1800),
+            paragraph('• 그래도 장기적으로는 AI와 페어하게 개발하는 편이 유리하다', 1800),
         ]),
     ]
-    slides.append(('핵심 요약', slide_xml(shapes)))
+    slides.append(('먼저 깔고 가야 할 생각', slide_xml(shapes)))
 
     # Slide 3
     shapes = [
@@ -186,7 +185,7 @@ def make_slides() -> list[tuple[str, str]]:
             paragraph('• B는 시작 전에 코드베이스 분석과 규칙 파악이 먼저다', 1800),
             paragraph('• AI는 분석 / 문서 작성 / 구현 / 리뷰 / 테스트로 나눠서 쓴다', 1800),
             paragraph('• 큰 범위를 한 번에 맡기지 않는다', 1800),
-            paragraph('• 팀에서 기억할 한 문장: A는 검증용, B는 편입용', 1800, True),
+            paragraph('• 팀에서 기억할 한 문장: AI는 지식베이스를 넓히는 페어 개발 도구다', 1800, True),
         ]),
     ]
     slides.append(('팀 적용 원칙', slide_xml(shapes)))
