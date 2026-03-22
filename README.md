@@ -14,6 +14,16 @@
 - 클라이언트/목업 서버 구현 히스토리: `client/web/docs/IMPLEMENTATION_HISTORY_2026-02.md`
 - 모델/애니메이션 QA 페이지 계획/의도: `client/web/docs/MODEL_ANIMATION_TEST_PAGE.md`
 
+
+## AI 개발 운영 문서
+
+- `docs/ai-game-dev-guidelines.md`
+  - 서버/클라이언트 개발에서 AI를 어떻게 배치할지 정리한 **핵심 요약본**
+- `docs/ai-game-dev-guidelines-use-cases.md`
+  - 프로토타이핑, 하네스 엔지니어링, 마이그레이션, 테스트 적용 흐름을 담은 **사용 케이스 / 적용 예시 문서**
+
+---
+
 ## 1) 핵심 목표
 1. **대중성**: 3분 내외 짧은 경기, 쉬운 조작, 시각적으로 명확한 정보 전달
 2. **경쟁성**: 스킬-포지셔닝-조합 카운터가 살아있는 팀 전술
