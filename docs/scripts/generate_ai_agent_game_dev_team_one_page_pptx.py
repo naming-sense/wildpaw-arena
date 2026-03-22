@@ -108,7 +108,7 @@ def make_slides() -> list[tuple[str, str]]:
         textbox(2, 'Title', 700000, 800000, 10800000, 900000, [paragraph('AI 에이전트를 활용한 게임 개발 가이드라인', 2600, True, 'ctr')]),
         textbox(3, 'Subtitle', 1500000, 2000000, 9000000, 1800000, [
             paragraph('팀 공유용 1페이지 요약', 1800, True, 'ctr'),
-            paragraph('A는 검증용, B는 편입용', 1600, False, 'ctr'),
+            paragraph('A는 스펙 검증용, B는 마이그레이션용', 1600, False, 'ctr'),
             paragraph('AI는 블랙박스 자동 구현 도구가 아니다', 1600, False, 'ctr'),
         ]),
     ]
@@ -161,14 +161,14 @@ def make_slides() -> list[tuple[str, str]]:
     # Slide 5
     shapes = [
         textbox(2, 'Title', 700000, 400000, 10800000, 700000, [paragraph('수정하는 기준의 차이', 2400, True)]),
-        textbox(3, 'AHeader', 900000, 1400000, 4600000, 500000, [paragraph('A: 문서를 수정하면서 검증', 1800, True)], fill='EAF2FF'),
+        textbox(3, 'AHeader', 900000, 1400000, 4600000, 500000, [paragraph('A: 스펙 문서를 수정하면서 검증', 1800, True)], fill='EAF2FF'),
         textbox(4, 'ABody', 900000, 2000000, 4600000, 3000000, [
             paragraph('• 요구사항과 계획을 다시 본다', 1600),
             paragraph('• 테스트 시나리오를 다시 정리한다', 1600),
             paragraph('• 테스트용 데이터와 입력값을 조정한다', 1600),
             paragraph('• 문서를 고치고 다시 구현한다', 1600),
         ]),
-        textbox(5, 'BHeader', 6100000, 1400000, 4600000, 500000, [paragraph('B: 코드와 구조를 수정하며 편입', 1800, True)], fill='EEF7EA'),
+        textbox(5, 'BHeader', 6100000, 1400000, 4600000, 500000, [paragraph('B: 코드와 구조를 수정하며 마이그레이션', 1800, True)], fill='EEF7EA'),
         textbox(6, 'BBody', 6100000, 2000000, 4600000, 3000000, [
             paragraph('• 문제 코드 경로와 상태 전이를 찾는다', 1600),
             paragraph('• 구조와 책임 분리를 다시 본다', 1600),
