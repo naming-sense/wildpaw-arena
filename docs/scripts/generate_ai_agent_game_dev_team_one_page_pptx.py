@@ -5,7 +5,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 import zipfile
 
-OUT = Path('/home/namingsense/.openclaw/workspace-gameDesign/docs/ai-game-dev-guidelines-team-one-page.pptx')
+OUT = Path('/home/namingsense/.openclaw/workspace-gameDesign/docs/ai-agent-game-dev-guidelines-team-one-page.pptx')
 
 NS_P = 'http://schemas.openxmlformats.org/presentationml/2006/main'
 NS_A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
@@ -105,7 +105,7 @@ def make_slides() -> list[tuple[str, str]]:
 
     # Slide 1
     shapes = [
-        textbox(2, 'Title', 700000, 800000, 10800000, 900000, [paragraph('AI를 활용한 서버/클라이언트 개발 가이드라인', 2600, True, 'ctr')]),
+        textbox(2, 'Title', 700000, 800000, 10800000, 900000, [paragraph('AI 에이전트를 활용한 게임 개발 가이드라인', 2600, True, 'ctr')]),
         textbox(3, 'Subtitle', 1500000, 2000000, 9000000, 1800000, [
             paragraph('팀 공유용 1페이지 요약', 1800, True, 'ctr'),
             paragraph('A는 검증용, B는 편입용', 1600, False, 'ctr'),
@@ -227,7 +227,7 @@ def core_xml() -> str:
     now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     return xml(f'''
     <cp:coreProperties xmlns:cp="{NS_CP}" xmlns:dc="{NS_DC}" xmlns:dcterms="{NS_DCT}" xmlns:dcmitype="{NS_DCMIT}" xmlns:xsi="{NS_XSI}">
-      <dc:title>AI를 활용한 서버/클라이언트 개발 가이드라인 - 팀 공유용</dc:title>
+      <dc:title>AI 에이전트를 활용한 게임 개발 가이드라인 - 팀 공유용</dc:title>
       <dc:creator>OpenClaw</dc:creator>
       <cp:lastModifiedBy>OpenClaw</cp:lastModifiedBy>
       <dcterms:created xsi:type="dcterms:W3CDTF">{now}</dcterms:created>

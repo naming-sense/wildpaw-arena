@@ -17,16 +17,16 @@
 
 ## AI 개발 운영 문서
 
-- `docs/ai-game-dev-guidelines.md`
-  - 서버/클라이언트 개발에서 AI를 어떻게 배치할지 정리한 **핵심 요약본**
-- `docs/ai-game-dev-guidelines-use-cases.md`
-  - 프로토타이핑, 하네스 엔지니어링, 마이그레이션, 테스트 적용 흐름을 담은 **사용 케이스 / 적용 예시 문서**
+- `docs/ai-agent-game-dev-guidelines.md`
+  - AI 에이전트를 게임 개발에 어떻게 배치할지 정리한 **핵심 요약본**
+- `docs/ai-agent-game-dev-guidelines-use-cases.md`
+  - 문서 기반 반복 작업, 검증, 편입 과정을 담은 **사용 케이스 / 적용 예시 문서**
 
-- `docs/ai-game-dev-guidelines-team-one-page.md`
+- `docs/ai-agent-game-dev-guidelines-team-one-page.md`
   - 팀에 공유하기 쉽게 정리한 **1페이지 요약본**
-- `docs/ai-game-dev-guidelines-team-one-page.pptx`
+- `docs/ai-agent-game-dev-guidelines-team-one-page.pptx`
   - 팀 공유/발표용 **요약 슬라이드**
-- `docs/scripts/generate_ai_workflow_team_one_page_pptx.py`
+- `docs/scripts/generate_ai_agent_game_dev_team_one_page_pptx.py`
   - 위 PPT를 다시 생성하는 스크립트
 
 ---
