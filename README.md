@@ -22,6 +22,13 @@
 - `docs/ai-game-dev-guidelines-use-cases.md`
   - 프로토타이핑, 하네스 엔지니어링, 마이그레이션, 테스트 적용 흐름을 담은 **사용 케이스 / 적용 예시 문서**
 
+- `docs/ai-game-dev-guidelines-team-one-page.md`
+  - 팀에 공유하기 쉽게 정리한 **1페이지 요약본**
+- `docs/ai-game-dev-guidelines-team-one-page.pptx`
+  - 팀 공유/발표용 **요약 슬라이드**
+- `docs/scripts/generate_ai_workflow_team_one_page_pptx.py`
+  - 위 PPT를 다시 생성하는 스크립트
+
 ---
 
 ## 1) 핵심 목표
