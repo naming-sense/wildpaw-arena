@@ -109,7 +109,7 @@ def make_slides() -> list[tuple[str, str]]:
         textbox(3, 'Subtitle', 1500000, 2000000, 9000000, 1800000, [
             paragraph('팀 공유용 1페이지 요약', 1800, True, 'ctr'),
             paragraph('A는 검증용, B는 편입용', 1600, False, 'ctr'),
-            paragraph('차이는 문제를 무엇을 기준으로 수정하느냐에 있다', 1600, False, 'ctr'),
+            paragraph('둘 다 같은 기본 작업 흐름을 따른다', 1600, False, 'ctr'),
         ]),
     ]
     slides.append(('표지', slide_xml(shapes)))
@@ -120,9 +120,9 @@ def make_slides() -> list[tuple[str, str]]:
         textbox(3, 'Body', 900000, 1400000, 10400000, 4200000, [
             paragraph('• A: 빠르게 검증하는 방식', 1800, True),
             paragraph('• B: 메인 프로젝트에 편입하는 방식', 1800, True),
-            paragraph('• 둘 다 비슷한 기본 작업 흐름을 따른다', 1800),
-            paragraph('• 차이는 문제가 생겼을 때 무엇을 기준으로 수정하느냐다', 1800),
-            paragraph('• A는 문서와 하네스 기준, B는 코드와 구조 기준으로 수정한다', 1800),
+            paragraph('• 둘 다 같은 기본 작업 흐름을 따른다', 1800),
+            paragraph('• 차이는 무엇을 기준으로 수정하느냐다', 1800),
+            paragraph('• A는 문서 기준, B는 코드와 구조 기준으로 수정한다', 1800),
         ]),
     ]
     slides.append(('핵심 요약', slide_xml(shapes)))
@@ -135,7 +135,7 @@ def make_slides() -> list[tuple[str, str]]:
             paragraph('• 빠른 검증이 목적일 때', 1600),
             paragraph('• 감각, 흐름, 기술 가능성을 먼저 볼 때', 1600),
             paragraph('• 코드가 나중에 버려져도 괜찮을 때', 1600),
-            paragraph('• 시나리오와 하네스를 고쳐 다시 볼 생각일 때', 1600),
+            paragraph('• 문서와 시나리오를 고쳐 다시 볼 생각일 때', 1600),
         ]),
         textbox(5, 'BHeader', 6100000, 1400000, 4600000, 500000, [paragraph('B를 선택하는 경우', 1800, True)], fill='EEF7EA'),
         textbox(6, 'BBody', 6100000, 2000000, 4600000, 3300000, [
@@ -151,44 +151,41 @@ def make_slides() -> list[tuple[str, str]]:
     shapes = [
         textbox(2, 'Title', 700000, 400000, 10800000, 700000, [paragraph('기본 작업 흐름', 2400, True)]),
         textbox(3, 'Flow', 900000, 1400000, 10400000, 4200000, [
-            paragraph('1. 요구사항 / 개발 계획 정리', 1800, True),
-            paragraph('2. 작은 단위 구현', 1800, True),
-            paragraph('3. AI 리뷰 + 인간 리뷰', 1800, True),
-            paragraph('4. 테스트 준비', 1800, True),
-            paragraph('5. 실제 테스트', 1800, True),
-            paragraph('6. 문제 수정 후 반복', 1800, True),
+            paragraph('1. 요구사항 / 개발 계획을 md로 정리', 1800, True),
+            paragraph('2. md 기준으로 작은 단위 구현', 1800, True),
+            paragraph('3. AI 리뷰, 인간 리뷰, 테스트 진행', 1800, True),
+            paragraph('4. 수정사항 정리 후 다시 1번으로', 1800, True),
         ]),
     ]
     slides.append(('기본 작업 흐름', slide_xml(shapes)))
 
     # Slide 5
     shapes = [
-        textbox(2, 'Title', 700000, 400000, 10800000, 700000, [paragraph('문제 수정 방식의 차이', 2400, True)]),
-        textbox(3, 'AHeader', 900000, 1400000, 4600000, 500000, [paragraph('A: 문서와 하네스 기준', 1800, True)], fill='EAF2FF'),
+        textbox(2, 'Title', 700000, 400000, 10800000, 700000, [paragraph('수정하는 기준의 차이', 2400, True)]),
+        textbox(3, 'AHeader', 900000, 1400000, 4600000, 500000, [paragraph('A: 문서를 수정하면서 검증', 1800, True)], fill='EAF2FF'),
         textbox(4, 'ABody', 900000, 2000000, 4600000, 3000000, [
-            paragraph('• 요구사항이 모호한지 본다', 1600),
-            paragraph('• 검증 시나리오가 부족한지 본다', 1600),
-            paragraph('• mock / stub / 입력값을 조정한다', 1600),
-            paragraph('• 다시 실행해서 결과를 확인한다', 1600),
+            paragraph('• 요구사항과 계획을 다시 본다', 1600),
+            paragraph('• 테스트 시나리오를 다시 정리한다', 1600),
+            paragraph('• 테스트용 데이터와 입력값을 조정한다', 1600),
+            paragraph('• 문서를 고치고 다시 구현한다', 1600),
         ]),
-        textbox(5, 'BHeader', 6100000, 1400000, 4600000, 500000, [paragraph('B: 코드와 구조 기준', 1800, True)], fill='EEF7EA'),
+        textbox(5, 'BHeader', 6100000, 1400000, 4600000, 500000, [paragraph('B: 코드와 구조를 수정하며 편입', 1800, True)], fill='EEF7EA'),
         textbox(6, 'BBody', 6100000, 2000000, 4600000, 3000000, [
-            paragraph('• 어떤 코드 경로에서 문제 나는지 본다', 1600),
-            paragraph('• 구조, 책임 분리, 상태 전이를 점검한다', 1600),
-            paragraph('• 코드 패치와 테스트 보강을 한다', 1600),
-            paragraph('• 리뷰 후 다시 검증한다', 1600),
+            paragraph('• 문제 코드 경로와 상태 전이를 찾는다', 1600),
+            paragraph('• 구조와 책임 분리를 다시 본다', 1600),
+            paragraph('• 코드와 문서를 함께 수정한다', 1600),
+            paragraph('• 리뷰와 테스트 후 다시 검증한다', 1600),
         ]),
     ]
-    slides.append(('문제 수정 방식의 차이', slide_xml(shapes)))
+    slides.append(('수정하는 기준의 차이', slide_xml(shapes)))
 
     # Slide 6
     shapes = [
         textbox(2, 'Title', 700000, 400000, 10800000, 700000, [paragraph('팀 적용 원칙', 2400, True)]),
         textbox(3, 'Body', 900000, 1400000, 10400000, 4200000, [
-            paragraph('• AI에게 큰 범위를 한 번에 맡기지 않는다', 1800),
-            paragraph('• 분석 / 계획 / 구현 / 리뷰 / 테스트를 나눠서 쓴다', 1800),
-            paragraph('• A와 B를 섞지 않는다', 1800),
-            paragraph('• AI를 코드 생성기만이 아니라 분석과 문서화 도구로도 쓴다', 1800),
+            paragraph('• B는 시작 전에 코드베이스 분석과 규칙 파악이 먼저다', 1800),
+            paragraph('• AI는 분석 / 문서 작성 / 구현 / 리뷰 / 테스트로 나눠서 쓴다', 1800),
+            paragraph('• 큰 범위를 한 번에 맡기지 않는다', 1800),
             paragraph('• 팀에서 기억할 한 문장: A는 검증용, B는 편입용', 1800, True),
         ]),
     ]
