@@ -26,12 +26,18 @@
   - 에이전트가 먼저 읽어야 할 작업 지도
 - `STATUS.md`
   - 현재 레포 정체성 / 우선순위 / 검증 진입점
+- `WORKFLOW.md`
+  - Symphony용 in-repo workflow contract
+- `AUTOMATION_SCOPE.md`
+  - 자동화 가능한 작업 범위 / 인간 검토 경계
+- `ASSET_STRATEGY.md`
+  - 대용량 binary/LFS/asset 운영 기준
 - `scripts/bootstrap.sh`
   - 의존성 설치 + 로컬 작업 준비
 - `scripts/check.sh`
   - 루트 기준 빌드/테스트/프로토콜/서버 검증
 - `scripts/smoke.sh`
-  - mock room + gateway 통합 스모크
+  - room server + gateway 통합 스모크
 
 ## 최근 구현 로그 (2026-02)
 
@@ -41,22 +47,16 @@
 
 ## 참고 / 임시 보관 문서
 
-> 아래 문서들은 참고 자료로 보관 중이며, 현재 핵심 구현 흐름의 기본 진입점은 아닙니다.
+> 아래 자료들은 아카이브/참고용으로 정리했으며, 현재 핵심 구현 흐름의 기본 진입점은 아닙니다.
 
-
-- `docs/ai-agent-game-dev-guidelines.md`
-  - AI 에이전트를 게임 개발에 어떻게 배치할지 정리한 **핵심 요약본**
-- `docs/ai-agent-game-dev-guidelines-use-cases.md`
-  - 문서 기반 반복 작업, 검증, 편입 과정을 담은 **사용 케이스 / 적용 예시 문서**
-
-- `docs/ai-agent-game-dev-guidelines-team-one-page.md`
-  - 팀에 공유하기 쉽게 정리한 **1페이지 요약본**
-- `docs/ai-agent-game-dev-guidelines-team-one-page.pptx`
-  - 팀 공유/발표용 **요약 슬라이드**
-- `docs/scripts/generate_ai_agent_game_dev_team_one_page_pptx.py`
-  - 위 PPT를 다시 생성하는 스크립트
-- `docs/ai-agent-game-dev-guidelines-case-facegood-audio2face.md`
-  - FACEGOOD Audio2Face 기반 온디바이스 립싱크 개발과 기존 프로젝트 마이그레이션을 정리한 **실제 적용 사례**
+- `docs/README.md`
+  - `docs/` 디렉터리의 현재 역할과 참고 규칙 설명
+- `docs/reference/ai-workflow/`
+  - AI workflow 가이드, 1페이지 요약본, 발표 자료, 관련 사례 문서
+- `docs/reference/ai-workflow/scripts/`
+  - 위 발표 자료 생성 스크립트
+- `docs/reference/tamagotchi-llm/`
+  - 잠시 빌려 썼던 tamagotchi-llm 참고 문서 보관 영역
 
 ---
 

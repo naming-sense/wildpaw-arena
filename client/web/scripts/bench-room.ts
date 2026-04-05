@@ -6,6 +6,10 @@ import { HelloPayload } from "../src/netcode/gen/wildpaw/protocol/hello-payload"
 import { MessagePayload } from "../src/netcode/gen/wildpaw/protocol/message-payload";
 import { SnapshotPayload } from "../src/netcode/gen/wildpaw/protocol/snapshot-payload";
 
+import { resolveRoomToken } from "./lib/devRoomToken";
+
+const ROOM_TOKEN = resolveRoomToken(process.env.ROOM_TOKEN ?? "bench");
+
 type Config = {
   url: string;
   clients: number;
@@ -84,7 +88,7 @@ function parseArgs(): Config {
 
 function buildHelloFrame(meta: { seq: number; ack: number; ackBits: number }): Uint8Array {
   const builder = new flatbuffers.Builder(128);
-  const roomToken = builder.createString("bench");
+  const roomToken = builder.createString(ROOM_TOKEN);
   const clientVersion = builder.createString("bench-0.2");
   const payload = HelloPayload.createHelloPayload(builder, roomToken, clientVersion);
   const envelope = Envelope.createEnvelope(

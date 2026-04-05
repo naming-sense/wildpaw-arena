@@ -1,7 +1,9 @@
 import { RealtimeEcsRuntime, type RuntimeInputState } from "../src/gameplay/ecs";
 
+import { resolveRoomToken } from "./lib/devRoomToken";
+
 const url = process.argv[2] ?? "ws://127.0.0.1:7001";
-const roomToken = process.argv[3] ?? "ecs-smoke";
+const roomToken = resolveRoomToken(process.argv[3] ?? "ecs-smoke");
 
 let snapshotCount = 0;
 let combatEventCount = 0;

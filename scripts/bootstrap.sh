@@ -38,6 +38,13 @@ echo "[bootstrap] installing server/gateway dependencies"
   npm ci
 )
 
+if command -v git-lfs >/dev/null 2>&1; then
+  echo "[bootstrap] git-lfs detected — enabling local LFS hooks"
+  git lfs install --local >/dev/null 2>&1 || true
+else
+  echo "[bootstrap] git-lfs not found — okay for now, but install it before adding new heavy binary assets"
+fi
+
 if command -v flatc >/dev/null 2>&1; then
   echo "[bootstrap] flatc detected — refreshing protocol codegen"
   "$ROOT_DIR/scripts/generate_protocol.sh"

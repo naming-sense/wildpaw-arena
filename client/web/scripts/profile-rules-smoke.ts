@@ -6,6 +6,10 @@ import { MessagePayload } from "../src/netcode/gen/wildpaw/protocol/message-payl
 import { SnapshotPayload } from "../src/netcode/gen/wildpaw/protocol/snapshot-payload";
 import { WelcomePayload } from "../src/netcode/gen/wildpaw/protocol/welcome-payload";
 
+import { resolveRoomToken } from "./lib/devRoomToken";
+
+const ROOM_TOKEN = resolveRoomToken(process.env.ROOM_TOKEN ?? "profile-smoke");
+
 class SeqTracker {
   private nextSeq = 1;
   private highestRemoteSeq = 0;
@@ -117,7 +121,7 @@ class ProbeClient {
 
     const builder = new flatbuffers.Builder(256);
     const meta = this.tracker.nextMeta();
-    const roomToken = builder.createString("profile-smoke");
+    const roomToken = builder.createString(ROOM_TOKEN);
     const version = builder.createString(`profile-${this.name}`);
     const hello = HelloPayload.createHelloPayload(builder, roomToken, version);
 

@@ -4,16 +4,20 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLIENT_DIR="$ROOT_DIR/client/web"
 GATEWAY_DIR="$ROOT_DIR/server/gateway"
+SERVER_DIR="$ROOT_DIR/server"
+ROOM_BINARY="$ROOT_DIR/server/build/room/wildpaw-room"
+ROOM_RULES="$ROOT_DIR/server/room/config/combat_rules.json"
 
-ROOM_PORT="${ROOM_PORT:-18080}"
+ROOM_PORT="${ROOM_PORT:-17001}"
 ROOM_ADMIN_PORT="${ROOM_ADMIN_PORT:-19100}"
 GATEWAY_PORT="${GATEWAY_PORT:-17200}"
 SMOKE_CLIENTS="${SMOKE_CLIENTS:-6}"
+ROOM_TEAM_SIZE="${ROOM_TEAM_SIZE:-3}"
 
 ROOM_PID=""
 GATEWAY_PID=""
 LOG_DIR="$(mktemp -d)"
-ROOM_LOG="$LOG_DIR/mock-room.log"
+ROOM_LOG="$LOG_DIR/room.log"
 GATEWAY_LOG="$LOG_DIR/gateway.log"
 
 need_cmd() {
@@ -44,15 +48,20 @@ wait_port() {
   return 1
 }
 
-ensure_port_free() {
-  local port="$1"
+resolve_port() {
+  local requested="$1"
   local name="$2"
+  local port="$requested"
 
-  if port_busy "$port"; then
-    echo "[smoke] port $port is already in use for $name" >&2
-    echo "[smoke] override with ${name^^}_PORT=<free-port> if needed" >&2
-    exit 1
+  while port_busy "$port"; do
+    port=$((port + 1))
+  done
+
+  if [[ "$port" != "$requested" ]]; then
+    echo "[smoke] $name port $requested busy -> using $port" >&2
   fi
+
+  printf '%s' "$port"
 }
 
 cleanup() {
@@ -71,7 +80,7 @@ cleanup() {
   if [[ $exit_code -ne 0 ]]; then
     echo
     echo "[smoke] failed — logs follow"
-    echo "--- mock-room.log ---"
+    echo "--- room.log ---"
     tail -n 200 "$ROOM_LOG" 2>/dev/null || true
     echo "--- gateway.log ---"
     tail -n 200 "$GATEWAY_LOG" 2>/dev/null || true
@@ -87,25 +96,43 @@ trap cleanup EXIT INT TERM
 
 need_cmd node
 need_cmd npm
+need_cmd cmake
 
 if [[ ! -d "$CLIENT_DIR/node_modules" || ! -d "$GATEWAY_DIR/node_modules" ]]; then
   echo "[smoke] dependencies missing — running bootstrap first"
   "$ROOT_DIR/scripts/bootstrap.sh"
 fi
 
-ensure_port_free "$ROOM_PORT" room
-ensure_port_free "$ROOM_ADMIN_PORT" room_admin
-ensure_port_free "$GATEWAY_PORT" gateway
+ROOM_PORT="$(resolve_port "$ROOM_PORT" room)"
+ROOM_ADMIN_PORT="$(resolve_port "$ROOM_ADMIN_PORT" room_admin)"
+while [[ "$ROOM_ADMIN_PORT" == "$ROOM_PORT" ]]; do
+  ROOM_ADMIN_PORT="$(resolve_port "$((ROOM_ADMIN_PORT + 1))" room_admin)"
+done
+GATEWAY_PORT="$(resolve_port "$GATEWAY_PORT" gateway)"
+while [[ "$GATEWAY_PORT" == "$ROOM_PORT" || "$GATEWAY_PORT" == "$ROOM_ADMIN_PORT" ]]; do
+  GATEWAY_PORT="$(resolve_port "$((GATEWAY_PORT + 1))" gateway)"
+done
 
-echo "[smoke] starting mock room on ws://127.0.0.1:$ROOM_PORT"
+if [[ ! -x "$ROOM_BINARY" ]]; then
+  echo "[smoke] room binary missing — building it first"
+  cmake -S "$SERVER_DIR" -B "$ROOT_DIR/server/build"
+  cmake --build "$ROOT_DIR/server/build" -j 2
+fi
+
+if [[ ! -f "$ROOM_RULES" ]]; then
+  echo "[smoke] missing room rules file: $ROOM_RULES" >&2
+  exit 1
+fi
+
+echo "[smoke] starting room server on ws://127.0.0.1:$ROOM_PORT"
 (
-  cd "$CLIENT_DIR"
-  PORT="$ROOM_PORT" ADMIN_PORT="$ROOM_ADMIN_PORT" node ./scripts/mock-room-server.mjs
+  cd "$SERVER_DIR"
+  "$ROOM_BINARY" "$ROOM_PORT" 2 30 "$ROOM_ADMIN_PORT" "$ROOM_RULES" "$ROOM_TEAM_SIZE"
 ) >"$ROOM_LOG" 2>&1 &
 ROOM_PID=$!
 
 if ! wait_port "$ROOM_PORT" 120; then
-  echo "[smoke] mock room failed to open port $ROOM_PORT" >&2
+  echo "[smoke] room server failed to open port $ROOM_PORT" >&2
   exit 1
 fi
 
@@ -120,6 +147,12 @@ if ! wait_port "$GATEWAY_PORT" 120; then
   echo "[smoke] gateway failed to open port $GATEWAY_PORT" >&2
   exit 1
 fi
+
+echo "[smoke] running room capacity smoke"
+(
+  cd "$CLIENT_DIR"
+  npx tsx ./scripts/room-capacity-smoke.ts "ws://127.0.0.1:$ROOM_PORT" 7 2500
+)
 
 echo "[smoke] running gateway smoke with $SMOKE_CLIENTS clients"
 (

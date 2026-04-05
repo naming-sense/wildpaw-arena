@@ -5,6 +5,10 @@ import { Envelope } from "../src/netcode/gen/wildpaw/protocol/envelope";
 import { HelloPayload } from "../src/netcode/gen/wildpaw/protocol/hello-payload";
 import { MessagePayload } from "../src/netcode/gen/wildpaw/protocol/message-payload";
 
+import { resolveRoomToken } from "./lib/devRoomToken";
+
+const ROOM_TOKEN = resolveRoomToken(process.env.ROOM_TOKEN ?? "interest-smoke");
+
 class SeqTracker {
   private nextSeq = 1;
   private highestRemoteSeq = 0;
@@ -94,7 +98,7 @@ class BotClient {
 
   sendHello(): void {
     this.send(MessagePayload.HelloPayload, (builder) => {
-      const roomToken = builder.createString("interest-smoke");
+      const roomToken = builder.createString(ROOM_TOKEN);
       const clientVersion = builder.createString(`interest-${this.name}`);
       return HelloPayload.createHelloPayload(builder, roomToken, clientVersion);
     });

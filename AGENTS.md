@@ -16,7 +16,8 @@ Build and iterate on a web-native, authoritative multiplayer game with:
 Start here when you enter the repo:
 1. `STATUS.md`
 2. `README.md`
-3. task-specific area README/specs
+3. `AUTOMATION_SCOPE.md` if the task may be automated/orchestrated
+4. task-specific area README/specs
 
 Then branch by task type.
 
@@ -42,10 +43,18 @@ Read in this order:
 4. `server/README.md`
 5. `client/web/README.md`
 
+### If the task is automation / orchestration / Symphony
+Read in this order:
+1. `WORKFLOW.md`
+2. `AUTOMATION_SCOPE.md`
+3. `AGENTS.md`
+4. `STATUS.md`
+5. `ASSET_STRATEGY.md`
+
 ## What is low-priority / non-canonical
 
-- root `docs/` is currently **borrowed / temporary reference material**.
-- Do **not** treat root `docs/` as the source of truth for core implementation unless a task explicitly points there.
+- root `docs/` is currently a **reference archive** for borrowed / temporary material.
+- Do **not** treat `docs/` as the source of truth for core implementation unless a task explicitly points there.
 - `assets/x/` is reference/support material, not a primary gameplay implementation area.
 
 ## Repo map
@@ -85,6 +94,11 @@ Read in this order:
 
 5. **Prefer code-adjacent readmes over distant narrative docs.**
    - For implementation, trust `client/web/README.md`, `server/README.md`, `shared/protocol/README.md`, and nearby scripts/specs first.
+
+6. **Respect automation boundaries.**
+   - Use `AUTOMATION_SCOPE.md` for autonomy/handoff decisions.
+   - Use `WORKFLOW.md` for Symphony-orchestrated runs.
+   - Use `ASSET_STRATEGY.md` before changing heavy binary assets or repo asset layout.
 
 ## Common commands
 

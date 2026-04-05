@@ -65,7 +65,6 @@ run_step "level validation" npm --prefix "$CLIENT_DIR" run level:validate
 
 run_step "gateway syntax check" node --check "$ROOT_DIR/server/gateway/src/control_gateway_server.mjs"
 run_step "gateway smoke syntax check" node --check "$ROOT_DIR/server/gateway/scripts/smoke_control_flow.mjs"
-run_step "mock room syntax check" node --check "$ROOT_DIR/client/web/scripts/mock-room-server.mjs"
 
 run_step "configure room server" cmake -S "$ROOT_DIR/server" -B "$SERVER_BUILD_DIR"
 run_step "build room server" cmake --build "$SERVER_BUILD_DIR" -j 2

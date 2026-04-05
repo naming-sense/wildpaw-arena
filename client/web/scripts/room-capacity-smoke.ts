@@ -6,9 +6,13 @@ import { HelloPayload } from "../src/netcode/gen/wildpaw/protocol/hello-payload"
 import { MessagePayload } from "../src/netcode/gen/wildpaw/protocol/message-payload";
 import { WelcomePayload } from "../src/netcode/gen/wildpaw/protocol/welcome-payload";
 
+import { resolveRoomToken } from "./lib/devRoomToken";
+
 const url = process.argv[2] ?? "ws://127.0.0.1:7001";
 const clients = Number(process.argv[3] ?? 7);
 const holdMs = Number(process.argv[4] ?? 4000);
+const roomTokenInput = process.argv[5] ?? "room-capacity";
+const roomToken = resolveRoomToken(roomTokenInput);
 
 type EventRecord = {
   name: string;
@@ -63,7 +67,7 @@ for (let index = 0; index < clients; index += 1) {
   ws.binaryType = "arraybuffer";
 
   ws.onopen = () => {
-    ws.send(encodeHello(`room-capacity-${index}`));
+    ws.send(encodeHello(roomToken));
   };
 
   ws.onmessage = (event) => {
@@ -126,6 +130,7 @@ setTimeout(() => {
       {
         url,
         clients,
+        roomTokenInput,
         welcomedCount,
         roomFullCount,
         teamAssignedCount,
@@ -135,6 +140,10 @@ setTimeout(() => {
       2,
     ),
   );
+
+  if (welcomedCount === 0 || roomFullCount === 0) {
+    process.exit(1);
+  }
 
   process.exit(0);
 }, holdMs + 600);

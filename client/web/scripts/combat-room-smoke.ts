@@ -1,7 +1,9 @@
 import { RealtimeClient, type PlayerSnapshot } from "../src/netcode";
 
+import { resolveRoomToken } from "./lib/devRoomToken";
+
 const roomUrl = process.argv[2] ?? "ws://127.0.0.1:7001";
-const roomToken = process.argv[3] ?? "dev-room";
+const roomToken = resolveRoomToken(process.argv[3] ?? "dev-room");
 const durationMs = Number(process.argv[4] ?? 2600);
 
 let aSeq = 1;

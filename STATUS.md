@@ -14,6 +14,7 @@ Practical interpretation:
 - root numbered `*.md` files describe product / system intent
 - `client/web`, `server`, and `shared` are the implementation backbone
 - `scripts/` is the harness entrypoint layer
+- `WORKFLOW.md`, `AUTOMATION_SCOPE.md`, and `ASSET_STRATEGY.md` define orchestration/autonomy policy
 
 ## Canonical source-of-truth areas
 
@@ -26,7 +27,7 @@ Practical interpretation:
 
 ### Lower priority / reference only
 - root `docs/`
-  - temporary borrowed/reference material
+  - reference archive for borrowed/temporary material
   - not the default source of truth for implementation work
 - `assets/x/`
   - support/reference visuals, not core runtime logic
@@ -52,6 +53,11 @@ Practical interpretation:
 
 ## Harness entrypoints
 
+Repository-level orchestration/policy files:
+- `WORKFLOW.md`
+- `AUTOMATION_SCOPE.md`
+- `ASSET_STRATEGY.md`
+
 ### Bootstrap
 ```bash
 ./scripts/bootstrap.sh
@@ -73,8 +79,9 @@ Runs the main local validation path:
 ./scripts/smoke.sh
 ```
 Runs lightweight integration smoke using:
-- mock room server
+- room server
 - control gateway
+- room capacity smoke
 - gateway smoke script
 
 ## Implementation conventions
@@ -101,5 +108,5 @@ Desired posture:
 
 ## Naming note
 
-The current GitHub repository name still ends with `-design-docs`, but the repo has already outgrown that name.
-Operationally, treat it as **Wildpaw Arena integrated development repo**.
+The repository has been renamed to `wildpaw-arena`.
+Operationally, treat it as the **Wildpaw Arena integrated development repo** rather than a docs-only project.

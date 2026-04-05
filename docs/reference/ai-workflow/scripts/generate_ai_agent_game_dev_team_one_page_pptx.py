@@ -5,7 +5,8 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 import zipfile
 
-OUT = Path('/home/namingsense/.openclaw/workspace-gameDesign/docs/ai-agent-game-dev-guidelines-team-one-page.pptx')
+ROOT = Path(__file__).resolve().parent.parent
+OUT = ROOT / 'ai-agent-game-dev-guidelines-team-one-page.pptx'
 
 NS_P = 'http://schemas.openxmlformats.org/presentationml/2006/main'
 NS_A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
