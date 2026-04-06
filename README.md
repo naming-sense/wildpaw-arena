@@ -32,6 +32,8 @@
   - 자동화 가능한 작업 범위 / 인간 검토 경계
 - `ASSET_STRATEGY.md`
   - 대용량 binary/LFS/asset 운영 기준
+- `LINEAR_ISSUE_TEMPLATE.md`
+  - Symphony가 잘 처리할 수 있는 Linear 이슈 작성 템플릿
 - `scripts/bootstrap.sh`
   - 의존성 설치 + 로컬 작업 준비
 - `scripts/check.sh`

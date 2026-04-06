@@ -1,0 +1,314 @@
+# LINEAR_ISSUE_TEMPLATE.md
+
+Wildpaw Arena에서 Symphony가 잘 처리할 수 있게 Linear 이슈를 쓰는 기본 템플릿입니다.
+
+## 핵심 원칙
+
+- **한 이슈 = 한 가지 목표**
+- 되도록 **작은 diff**로 끝날 수 있게 쪼갤 것
+- **수정 범위**와 **완료 조건**을 명확히 쓸 것
+- 검증 명령을 꼭 적을 것
+- 사람 판단이 필요한 일은 미리 명시하고 `In Review`에서 멈추게 할 것
+
+## 상태 추천
+
+- 아직 준비 안 됨 → `Backlog`
+- 바로 맡겨도 됨 → `Todo`
+- 이미 누가 작업 중 / Symphony가 잡아감 → `In Progress`
+- 사람 확인 필요 → `In Review`
+- 끝남 → `Done`
+
+> 현재 Symphony는 Wildpaw 프로젝트에서 `Todo`, `In Progress` 상태 이슈를 대상으로 동작합니다.
+
+## 제목 작성 규칙
+
+좋은 제목 예시:
+- `[gateway] smoke 재시도 시 포트 충돌 로그 개선`
+- `[client] level validate 경고 메시지 포맷 정리`
+- `[protocol] hello ack 필드 문서화 및 generated sync`
+- `[harness] check.sh에서 protocol drift 출력 개선`
+
+피해야 할 제목:
+- `버그 수정`
+- `이거 좀 개선`
+- `전체적으로 정리`
+
+---
+
+# 복붙용 기본 템플릿
+
+```md
+## Goal
+한 줄로 이 이슈의 목표를 적는다.
+
+## Context
+현재 어떤 문제/불편/갭이 있는지 적는다.
+
+## In scope
+- 이번 이슈에서 포함할 것
+- 이번 이슈에서 포함할 것
+
+## Out of scope
+- 이번 이슈에서 하지 않을 것
+- 다음 이슈로 넘길 것
+
+## Constraints
+- 건드리면 안 되는 영역
+- 유지해야 하는 동작/호환성
+- 성능/보안/자산 관련 제약
+
+## Acceptance criteria
+- [ ] 완료 조건 1
+- [ ] 완료 조건 2
+- [ ] 완료 조건 3
+
+## Validation
+- `./scripts/check.sh`
+- `./scripts/smoke.sh`
+- 또는 이 이슈에 맞는 더 구체적인 명령
+
+## Expected touched surfaces
+- `client/web/...`
+- `server/...`
+- `shared/...`
+- `scripts/...`
+
+## Automation tier
+- Tier A / Tier B / Tier C
+
+## Handoff expectation
+- 완료 후 `In Review`로 보내기
+- 또는 완료 후 `Done` 조건 명시
+```
+
+---
+
+# 가장 추천하는 실전 템플릿
+
+```md
+## Goal
+`<무엇을 어떻게 바꾸고 싶은지 한 문장>`
+
+## Problem
+`<현재 문제를 2~5문장으로 설명>`
+
+## Scope
+- `<이번 이슈에서 반드시 할 일>`
+- `<이번 이슈에서 반드시 할 일>`
+
+## Non-goals
+- `<이번 이슈에서 하지 않을 일>`
+- `<사람 판단이 필요한 부분>`
+
+## Acceptance criteria
+- [ ] `<눈으로 확인 가능한 완료 조건>`
+- [ ] `<테스트/로그/상태 기준 완료 조건>`
+- [ ] `<부작용 없이 유지되어야 할 조건>`
+
+## Validation
+- `<실행할 명령>`
+- `<실행할 명령>`
+
+## Constraints
+- `<건드리면 안 되는 경계>`
+- `<유지해야 하는 계약/호환성>`
+
+## Files / surfaces likely involved
+- `<예상 경로>`
+- `<예상 경로>`
+
+## Automation tier
+- `Tier A` if it is deterministic and self-contained
+- `Tier B` if it spans multiple surfaces or has behavior/risk tradeoffs
+- `Tier C` if it needs a plan/prototype more than implementation
+
+## Handoff
+- Finish in `In Review`
+- Final summary should include changed files, validation run, evidence, and blockers/risk if any
+```
+
+---
+
+# 유형별 템플릿
+
+## 1) 버그 수정용
+
+```md
+## Goal
+`<버그 한 가지>`를 재현 가능하게 수정하고 회귀를 막는다.
+
+## Problem
+현재 `<증상>`이 발생한다.
+발생 위치: `<화면/스크립트/서버 경로>`
+가능하면 재현 조건: `<재현 절차>`
+
+## Scope
+- 원인 분석
+- 최소 수정
+- 필요하면 테스트/검증 보강
+
+## Non-goals
+- 인접 시스템 전체 리팩터링
+- unrelated UI polish
+
+## Acceptance criteria
+- [ ] `<재현 절차>`로 더 이상 문제가 발생하지 않는다
+- [ ] 기존 핵심 흐름이 깨지지 않는다
+- [ ] 관련 검증이 통과한다
+
+## Validation
+- `./scripts/check.sh`
+- `<버그에 맞는 smoke/test 명령>`
+
+## Automation tier
+Tier A
+
+## Handoff
+`In Review`
+```
+
+## 2) 하네스/CI/스크립트 개선용
+
+```md
+## Goal
+repo-level harness를 더 안정적으로 만든다.
+
+## Problem
+현재 `<check/smoke/bootstrap/ci>` 에서 `<문제>`가 있다.
+
+## Scope
+- 스크립트 또는 CI 수정
+- 로그/에러 메시지 개선
+- 필요 시 문서 1~2곳 동기화
+
+## Non-goals
+- unrelated product feature work
+- 대규모 repo 구조 개편
+
+## Acceptance criteria
+- [ ] 문제 상황에서 실패 원인이 더 분명하게 드러난다
+- [ ] 정상 경로에서 기존 검증이 유지된다
+- [ ] 관련 스크립트/CI가 통과한다
+
+## Validation
+- `./scripts/check.sh`
+- `./scripts/smoke.sh`
+
+## Automation tier
+Tier A 또는 Tier B
+
+## Handoff
+`In Review`
+```
+
+## 3) 프로토콜/클라-서버 계약 변경용
+
+```md
+## Goal
+`<필드/메시지/흐름>` 계약을 수정하고 generated artifacts를 동기화한다.
+
+## Problem
+현재 계약이 `<부족/불일치/중복>` 상태다.
+
+## Scope
+- `shared/protocol/fbs/wildpaw_protocol.fbs` 수정
+- generated sync
+- 관련 사용처 최소 수정
+
+## Non-goals
+- unrelated gameplay redesign
+- 대규모 네트워크 아키텍처 개편
+
+## Acceptance criteria
+- [ ] schema와 generated artifacts가 sync 된다
+- [ ] 관련 사용처가 깨지지 않는다
+- [ ] check/smoke가 통과한다
+
+## Validation
+- `./scripts/generate_protocol.sh`
+- `./scripts/check.sh`
+- 필요 시 `./scripts/smoke.sh`
+
+## Automation tier
+Tier B
+
+## Handoff
+`In Review`
+```
+
+---
+
+# Symphony가 좋아하는 이슈 / 싫어하는 이슈
+
+## 좋아하는 이슈
+- 범위가 작다
+- 수정 경로가 보인다
+- acceptance criteria가 명확하다
+- validation 명령이 있다
+- 사람 취향 판단이 적다
+
+## 싫어하는 이슈
+- “전체적으로 개선”
+- “알아서 제일 좋은 방향으로”
+- 기획/밸런스/감성 판단이 핵심
+- 완료 조건이 없다
+- 수정 금지 경계가 없다
+
+---
+
+# 첫 문장 예시
+
+아래처럼 시작하면 잘 먹습니다.
+
+```md
+Goal:
+Fix one deterministic issue in the gateway smoke flow and leave the repo passing the relevant validation commands.
+```
+
+또는 한국어로:
+
+```md
+이번 이슈의 목표는 gateway smoke flow의 특정 문제 1개를 수정하고, 관련 검증이 통과하는 상태로 끝내는 것이다.
+```
+
+---
+
+# Wildpaw용 추천 규칙
+
+- 작은 작업은 **Tier A**로 쓰기
+- 멀티 서피스 변경은 **Tier B**로 표시하기
+- 큰 방향성/기획 변경은 **Tier C**로 분리하기
+- 사람 확인이 필요하면 완료 상태를 곧바로 `Done`으로 하지 말고 **`In Review`에서 멈추게 쓰기**
+- 설명 마지막에 검증 명령을 빼먹지 말기
+
+---
+
+# 바로 복붙 가능한 아주 짧은 템플릿
+
+```md
+## Goal
+
+## Problem
+
+## Scope
+- 
+- 
+
+## Non-goals
+- 
+- 
+
+## Acceptance criteria
+- [ ] 
+- [ ] 
+- [ ] 
+
+## Validation
+- `./scripts/check.sh`
+
+## Automation tier
+- Tier A
+
+## Handoff
+- Stop in `In Review`
+```
