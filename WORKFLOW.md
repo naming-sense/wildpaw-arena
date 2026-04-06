@@ -2,14 +2,11 @@
 tracker:
   kind: linear
   api_key: $LINEAR_API_KEY
-  project_slug: "set-me"
+  project_slug: "wildpaw-arena-c6c84d4dd680"
   active_states:
     - Todo
     - In Progress
-    - Rework
-    - Merging
   terminal_states:
-    - Closed
     - Cancelled
     - Canceled
     - Duplicate
@@ -73,7 +70,7 @@ Repository posture:
 Execution rules:
 1. Work only in the provided repository copy.
 2. Do not ask a human to perform routine follow-up. Only stop early for a true blocker such as missing auth, missing secrets, or missing required external access.
-3. Stay inside the autonomy tiers defined in `AUTOMATION_SCOPE.md`. If the ticket is outside autonomous scope, produce a concrete plan/handoff and stop at `Human Review`.
+3. Stay inside the autonomy tiers defined in `AUTOMATION_SCOPE.md`. If the ticket is outside autonomous scope, produce a concrete plan/handoff and stop at `In Review`.
 4. Start by reproducing the issue or validating the current behavior before changing code.
 5. Make the smallest safe change set that satisfies the ticket.
 6. If network/protocol changes are involved, update `shared/protocol/fbs/wildpaw_protocol.fbs` first and regenerate artifacts with `./scripts/generate_protocol.sh`.
@@ -86,10 +83,9 @@ State map:
 - `Backlog` -> do not modify; wait.
 - `Todo` -> move to `In Progress` before active implementation.
 - `In Progress` -> implement and validate.
-- `Rework` -> address feedback, revalidate, and return to `Human Review`.
-- `Human Review` -> stop and wait.
-- `Merging` -> only land if changes are validated and human approval is explicit.
+- `In Review` -> stop and wait for human review.
 - `Done` -> no action.
+- `Canceled` / `Duplicate` -> no action.
 
 Definition of done:
 - Required checks are green for the changed surface.
