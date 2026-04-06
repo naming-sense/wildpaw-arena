@@ -24,11 +24,26 @@ Wildpaw Arena에서 Symphony가 잘 처리할 수 있게 Linear 이슈를 쓰는
 
 ## 제목 작성 규칙
 
+권장 형식:
+- **`[영역] 무엇을 바꾸는지`**
+- 제목은 되도록 **한국어로**, 짧고 구체적으로 쓴다
+- 영역(prefix)도 한국어를 기본값으로 쓴다
+
+권장 영역 예시:
+- `[하네스]`
+- `[게이트웨이]`
+- `[클라이언트]`
+- `[프로토콜]`
+- `[레벨]`
+- `[문서]`
+- `[서버]`
+
 좋은 제목 예시:
-- `[gateway] smoke 재시도 시 포트 충돌 로그 개선`
-- `[client] level validate 경고 메시지 포맷 정리`
-- `[protocol] hello ack 필드 문서화 및 generated sync`
-- `[harness] check.sh에서 protocol drift 출력 개선`
+- `[게이트웨이] smoke 재시도 시 포트 충돌 로그 개선`
+- `[클라이언트] level validate 경고 메시지 포맷 정리`
+- `[프로토콜] hello ack 필드 문서화 및 generated sync`
+- `[하네스] check.sh에서 protocol drift 출력 개선`
+- `[문서] Symphony 운영 런북 추가`
 
 피해야 할 제목:
 - `버그 수정`
@@ -258,6 +273,17 @@ Tier B
 - 수정 금지 경계가 없다
 
 ---
+
+# 제목 예시
+
+바로 복붙 가능한 제목 예시:
+
+```text
+[하네스] bootstrap 진행 로그에 단계별 소요 시간 추가
+[레벨] NJD_CR_01 validation 경고 해소
+[문서] Wildpaw Symphony 운영 런북 추가
+[프로토콜] hello ack generated sync 정리
+```
 
 # 첫 문장 예시
 
