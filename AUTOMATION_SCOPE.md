@@ -11,7 +11,7 @@ Use this as the autonomy boundary for:
 
 ## Tier A — autonomous end-to-end
 
-Agents may implement these without prior human approval as long as they stay scoped, validate changes, and stop at `Human Review` when appropriate.
+Agents may implement these without prior human approval as long as they stay scoped, validate changes, and stop at `검토 필요` when appropriate.
 
 Allowed examples:
 - deterministic bug fixes in `client/web`, `server`, or `shared`
@@ -31,7 +31,7 @@ Required behavior:
 
 ## Tier B — autonomous implementation, human review required before landing
 
-Agents may prepare these, but they should stop at `Human Review` with a clear summary and risk note.
+Agents may prepare these, but they should stop at `검토 필요` with a clear summary and risk note.
 
 Examples:
 - multi-surface refactors across `client/web`, `server`, and `shared`
@@ -75,10 +75,10 @@ Examples:
 
 ## Default handoff policy
 
-- `Todo` -> move to `In Progress` before active work.
+- `할 일` -> move to `진행 중` before active work.
 - Tier A -> complete implementation and validation, then stop at workflow-defined handoff.
-- Tier B -> implement, validate, summarize risk, and stop at `Human Review`.
-- Tier C -> plan/prototype only, then stop at `Human Review`.
+- Tier B -> implement, validate, summarize risk, and stop at `검토 필요`.
+- Tier C -> plan/prototype only, then stop at `검토 필요`.
 - Tier D -> do not act; return a concrete recommendation or request explicit human direction.
 
 ## Evidence required in handoff
