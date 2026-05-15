@@ -45,6 +45,10 @@ interface ModelLabUI {
 
 const ASSET_PRESETS: readonly AssetPreset[] = [
   {
+    label: "Lumina - Lumen Village Well (Tripo image-to-3D)",
+    path: "/assets/props/01-lumen-village-well-tripo.glb",
+  },
+  {
     label: "Current (mixamo-directrig-png)",
     path: "/assets/heroes/cat-soldier-variant-regen-50k-webp2k-safe-nogun-anim-pack-mixamo-directrig-png.glb",
   },
