@@ -1,43 +1,62 @@
+import type { HeroId, SkillArchetype, SkillSlot } from "../combat/combatTypes";
+
 export interface SkillDef {
   id: string;
-  cooldownMs: number;
-  range: number;
-  damage: number;
-  radius: number;
-  castTime: number;
-  fxId: string;
-  sfxId: string;
+  slot: SkillSlot;
+  archetype: SkillArchetype;
 }
 
-export const SKILL_DEFS: SkillDef[] = [
-  {
-    id: "dash_q",
-    cooldownMs: 4000,
-    range: 6,
-    damage: 80,
-    radius: 0,
-    castTime: 0,
-    fxId: "fx_dash",
-    sfxId: "sfx_dash",
-  },
-  {
-    id: "smoke_e",
-    cooldownMs: 6500,
-    range: 10,
-    damage: 0,
-    radius: 3,
-    castTime: 150,
-    fxId: "fx_smoke",
-    sfxId: "sfx_smoke",
-  },
-  {
-    id: "barrage_r",
-    cooldownMs: 18000,
-    range: 12,
-    damage: 320,
-    radius: 2,
-    castTime: 500,
-    fxId: "fx_barrage",
-    sfxId: "sfx_barrage",
-  },
+export type HeroSkillDefs = readonly [
+  SkillDef & { slot: "Q" },
+  SkillDef & { slot: "E" },
+  SkillDef & { slot: "R" },
 ];
+
+export const SKILL_DEFS_BY_HERO = {
+  lumifox: [
+    { id: "lumifox_q", slot: "Q", archetype: "Dash" },
+    { id: "lumifox_e", slot: "E", archetype: "Zone" },
+    { id: "lumifox_r", slot: "R", archetype: "Buff" },
+  ],
+  bruno_bear: [
+    { id: "bruno_q", slot: "Q", archetype: "Dash" },
+    { id: "bruno_e", slot: "E", archetype: "Shield" },
+    { id: "bruno_r", slot: "R", archetype: "Zone" },
+  ],
+  stinkrat: [
+    { id: "stinkrat_q", slot: "Q", archetype: "Zone" },
+    { id: "stinkrat_e", slot: "E", archetype: "Zone" },
+    { id: "stinkrat_r", slot: "R", archetype: "Zone" },
+  ],
+  milky_rabbit: [
+    { id: "milky_q", slot: "Q", archetype: "Projectile" },
+    { id: "milky_e", slot: "E", archetype: "Rescue" },
+    { id: "milky_r", slot: "R", archetype: "Zone" },
+  ],
+  iris_wolf: [
+    { id: "iris_q", slot: "Q", archetype: "Projectile" },
+    { id: "iris_e", slot: "E", archetype: "Projectile" },
+    { id: "iris_r", slot: "R", archetype: "Buff" },
+  ],
+  coral_cat: [
+    { id: "coral_q", slot: "Q", archetype: "Dash" },
+    { id: "coral_e", slot: "E", archetype: "Zone" },
+    { id: "coral_r", slot: "R", archetype: "Buff" },
+  ],
+  rockhorn_rhino: [
+    { id: "rhino_q", slot: "Q", archetype: "Shield" },
+    { id: "rhino_e", slot: "E", archetype: "Zone" },
+    { id: "rhino_r", slot: "R", archetype: "Dash" },
+  ],
+  pearl_panda: [
+    { id: "panda_q", slot: "Q", archetype: "Channel" },
+    { id: "panda_e", slot: "E", archetype: "Channel" },
+    { id: "panda_r", slot: "R", archetype: "Rescue" },
+  ],
+} as const satisfies Record<HeroId, HeroSkillDefs>;
+
+export const SKILL_DEFS: SkillDef[] = Object.values(SKILL_DEFS_BY_HERO).flatMap(
+  (heroSkills) => [...heroSkills],
+);
+
+export const SKILL_DEF_BY_ID = new Map(SKILL_DEFS.map((skill) => [skill.id, skill]));

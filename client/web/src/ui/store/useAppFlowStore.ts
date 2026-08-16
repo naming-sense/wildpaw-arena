@@ -1589,7 +1589,9 @@ export const useAppFlowStore = create<AppFlowStore>((set, get) => ({
     const reconnecting =
       normalized.includes("reconnect") ||
       normalized.includes("disconnect") ||
-      normalized.includes("connecting");
+      normalized.includes("connecting") ||
+      normalized.includes("unstable") ||
+      normalized.includes("failed");
 
     set((state) => {
       if (reconnecting && state.flowState === "IN_MATCH") {

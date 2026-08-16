@@ -3,4 +3,7 @@ export interface Weapon {
   cooldownMs: number;
   lastFiredAtMs: number;
   ammo: number;
+  maxAmmo: number;
+  reloading: boolean;
+  reloadRemainingTicks: number;
 }

@@ -16,7 +16,13 @@ export class CollisionSystem implements EcsSystem {
     const boundMaxZ = typeof ctx.worldBounds.maxZ === "number" ? ctx.worldBounds.maxZ : ctx.worldBounds.max;
     const movementColliders = (ctx.staticColliders ?? []).filter((collider) => collider.blocksMovement);
 
-    for (const transform of world.transforms.values()) {
+    for (const [entityId, transform] of world.transforms) {
+      // 투사체 위치와 충돌 판정은 서버가 확정한다. 클라이언트는 이벤트 사이의
+      // 시각 이동만 수행하므로 로컬 지형 보정을 적용하지 않는다.
+      if (world.projectiles.has(entityId)) {
+        continue;
+      }
+
       transform.x = clamp(transform.x, boundMinX, boundMaxX);
       transform.z = clamp(transform.z, boundMinZ, boundMaxZ);
       transform.y = Math.max(0, transform.y);

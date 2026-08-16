@@ -30,6 +30,12 @@ if path.exists():
         "payload(obj:any):any|null {",
     )
     path.write_text(text, encoding="utf-8")
+
+message_payload_path = Path(os.environ["TS_OUT"]) / "wildpaw/protocol/message-payload.ts"
+if message_payload_path.exists():
+    text = message_payload_path.read_text(encoding="utf-8")
+    text = "\n".join(line.rstrip() for line in text.splitlines()) + "\n"
+    message_payload_path.write_text(text, encoding="utf-8")
 PY
 
 echo "Generated FlatBuffers protocol artifacts:"

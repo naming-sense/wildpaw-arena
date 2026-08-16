@@ -25,6 +25,18 @@ enum ProjectilePhase : ubyte {
   Despawn = 2,
 }
 
+enum StatusEffectKind : ubyte {
+  None = 0,
+  Slow = 1,
+  Stun = 2,
+  Shield = 3,
+}
+
+enum StatusEffectPhase : ubyte {
+  Apply = 0,
+  Remove = 1,
+}
+
 table Vec2 {
   x:float;
   y:float;
@@ -52,6 +64,10 @@ table PlayerState {
 
   team_id:ubyte = 0;
   team_slot:ushort = 0;
+
+  hero_id:string;
+  aim_radian:float;
+  shield:ushort;
 }
 
 table HelloPayload {
@@ -111,6 +127,7 @@ table CombatEventPayload {
   server_tick:uint;
   x:float;
   y:float;
+  aim_radian:float;
 }
 
 table ProjectileEventPayload {
@@ -130,6 +147,17 @@ table EventPayload {
   message:string;
 }
 
+table StatusEffectEventPayload {
+  effect_id:uint;
+  source_player_id:uint;
+  target_player_id:uint;
+  kind:StatusEffectKind = None;
+  phase:StatusEffectPhase = Apply;
+  duration_ticks:uint;
+  magnitude:float;
+  server_tick:uint;
+}
+
 union MessagePayload {
   HelloPayload,
   InputPayload,
@@ -141,6 +169,7 @@ union MessagePayload {
   CombatEventPayload,
   ProjectileEventPayload,
   EventPayload,
+  StatusEffectEventPayload,
 }
 
 table Envelope {

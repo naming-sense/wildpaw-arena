@@ -13,6 +13,9 @@ import { PingPayload } from "../netcode/gen/wildpaw/protocol/ping-payload";
 import { ProjectileEventPayload } from "../netcode/gen/wildpaw/protocol/projectile-event-payload";
 import { SnapshotKind } from "../netcode/gen/wildpaw/protocol/snapshot-kind";
 import { SnapshotPayload } from "../netcode/gen/wildpaw/protocol/snapshot-payload";
+import { StatusEffectEventPayload } from "../netcode/gen/wildpaw/protocol/status-effect-event-payload";
+import { StatusEffectKind } from "../netcode/gen/wildpaw/protocol/status-effect-kind";
+import { StatusEffectPhase } from "../netcode/gen/wildpaw/protocol/status-effect-phase";
 import { WelcomePayload } from "../netcode/gen/wildpaw/protocol/welcome-payload";
 import type { InputCommand, NetworkPlayerState, WorldSnapshot } from "./protocol/schemas";
 
@@ -35,6 +38,50 @@ export interface RealtimeSocketClientOptions {
 }
 
 const HERO_ID_STORAGE_KEY = "wildpaw-hero-id";
+const DEFAULT_SERVER_TICK_RATE = 30;
+const CONNECTION_HANDSHAKE_TIMEOUT_MS = 8000;
+
+function normalizeServerTickRate(rawTickRate: number): number {
+  if (!Number.isFinite(rawTickRate) || rawTickRate <= 0) {
+    return DEFAULT_SERVER_TICK_RATE;
+  }
+
+  return rawTickRate;
+}
+
+function ticksToSeconds(ticks: number, tickRate: number): number {
+  if (!Number.isFinite(ticks) || ticks <= 0) {
+    return 0;
+  }
+
+  return ticks / normalizeServerTickRate(tickRate);
+}
+
+function normalizeCastingSkill(skillSlot: SkillSlot): 0 | 1 | 2 | 3 {
+  switch (skillSlot) {
+    case SkillSlot.Q:
+      return 1;
+    case SkillSlot.E:
+      return 2;
+    case SkillSlot.R:
+      return 3;
+    default:
+      return 0;
+  }
+}
+
+function getStatusEffectKindName(kind: StatusEffectKind): "Slow" | "Stun" | "Shield" | null {
+  switch (kind) {
+    case StatusEffectKind.Slow:
+      return "Slow";
+    case StatusEffectKind.Stun:
+      return "Stun";
+    case StatusEffectKind.Shield:
+      return "Shield";
+    default:
+      return null;
+  }
+}
 
 function normalizeHeroId(rawHeroId: string): string {
   const heroId = rawHeroId.trim();
@@ -70,19 +117,8 @@ function getPreferredHeroId(explicit?: string): string {
   return "coral_cat";
 }
 
-function resolveServerProfileId(heroId: string): string {
-  switch (heroId) {
-    case "bruno_bear":
-      return "bruno_bear";
-    case "coral_cat":
-      return "coral_cat";
-    case "rockhorn_rhino":
-      return "bruiser";
-    case "lumifox":
-      return "skirmisher";
-    default:
-      return "ranger";
-  }
+function resolveServerSelectionId(heroId: string): string {
+  return normalizeHeroId(heroId);
 }
 
 class SequenceTracker {
@@ -156,6 +192,7 @@ interface CachedPlayerState {
 export class RealtimeSocketClient {
   private ws: WebSocket | null = null;
   private reconnectTimer: number | null = null;
+  private handshakeTimer: number | null = null;
   private reconnectAttempt = 0;
   private state: ConnectionState = "Disconnected";
   private pingSentAt = 0;
@@ -170,11 +207,22 @@ export class RealtimeSocketClient {
   private readonly playerStateCache = new Map<number, CachedPlayerState>();
   private localNetworkPlayerId = 1;
   private localTeamId = 1;
+  private serverTickRate = DEFAULT_SERVER_TICK_RATE;
+  private connectionGeneration = 0;
+  private hasWelcomeForConnection = false;
+  private hasBaseSnapshotForConnection = false;
+  private hasLocalPlayerStateForConnection = false;
+  private hasProfileAppliedForConnection = false;
+  private hasSelectedHeroStateForConnection = false;
   private lastAimRadian = 0;
   private lastAckSeq = 0;
 
   constructor(private readonly options: RealtimeSocketClientOptions) {
     this.heroId = getPreferredHeroId(options.heroId);
+  }
+
+  isSynchronized(): boolean {
+    return this.state === "Connected";
   }
 
   connect(roomToken = "dev-room"): void {
@@ -192,29 +240,56 @@ export class RealtimeSocketClient {
 
     this.manualDisconnect = false;
     this.clearKeepAliveTimer();
+    this.clearHandshakeTimer();
     this.playerStateCache.clear();
     this.lastYawByPlayerId.clear();
     this.lastAckSeq = 0;
     this.sequenceTracker.reset();
     this.seenRemoteEnvelopeSeqs.length = 0;
+    const connectionGeneration = this.connectionGeneration + 1;
+    this.connectionGeneration = connectionGeneration;
+    this.hasWelcomeForConnection = false;
+    this.hasBaseSnapshotForConnection = false;
+    this.hasLocalPlayerStateForConnection = false;
+    this.hasProfileAppliedForConnection = false;
+    this.hasSelectedHeroStateForConnection = false;
+    this.lastAimRadian = 0;
 
-    this.ws = new WebSocket(this.options.url);
-    this.ws.binaryType = "arraybuffer";
+    const socket = new WebSocket(this.options.url);
+    this.ws = socket;
+    socket.binaryType = "arraybuffer";
 
-    this.ws.onopen = () => {
-      this.reconnectAttempt = 0;
-      this.setState("Connected");
+    socket.onopen = () => {
+      if (!this.isCurrentConnection(socket, connectionGeneration)) {
+        return;
+      }
+
+      this.setState("Reconnecting");
+      this.options.onEvent?.("S2C_CONNECTION_OPEN", {
+        connectionGeneration,
+      });
       this.sendHello(this.lastRoomToken);
-      this.sendSelectProfile(resolveServerProfileId(this.heroId));
+      this.sendSelectProfile(resolveServerSelectionId(this.heroId));
       this.startKeepAlive();
+      this.startHandshakeTimer(socket, connectionGeneration);
     };
 
-    this.ws.onerror = () => {
+    socket.onerror = () => {
+      if (!this.isCurrentConnection(socket, connectionGeneration)) {
+        return;
+      }
+
       this.setState("Unstable");
     };
 
-    this.ws.onclose = () => {
+    socket.onclose = () => {
+      if (!this.isCurrentConnection(socket, connectionGeneration)) {
+        return;
+      }
+
+      this.ws = null;
       this.clearKeepAliveTimer();
+      this.clearHandshakeTimer();
       if (this.manualDisconnect) {
         this.setState("Disconnected");
         return;
@@ -222,8 +297,12 @@ export class RealtimeSocketClient {
       this.scheduleReconnect();
     };
 
-    this.ws.onmessage = (event) => {
-      void this.handleIncoming(event.data);
+    socket.onmessage = (event) => {
+      if (!this.isCurrentConnection(socket, connectionGeneration)) {
+        return;
+      }
+
+      void this.handleIncoming(event.data, socket, connectionGeneration);
     };
   }
 
@@ -235,6 +314,7 @@ export class RealtimeSocketClient {
 
     this.manualDisconnect = true;
     this.clearKeepAliveTimer();
+    this.clearHandshakeTimer();
 
     if (this.ws) {
       this.ws.onclose = null;
@@ -246,6 +326,10 @@ export class RealtimeSocketClient {
   }
 
   sendInput(command: InputCommand): boolean {
+    if (this.state !== "Connected") {
+      return false;
+    }
+
     let aimRadian =
       typeof command.aimRadian === "number" && Number.isFinite(command.aimRadian)
         ? command.aimRadian
@@ -376,14 +460,27 @@ export class RealtimeSocketClient {
     return true;
   }
 
-  private async handleIncoming(data: string | ArrayBuffer | Blob): Promise<void> {
+  private async handleIncoming(
+    data: string | ArrayBuffer | Blob,
+    socket: WebSocket,
+    connectionGeneration: number,
+  ): Promise<void> {
+    if (!this.isCurrentConnection(socket, connectionGeneration)) {
+      return;
+    }
+
     if (data instanceof ArrayBuffer) {
       this.handleBinaryEnvelope(data);
       return;
     }
 
     if (data instanceof Blob) {
-      this.handleBinaryEnvelope(await data.arrayBuffer());
+      const buffer = await data.arrayBuffer();
+      if (!this.isCurrentConnection(socket, connectionGeneration)) {
+        return;
+      }
+
+      this.handleBinaryEnvelope(buffer);
       return;
     }
 
@@ -403,6 +500,7 @@ export class RealtimeSocketClient {
   private handleLegacyJsonEnvelope(type: string, payload: unknown): void {
     if (type === "S2C_SNAPSHOT_BASE" || type === "S2C_SNAPSHOT_DELTA") {
       this.options.onSnapshot?.(payload as WorldSnapshot);
+      this.options.onEvent?.(type, payload);
       return;
     }
 
@@ -469,6 +567,8 @@ export class RealtimeSocketClient {
         }
 
         this.localNetworkPlayerId = welcome.playerId();
+        this.serverTickRate = normalizeServerTickRate(welcome.serverTickRate());
+        this.hasWelcomeForConnection = true;
         this.playerStateCache.clear();
         this.lastYawByPlayerId.clear();
         this.lastAckSeq = 0;
@@ -476,10 +576,12 @@ export class RealtimeSocketClient {
         this.options.onEvent?.("S2C_WELCOME", {
           playerId: welcome.playerId(),
           serverTick: welcome.serverTick(),
-          serverTickRate: welcome.serverTickRate(),
+          serverTickRate: this.serverTickRate,
           serverTimeMs: Date.now(),
           heroId: this.heroId,
+          connectionGeneration: this.connectionGeneration,
         });
+        this.markConnectionReadyIfSynchronized();
         return;
       }
 
@@ -512,8 +614,20 @@ export class RealtimeSocketClient {
           const vy = velocity?.y() ?? 0;
 
           const previousYaw = this.lastYawByPlayerId.get(playerId) ?? 0;
-          const nextYaw = Math.hypot(vx, vy) > 0.001 ? Math.atan2(vx, vy) : previousYaw;
+          const rawAimRadian = player.aimRadian();
+          const nextYaw = Number.isFinite(rawAimRadian)
+            ? rawAimRadian
+            : Math.hypot(vx, vy) > 0.001
+              ? Math.atan2(vx, vy)
+              : previousYaw;
           this.lastYawByPlayerId.set(playerId, nextYaw);
+
+          const heroId = player.heroId()?.trim();
+          const reloadRemainingTicks = player.reloadRemainingTicks();
+          const skillQCooldownTicks = player.skillQCooldownTicks();
+          const skillECooldownTicks = player.skillECooldownTicks();
+          const skillRCooldownTicks = player.skillRCooldownTicks();
+          const castRemainingTicks = player.castRemainingTicks();
 
           const teamFromServer = player.teamId();
           const mapped: NetworkPlayerState = {
@@ -526,16 +640,29 @@ export class RealtimeSocketClient {
             x: position?.x() ?? 0,
             y: position?.y() ?? 0,
             rot: nextYaw,
+            aimRadian: nextYaw,
             vx,
             vy,
             hp: player.hp(),
             maxHp: 100,
-            shield: 0,
+            shield: player.shield(),
             alive: player.alive(),
             lastProcessedInputSeq: player.lastProcessedInputSeq(),
+            heroId: heroId && heroId.length > 0 ? heroId : undefined,
             ammo: player.ammo(),
             maxAmmo: player.maxAmmo(),
             reloading: player.isReloading(),
+            reloadRemainingTicks,
+            reloadRemainingSeconds: ticksToSeconds(reloadRemainingTicks, this.serverTickRate),
+            skillQCooldownTicks,
+            skillQCooldownSeconds: ticksToSeconds(skillQCooldownTicks, this.serverTickRate),
+            skillECooldownTicks,
+            skillECooldownSeconds: ticksToSeconds(skillECooldownTicks, this.serverTickRate),
+            skillRCooldownTicks,
+            skillRCooldownSeconds: ticksToSeconds(skillRCooldownTicks, this.serverTickRate),
+            castingSkill: normalizeCastingSkill(player.castingSkill()),
+            castRemainingTicks,
+            castRemainingSeconds: ticksToSeconds(castRemainingTicks, this.serverTickRate),
           };
 
           if (playerId === this.localNetworkPlayerId) {
@@ -562,6 +689,7 @@ export class RealtimeSocketClient {
         const localCached = this.playerStateCache.get(this.localNetworkPlayerId);
         if (localCached) {
           this.lastAckSeq = Math.max(this.lastAckSeq, localCached.state.lastProcessedInputSeq);
+          this.hasLocalPlayerStateForConnection = true;
         }
 
         const players = [...this.playerStateCache.values()]
@@ -570,18 +698,26 @@ export class RealtimeSocketClient {
 
         const snapshot: WorldSnapshot = {
           serverTick: snapshotPayload.serverTick(),
+          serverTickRate: this.serverTickRate,
           serverTimeMs,
           ackSeq: this.lastAckSeq,
           players,
         };
 
+        const snapshotKind = snapshotPayload.kind();
+        if (snapshotKind !== SnapshotKind.Delta) {
+          this.hasBaseSnapshotForConnection = true;
+        }
+
         this.options.onSnapshot?.(snapshot);
         this.options.onEvent?.(
-          snapshotPayload.kind() === SnapshotKind.Delta
+          snapshotKind === SnapshotKind.Delta
             ? "S2C_SNAPSHOT_DELTA"
             : "S2C_SNAPSHOT_BASE",
           { players: players.length },
         );
+        this.confirmSelectedHeroStateFromCache();
+        this.markConnectionReadyIfSynchronized();
         return;
       }
 
@@ -612,6 +748,7 @@ export class RealtimeSocketClient {
           targetY: combatPayload.y(),
           sourceX: combatPayload.x(),
           sourceY: combatPayload.y(),
+          aimRadian: combatPayload.aimRadian(),
           skillSlot,
           damage: combatPayload.damage(),
           critical: combatPayload.isCritical(),
@@ -674,6 +811,33 @@ export class RealtimeSocketClient {
         return;
       }
 
+      case MessagePayload.StatusEffectEventPayload: {
+        const statusPayload = envelope.payload(new StatusEffectEventPayload()) as
+          | StatusEffectEventPayload
+          | null;
+        if (!statusPayload) {
+          return;
+        }
+
+        const statusEffectKind = getStatusEffectKindName(statusPayload.kind());
+        if (!statusEffectKind) {
+          return;
+        }
+
+        this.options.onEvent?.("S2C_STATUS_EFFECT_EVENT", {
+          effectId: statusPayload.effectId(),
+          sourcePlayerId: statusPayload.sourcePlayerId(),
+          targetPlayerId: statusPayload.targetPlayerId(),
+          statusEffectKind,
+          phase: statusPayload.phase() === StatusEffectPhase.Remove ? "Remove" : "Apply",
+          durationTicks: statusPayload.durationTicks(),
+          durationSeconds: ticksToSeconds(statusPayload.durationTicks(), this.serverTickRate),
+          magnitude: statusPayload.magnitude(),
+          serverTick: statusPayload.serverTick(),
+        });
+        return;
+      }
+
       case MessagePayload.EventPayload: {
         const eventPayload = envelope.payload(new EventPayload()) as EventPayload | null;
         if (!eventPayload) {
@@ -698,11 +862,29 @@ export class RealtimeSocketClient {
           }
         }
 
+        if (eventName === "profile.applied") {
+          if (normalizeHeroId(message) === this.heroId) {
+            this.hasProfileAppliedForConnection = true;
+          } else {
+            this.failProfileHandshake(message || "profile-mismatch");
+          }
+        }
+
         this.options.onEvent?.(eventName, { message });
         this.options.onEvent?.("S2C_EVENT", {
           kind: eventName,
           message,
         });
+
+        if (eventName === "profile.invalid") {
+          this.failProfileHandshake(message || "profile-invalid");
+          return;
+        }
+
+        if (eventName === "profile.applied") {
+          this.confirmSelectedHeroStateFromCache();
+          this.markConnectionReadyIfSynchronized();
+        }
 
         return;
       }
@@ -757,6 +939,84 @@ export class RealtimeSocketClient {
 
     window.clearInterval(this.keepAliveTimer);
     this.keepAliveTimer = null;
+  }
+
+  private startHandshakeTimer(socket: WebSocket, connectionGeneration: number): void {
+    this.clearHandshakeTimer();
+    this.handshakeTimer = window.setTimeout(() => {
+      this.handshakeTimer = null;
+      if (
+        !this.isCurrentConnection(socket, connectionGeneration) ||
+        (this.hasWelcomeForConnection &&
+          this.hasBaseSnapshotForConnection &&
+          this.hasLocalPlayerStateForConnection &&
+          this.hasProfileAppliedForConnection &&
+          this.hasSelectedHeroStateForConnection)
+      ) {
+        return;
+      }
+
+      socket.close();
+    }, CONNECTION_HANDSHAKE_TIMEOUT_MS);
+  }
+
+  private clearHandshakeTimer(): void {
+    if (this.handshakeTimer === null) {
+      return;
+    }
+
+    window.clearTimeout(this.handshakeTimer);
+    this.handshakeTimer = null;
+  }
+
+  private isCurrentConnection(socket: WebSocket, connectionGeneration: number): boolean {
+    return this.ws === socket && this.connectionGeneration === connectionGeneration;
+  }
+
+  private confirmSelectedHeroStateFromCache(): void {
+    if (!this.hasProfileAppliedForConnection || this.hasSelectedHeroStateForConnection) {
+      return;
+    }
+
+    const localState = this.playerStateCache.get(this.localNetworkPlayerId)?.state;
+    if (!localState?.heroId || normalizeHeroId(localState.heroId) !== this.heroId) {
+      return;
+    }
+
+    this.hasSelectedHeroStateForConnection = true;
+    this.options.onEvent?.("S2C_PROFILE_READY", {
+      heroId: this.heroId,
+      playerId: this.localNetworkPlayerId,
+      connectionGeneration: this.connectionGeneration,
+    });
+  }
+
+  private failProfileHandshake(reason: string): void {
+    this.hasProfileAppliedForConnection = false;
+    this.hasSelectedHeroStateForConnection = false;
+    this.options.onEvent?.("S2C_PROFILE_SYNC_FAILED", {
+      heroId: this.heroId,
+      reason,
+      connectionGeneration: this.connectionGeneration,
+    });
+    this.setState("Failed");
+    this.ws?.close();
+  }
+
+  private markConnectionReadyIfSynchronized(): void {
+    if (
+      !this.hasWelcomeForConnection ||
+      !this.hasBaseSnapshotForConnection ||
+      !this.hasLocalPlayerStateForConnection ||
+      !this.hasProfileAppliedForConnection ||
+      !this.hasSelectedHeroStateForConnection
+    ) {
+      return;
+    }
+
+    this.clearHandshakeTimer();
+    this.reconnectAttempt = 0;
+    this.setState("Connected");
   }
 
   private setState(next: ConnectionState): void {

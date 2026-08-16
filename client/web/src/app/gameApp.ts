@@ -5,7 +5,12 @@ import { CommandBuffer } from "../input/commandBuffer";
 import { KeyboardMouseInput } from "../input/keyboardMouse";
 import { resolveAimOnGround } from "../input/aim";
 import { World, type EntityId } from "../ecs/world";
-import type { RenderAnimationState } from "../ecs/components";
+import type {
+  RenderAnimationState,
+  SkillRuntime,
+  SkillSet,
+  SkillSlotState,
+} from "../ecs/components";
 import {
   AnimationSystem,
   BuffDebuffSystem,
@@ -13,6 +18,8 @@ import {
   InputSystem,
   MovementSystem,
   ProjectileSystem,
+  SkillRuntimeRenderSystem,
+  SkillRuntimeSystem,
   SkillSystem,
   WeaponFireSystem,
 } from "../ecs/systems";
@@ -28,10 +35,15 @@ import { PerfTracker } from "../debug/perfOverlay";
 import { NetMetricsTracker } from "../debug/netOverlay";
 import { ReplayLogger } from "../debug/replay/replayLogger";
 import { useUiStore } from "../ui/store/useUiStore";
-import { createGltfLoader } from "../assets/loaders/gltfLoader";
+import { createGltfLoader, disposeGltfLoader } from "../assets/loaders/gltfLoader";
 import { HERO_ASSET_MANIFEST, type HeroAssetManifest } from "../assets/manifests/heroes";
 import { HERO_DEFS, HERO_DEF_BY_ID, type HeroDef } from "../gameplay/hero/heroDefs";
+import type { SkillArchetype, StatusEffectKind } from "../gameplay/combat/combatTypes";
+import { SKILL_DEF_BY_ID } from "../gameplay/skill/skillDefs";
+import { COMBAT_SKILL_DEF_BY_ID } from "../gameplay/data/combatDataCatalog";
+import { createApprovedSkillRuntime } from "../gameplay/skill/skillRuntime";
 import { WEAPON_DEFS, WEAPON_DEF_BY_ID } from "../gameplay/weapon/weaponDefs";
+import { ProjectilePhase } from "../netcode/gen/wildpaw/protocol/projectile-phase";
 import { LevelRuntime } from "../level/runtime/levelRuntime";
 import type { FogOfWarQuality } from "../level/runtime/fogOfWarOverlay";
 import { segmentIntersectsCollider2D } from "../level/runtime/levelCollision";
@@ -75,6 +87,10 @@ const LOS_HALF_FOV_RAD = (55 * Math.PI) / 180;
 const LOS_COLLIDER_PADDING = 0.02;
 const LOS_REMOTE_VISIBILITY_HOLD_MS = 160;
 const FOW_QUALITY_STORAGE_KEY = "wildpaw.fowQuality";
+const DEFAULT_SERVER_TICK_RATE = 30;
+const AUTHORITATIVE_PROJECTILE_TTL_MS = 4000;
+const AUTHORITATIVE_PROJECTILE_HEIGHT = 0.62;
+const AUTHORITATIVE_PROJECTILE_RADIUS = 0.13;
 
 function normalizeHeroId(rawHeroId: string): string {
   const normalized = rawHeroId.trim();
@@ -307,7 +323,47 @@ interface CombatEventPayload {
   sourceY?: unknown;
   attackerX?: unknown;
   attackerY?: unknown;
+  aimRadian?: unknown;
   targetAlive?: unknown;
+  message?: unknown;
+  statusEffectId?: unknown;
+  statusEffectKind?: unknown;
+  durationTicks?: unknown;
+  durationSeconds?: unknown;
+  durationMs?: unknown;
+  magnitude?: unknown;
+  stacks?: unknown;
+  sourcePlayerId?: unknown;
+  serverTick?: unknown;
+}
+
+interface ProjectileEventPayload {
+  projectileId?: unknown;
+  ownerPlayerId?: unknown;
+  targetPlayerId?: unknown;
+  phase?: unknown;
+  serverTick?: unknown;
+  x?: unknown;
+  y?: unknown;
+  vx?: unknown;
+  vy?: unknown;
+}
+
+interface StatusEffectEventPayload extends Record<string, unknown> {
+  effectId?: unknown;
+  sourcePlayerId?: unknown;
+  targetPlayerId?: unknown;
+  statusEffectKind?: unknown;
+  phase?: unknown;
+  durationTicks?: unknown;
+  durationSeconds?: unknown;
+  magnitude?: unknown;
+}
+
+interface InitialWorldWaiter {
+  resolve: () => void;
+  reject: (error: Error) => void;
+  timeoutId: number;
 }
 
 export class GameApp {
@@ -318,6 +374,9 @@ export class GameApp {
   private readonly commands = new CommandBuffer();
 
   private readonly sceneRoot = createSceneRoot();
+  private readonly skillRuntimeRenderSystem = new SkillRuntimeRenderSystem(
+    this.sceneRoot.scene,
+  );
   private readonly renderer: GameRenderer;
   private readonly cameraRig: CameraRig;
   private readonly levelRuntime: LevelRuntime;
@@ -343,16 +402,31 @@ export class GameApp {
   private readonly netMetrics = new NetMetricsTracker();
   private readonly replay = new ReplayLogger();
   private readonly gltfLoader = createGltfLoader();
-  private readonly selectedHeroId: string;
   private readonly localHeroDef: HeroDef;
-  private readonly localHeroAsset: HeroAssetManifest;
-  private readonly localHeroAssetPath: string;
   private readonly losVisibilityEnabled: boolean;
 
   private readonly remoteEntities = new Map<number, EntityId>();
   private readonly remoteVisibilityByPlayerId = new Map<number, boolean>();
   private readonly remoteVisibilityHoldUntilByPlayerId = new Map<number, number>();
   private readonly heroIdByNetworkPlayerId = new Map<number, string>();
+  private readonly teamIdByNetworkPlayerId = new Map<number, number>();
+  private readonly modelHeroIdByEntityId = new Map<EntityId, string>();
+  private readonly modelLoadRevisionByEntityId = new Map<EntityId, number>();
+  private readonly projectileEntityByNetworkId = new Map<number, EntityId>();
+  private readonly pendingStatusEffectEventsByPlayerId = new Map<
+    number,
+    StatusEffectEventPayload[]
+  >();
+  private readonly pendingSkillCuesByPlayerId = new Map<
+    number,
+    Array<{
+      skillSlot: "Q" | "E" | "R";
+      worldX: number;
+      worldZ: number;
+      aimRadian: number | null;
+      serverTick: number;
+    }>
+  >();
   private readonly aliveByEntityId = new Map<EntityId, boolean>();
   private localPlayerEntityId: EntityId;
   private localNetworkPlayerId = 1;
@@ -363,6 +437,16 @@ export class GameApp {
   private lastInputSentAt = Number.NEGATIVE_INFINITY;
   private serverTimeOffsetMs = 0;
   private hasServerTimeOffset = false;
+  private serverTickRate = DEFAULT_SERVER_TICK_RATE;
+  private connectionGeneration = 0;
+  private hasAuthoritativeLocalSpawn = false;
+  private hasReceivedWelcome = false;
+  private hasReceivedBaseSnapshot = false;
+  private hasReceivedLocalPlayerState = false;
+  private hasSynchronizedSelectedProfile = false;
+  private initialWorldReady = false;
+  private initialWorldFailure: Error | null = null;
+  private readonly initialWorldWaiters = new Set<InitialWorldWaiter>();
   private readonly snapshotAmmoByPlayerId = new Map<number, number>();
   private readonly bulletTrailEffects: BulletTrailEffect[] = [];
   private readonly muzzleFlashEffects: MuzzleFlashEffect[] = [];
@@ -414,10 +498,8 @@ export class GameApp {
     this.ensureHitMarkerElement();
     this.ensureDamageOverlayElement();
 
-    this.selectedHeroId = resolvePreferredHeroId(options.heroId);
-    this.localHeroDef = pickHeroDef(this.selectedHeroId);
-    this.localHeroAsset = pickHeroAsset(this.selectedHeroId);
-    this.localHeroAssetPath = this.localHeroAsset.gltfPath;
+    const selectedHeroId = resolvePreferredHeroId(options.heroId);
+    this.localHeroDef = pickHeroDef(selectedHeroId);
 
     this.hasRealtimeServer = Boolean(options.wsUrl);
     this.simulationMoveSpeedMps = this.hasRealtimeServer
@@ -443,20 +525,32 @@ export class GameApp {
       networkPlayerId: 1,
       isLocal: true,
       color: 0x8ac0ff,
+      heroId: this.localHeroDef.id,
+      initialX: 0,
+      initialZ: 0,
+      initialYaw: 0,
     });
     this.heroIdByNetworkPlayerId.set(this.localNetworkPlayerId, this.localHeroDef.id);
+    this.teamIdByNetworkPlayerId.set(this.localNetworkPlayerId, 1);
 
     const localWeapon = WEAPON_DEF_BY_ID.get(this.localHeroDef.weaponId) ?? WEAPON_DEFS[0]!;
     useUiStore.getState().setHud({
       heroName: this.localHeroDef.displayName,
       hp: this.localHeroDef.baseHp,
       maxHp: this.localHeroDef.baseHp,
+      shield: 0,
       ammo: localWeapon.ammo,
       maxAmmo: localWeapon.ammo,
       reloading: false,
+      reloadRemainingSeconds: 0,
+      skillQCooldownSeconds: 0,
+      skillECooldownSeconds: 0,
+      skillRCooldownSeconds: 0,
+      castingSkill: 0,
+      castRemainingSeconds: 0,
     });
 
-    this.loadHeroModel(this.localPlayerEntityId).catch((error) => {
+    this.loadHeroModel(this.localPlayerEntityId, this.localHeroDef.id).catch((error) => {
       console.error("[GameApp] Failed to load local hero GLB:", error);
     });
 
@@ -478,11 +572,59 @@ export class GameApp {
     this.rafId = requestAnimationFrame(this.frame);
   }
 
+  waitForInitialWorld(timeoutMs = 8000): Promise<void> {
+    if (!this.hasRealtimeServer) {
+      return Promise.resolve();
+    }
+
+    if (this.initialWorldFailure) {
+      return Promise.reject(this.initialWorldFailure);
+    }
+
+    if (this.initialWorldReady) {
+      return Promise.resolve();
+    }
+
+    if (!this.running) {
+      return Promise.reject(new Error("게임 런타임이 중지되어 룸 초기 동기화를 기다릴 수 없습니다."));
+    }
+
+    const normalizedTimeoutMs = Number.isFinite(timeoutMs)
+      ? Math.max(1, Math.round(timeoutMs))
+      : 8000;
+
+    return new Promise<void>((resolve, reject) => {
+      const waiter: InitialWorldWaiter = {
+        resolve,
+        reject,
+        timeoutId: 0,
+      };
+
+      waiter.timeoutId = window.setTimeout(() => {
+        this.initialWorldWaiters.delete(waiter);
+        reject(new Error("룸 서버의 Welcome/Base Snapshot 초기 동기화 시간이 초과되었습니다."));
+      }, normalizedTimeoutMs);
+
+      this.initialWorldWaiters.add(waiter);
+      this.resolveInitialWorldWaitersIfReady();
+    });
+  }
+
   stop(): void {
     this.running = false;
     cancelAnimationFrame(this.rafId);
     this.input.detach();
     this.socket.disconnect();
+    this.rejectInitialWorldWaiters(
+      new Error("게임 런타임이 중지되어 룸 초기 동기화가 취소되었습니다."),
+    );
+    this.invalidatePendingHeroModelLoads();
+    this.clearAuthoritativeProjectiles();
+    this.pendingStatusEffectEventsByPlayerId.clear();
+    this.pendingSkillCuesByPlayerId.clear();
+    this.world.skillRuntimes.clear();
+    this.skillRuntimeRenderSystem.clear();
+    this.clearRenderProxies();
     this.clearBulletEffects();
     this.clearMuzzleFlashEffects();
     this.clearDamageNumberEffects();
@@ -493,6 +635,7 @@ export class GameApp {
     this.removeHitMarkerElement();
     this.removeDamageOverlayElement();
     this.levelRuntime.dispose();
+    disposeGltfLoader(this.gltfLoader);
     this.renderer.dispose();
   }
 
@@ -503,6 +646,8 @@ export class GameApp {
     this.world.addSystem(new WeaponFireSystem());
     this.world.addSystem(new ProjectileSystem());
     this.world.addSystem(new SkillSystem());
+    this.world.addSystem(new SkillRuntimeSystem());
+    this.world.addSystem(this.skillRuntimeRenderSystem);
     this.world.addSystem(new BuffDebuffSystem());
     this.world.addSystem(new AnimationSystem());
   }
@@ -522,10 +667,13 @@ export class GameApp {
         packetLossPct: this.netMetrics.packetLossPct,
       });
 
-      this.fixedStep.advance(frameMs, (dtMs) => this.simulationTick(nowMs, dtMs));
+      if (!this.hasRealtimeServer || this.socket.isSynchronized()) {
+        this.fixedStep.advance(frameMs, (dtMs) => this.simulationTick(nowMs, dtMs));
+      }
 
       const estimatedServerNowMs = Date.now() + (this.hasServerTimeOffset ? this.serverTimeOffsetMs : 0);
       this.applyInterpolatedRemoteState(estimatedServerNowMs);
+      this.cleanupExpiredAuthoritativeProjectiles();
       this.syncRenderProxies(frameMs);
       this.updateBulletTrailEffects(frameMs);
       this.updateMuzzleFlashEffects(frameMs);
@@ -674,6 +822,7 @@ export class GameApp {
       useUiStore.getState().setHud({
         hp: health.current,
         maxHp: health.max,
+        shield: health.shield,
         ammo: weapon?.ammo ?? 0,
       });
     }
@@ -752,8 +901,42 @@ export class GameApp {
   }
 
   private onSocketEvent(name: string, payload: unknown): void {
-
     if (!payload || typeof payload !== "object") return;
+
+    if (name === "S2C_CONNECTION_OPEN") {
+      const generation = (payload as { connectionGeneration?: unknown })
+        .connectionGeneration;
+      if (
+        typeof generation !== "number" ||
+        !Number.isFinite(generation) ||
+        generation <= this.connectionGeneration
+      ) {
+        return;
+      }
+
+      this.connectionGeneration = generation;
+      this.interpolationBuffer.clear();
+      this.commands.reset();
+      this.snapshotAmmoByPlayerId.clear();
+      this.clearAuthoritativeProjectiles();
+      this.pendingStatusEffectEventsByPlayerId.clear();
+      this.pendingSkillCuesByPlayerId.clear();
+      this.stickyFacingAim = null;
+      this.world.skillRuntimes.clear();
+      this.skillRuntimeRenderSystem.clear();
+      for (const networkPlayerId of [...this.remoteEntities.keys()]) {
+        this.removeRemoteEntity(networkPlayerId);
+      }
+      this.world.statusEffects.set(this.localPlayerEntityId, []);
+      this.hasAuthoritativeLocalSpawn = false;
+      this.hasReceivedWelcome = false;
+      this.hasReceivedBaseSnapshot = false;
+      this.hasReceivedLocalPlayerState = false;
+      this.hasSynchronizedSelectedProfile = false;
+      this.initialWorldReady = false;
+      this.initialWorldFailure = null;
+      return;
+    }
 
     if (name === "S2C_WELCOME") {
       const playerId = (payload as { playerId?: unknown }).playerId;
@@ -763,13 +946,24 @@ export class GameApp {
 
         const knownHeroId =
           this.heroIdByNetworkPlayerId.get(previousLocalNetworkPlayerId) ?? this.localHeroDef.id;
+        const knownTeamId =
+          this.teamIdByNetworkPlayerId.get(previousLocalNetworkPlayerId) ?? 1;
         this.heroIdByNetworkPlayerId.delete(previousLocalNetworkPlayerId);
+        this.teamIdByNetworkPlayerId.delete(previousLocalNetworkPlayerId);
         this.heroIdByNetworkPlayerId.set(this.localNetworkPlayerId, knownHeroId);
+        this.teamIdByNetworkPlayerId.set(this.localNetworkPlayerId, knownTeamId);
+        this.hasReceivedWelcome = true;
+        this.resolveInitialWorldWaitersIfReady();
       }
 
       const serverTimeMs = (payload as { serverTimeMs?: unknown }).serverTimeMs;
       if (typeof serverTimeMs === "number" && Number.isFinite(serverTimeMs)) {
         this.updateServerTimeOffset(serverTimeMs);
+      }
+
+      const serverTickRate = (payload as { serverTickRate?: unknown }).serverTickRate;
+      if (typeof serverTickRate === "number" && Number.isFinite(serverTickRate)) {
+        this.serverTickRate = Math.max(1, Math.round(serverTickRate));
       }
 
       const heroId = (payload as { heroId?: unknown }).heroId;
@@ -782,14 +976,107 @@ export class GameApp {
       return;
     }
 
+    if (name === "S2C_SNAPSHOT_BASE") {
+      this.hasReceivedBaseSnapshot = true;
+      this.resolveInitialWorldWaitersIfReady();
+      return;
+    }
+
+    if (name === "S2C_PROFILE_READY") {
+      const heroId = (payload as { heroId?: unknown }).heroId;
+      const generation = (payload as { connectionGeneration?: unknown })
+        .connectionGeneration;
+      if (
+        typeof heroId === "string" &&
+        normalizeHeroId(heroId) === this.localHeroDef.id &&
+        generation === this.connectionGeneration
+      ) {
+        this.hasSynchronizedSelectedProfile = true;
+        this.resolveInitialWorldWaitersIfReady();
+      }
+      return;
+    }
+
+    if (name === "S2C_PROFILE_SYNC_FAILED") {
+      const generation = (payload as { connectionGeneration?: unknown })
+        .connectionGeneration;
+      if (generation !== this.connectionGeneration) {
+        return;
+      }
+
+      const reason = (payload as { reason?: unknown }).reason;
+      const error = new Error(
+        typeof reason === "string" && reason.length > 0
+          ? `선택 영웅 프로필 적용에 실패했습니다: ${reason}`
+          : "선택 영웅 프로필 적용에 실패했습니다.",
+      );
+      this.initialWorldFailure = error;
+      this.hasSynchronizedSelectedProfile = false;
+      this.rejectInitialWorldWaiters(error);
+      return;
+    }
+
+    if (name === "S2C_PROJECTILE_EVENT") {
+      this.handleProjectileEvent(payload as ProjectileEventPayload);
+      return;
+    }
+
+    if (name === "S2C_STATUS_EFFECT_EVENT") {
+      this.handleExplicitStatusEffectEvent(payload as StatusEffectEventPayload);
+      return;
+    }
+
     if (name === "S2C_EVENT") {
-      this.handleServerEvent(payload as CombatEventPayload);
+      this.handleServerEvent(this.expandServerEventPayload(payload as CombatEventPayload));
+    }
+  }
+
+  private handleExplicitStatusEffectEvent(payload: StatusEffectEventPayload): void {
+    const phase = typeof payload.phase === "string" ? payload.phase : "";
+    const kind = phase === "Remove" ? "status-effect-removed" : "status-effect-applied";
+    const effectId =
+      typeof payload.effectId === "number" && Number.isFinite(payload.effectId)
+        ? String(Math.round(payload.effectId))
+        : payload.effectId;
+    const durationMs =
+      typeof payload.durationSeconds === "number" && Number.isFinite(payload.durationSeconds)
+        ? Math.max(0, payload.durationSeconds) * 1000
+        : undefined;
+
+    this.handleStatusEffectServerEvent(kind, {
+      ...payload,
+      statusEffectId: effectId,
+      durationMs,
+    });
+  }
+
+  private expandServerEventPayload(payload: CombatEventPayload): CombatEventPayload {
+    if (typeof payload.message !== "string" || payload.message.trim().length === 0) {
+      return payload;
+    }
+
+    try {
+      const decoded = JSON.parse(payload.message) as unknown;
+      if (!decoded || typeof decoded !== "object") {
+        return payload;
+      }
+
+      return {
+        ...payload,
+        ...(decoded as CombatEventPayload),
+      };
+    } catch {
+      return payload;
     }
   }
 
   private handleServerEvent(payload: CombatEventPayload): void {
     const kind = typeof payload.kind === "string" ? payload.kind : "";
     const eventNowMs = performance.now();
+
+    if (this.handleStatusEffectServerEvent(kind, payload)) {
+      return;
+    }
 
     if (kind === "skill-cast") {
       const attackerPlayerId =
@@ -829,7 +1116,37 @@ export class GameApp {
         return;
       }
 
-      this.spawnSkillCastCue(attackerPlayerId, skillSlot, worldX, worldZ);
+      if (this.resolveEntityIdByNetworkPlayerId(attackerPlayerId) === null) {
+        const aimRadian =
+          typeof payload.aimRadian === "number" && Number.isFinite(payload.aimRadian)
+            ? payload.aimRadian
+            : null;
+        const serverTick =
+          typeof payload.serverTick === "number" && Number.isFinite(payload.serverTick)
+            ? Math.max(0, Math.round(payload.serverTick))
+            : 0;
+        const queued = this.pendingSkillCuesByPlayerId.get(attackerPlayerId) ?? [];
+        queued.push({ skillSlot, worldX, worldZ, aimRadian, serverTick });
+        this.pendingSkillCuesByPlayerId.set(attackerPlayerId, queued);
+        return;
+      }
+
+      const aimRadian =
+        typeof payload.aimRadian === "number" && Number.isFinite(payload.aimRadian)
+          ? payload.aimRadian
+          : null;
+      const serverTick =
+        typeof payload.serverTick === "number" && Number.isFinite(payload.serverTick)
+          ? Math.max(0, Math.round(payload.serverTick))
+          : 0;
+      this.spawnSkillCastCue(
+        attackerPlayerId,
+        skillSlot,
+        worldX,
+        worldZ,
+        aimRadian,
+        serverTick,
+      );
       return;
     }
 
@@ -1053,23 +1370,427 @@ export class GameApp {
     }
   }
 
+  private handleStatusEffectServerEvent(kind: string, payload: CombatEventPayload): boolean {
+    const applyEvent = kind === "status-effect-applied" || kind === "status.effect.applied";
+    const removeEvent = kind === "status-effect-removed" || kind === "status.effect.removed";
+    if (!applyEvent && !removeEvent) {
+      return false;
+    }
+
+    const targetPlayerId =
+      typeof payload.targetPlayerId === "number" && Number.isFinite(payload.targetPlayerId)
+        ? payload.targetPlayerId
+        : null;
+    const statusEffectId =
+      typeof payload.statusEffectId === "string" && payload.statusEffectId.trim().length > 0
+        ? payload.statusEffectId.trim()
+        : null;
+    if (targetPlayerId === null || statusEffectId === null) {
+      return true;
+    }
+
+    const entityId = this.resolveEntityIdByNetworkPlayerId(targetPlayerId);
+    const effects = entityId === null ? null : this.world.statusEffects.get(entityId);
+    if (entityId === null || !effects) {
+      const queued = this.pendingStatusEffectEventsByPlayerId.get(targetPlayerId) ?? [];
+      queued.push({
+        ...payload,
+        phase: removeEvent ? "Remove" : "Apply",
+        effectId: statusEffectId,
+      });
+      this.pendingStatusEffectEventsByPlayerId.set(targetPlayerId, queued);
+      return true;
+    }
+
+    if (removeEvent) {
+      this.world.statusEffects.set(
+        entityId,
+        effects.filter((effect) => effect.id !== statusEffectId),
+      );
+      this.unlinkApprovedStatusRuntime(statusEffectId);
+      return true;
+    }
+
+    const effectKind = this.parseStatusEffectKind(payload.statusEffectKind);
+    if (!effectKind) {
+      return true;
+    }
+
+    const durationMs =
+      typeof payload.durationMs === "number" && Number.isFinite(payload.durationMs)
+        ? Math.max(0, payload.durationMs)
+        : typeof payload.durationTicks === "number" && Number.isFinite(payload.durationTicks)
+          ? Math.max(0, payload.durationTicks) * (1000 / this.serverTickRate)
+          : 0;
+    if (durationMs <= 0) {
+      return true;
+    }
+
+    const sourcePlayerId =
+      typeof payload.sourcePlayerId === "number" && Number.isFinite(payload.sourcePlayerId)
+        ? payload.sourcePlayerId
+        : typeof payload.attackerPlayerId === "number" && Number.isFinite(payload.attackerPlayerId)
+          ? payload.attackerPlayerId
+          : 0;
+    const stacks =
+      typeof payload.stacks === "number" && Number.isFinite(payload.stacks)
+        ? Math.max(1, Math.round(payload.stacks))
+        : 1;
+    const magnitude =
+      typeof payload.magnitude === "number" && Number.isFinite(payload.magnitude)
+        ? payload.magnitude
+        : 0;
+    const existingIndex = effects.findIndex((effect) => effect.id === statusEffectId);
+    const nextEffect = {
+      id: statusEffectId,
+      kind: effectKind,
+      sourcePlayerId,
+      stacks,
+      magnitude,
+      serverTick:
+        typeof payload.serverTick === "number" && Number.isFinite(payload.serverTick)
+          ? Math.max(0, Math.round(payload.serverTick))
+          : 0,
+      remainingMs: durationMs,
+    };
+
+    if (existingIndex < 0) {
+      effects.push(nextEffect);
+    } else {
+      effects[existingIndex] = nextEffect;
+    }
+    this.linkApprovedStatusRuntime(
+      sourcePlayerId,
+      statusEffectId,
+      nextEffect.serverTick,
+      durationMs,
+    );
+
+    return true;
+  }
+
+  private linkApprovedStatusRuntime(
+    sourcePlayerId: number,
+    statusEffectId: string,
+    serverTick: number,
+    durationMs: number,
+  ): void {
+    const sourceEntityId = this.resolveEntityIdByNetworkPlayerId(sourcePlayerId);
+    const runtimes = sourceEntityId === null ? null : this.world.skillRuntimes.get(sourceEntityId);
+    if (!runtimes) {
+      return;
+    }
+
+    for (let index = runtimes.length - 1; index >= 0; index -= 1) {
+      const runtime = runtimes[index]!;
+      if (runtime.linkedStatusEffectIds.includes(statusEffectId)) {
+        return;
+      }
+      if (
+        runtime.archetype === "Dash" ||
+        runtime.archetype === "Projectile" ||
+        (serverTick > 0 && runtime.serverTick > 0 && runtime.serverTick !== serverTick) ||
+        runtime.remainingMs <= 0
+      ) {
+        continue;
+      }
+
+      this.linkStatusEffectToRuntime(runtime, statusEffectId, durationMs);
+      return;
+    }
+  }
+
+  private linkStatusEffectToRuntime(
+    runtime: SkillRuntime,
+    statusEffectId: string,
+    durationMs: number,
+  ): void {
+    if (!runtime.linkedStatusEffectIds.includes(statusEffectId)) {
+      runtime.linkedStatusEffectIds.push(statusEffectId);
+    }
+    runtime.authority = "StatusLinked";
+    if (
+      runtime.archetype === "Buff" ||
+      runtime.archetype === "Shield" ||
+      runtime.archetype === "Rescue"
+    ) {
+      runtime.durationMs = durationMs;
+      runtime.remainingMs = durationMs;
+      runtime.expiresAtMs = performance.now() + durationMs;
+    }
+  }
+
+  private unlinkApprovedStatusRuntime(statusEffectId: string): void {
+    const nowMs = performance.now();
+    for (const runtimes of this.world.skillRuntimes.values()) {
+      for (const runtime of runtimes) {
+        const linkIndex = runtime.linkedStatusEffectIds.indexOf(statusEffectId);
+        if (linkIndex < 0) {
+          continue;
+        }
+
+        runtime.linkedStatusEffectIds.splice(linkIndex, 1);
+        if (
+          runtime.linkedStatusEffectIds.length === 0 &&
+          (runtime.archetype === "Buff" ||
+            runtime.archetype === "Shield" ||
+            runtime.archetype === "Rescue")
+        ) {
+          runtime.expiresAtMs = nowMs;
+          runtime.remainingMs = 0;
+        }
+      }
+    }
+  }
+
+  private parseStatusEffectKind(value: unknown): StatusEffectKind | null {
+    switch (value) {
+      case "Slow":
+      case "Root":
+      case "Stun":
+      case "DamageAmp":
+      case "Shield":
+      case "HealOverTime":
+        return value;
+      default:
+        return null;
+    }
+  }
+
+  private handleProjectileEvent(payload: ProjectileEventPayload): void {
+    const projectileId =
+      typeof payload.projectileId === "number" && Number.isFinite(payload.projectileId)
+        ? payload.projectileId
+        : null;
+    const phase =
+      typeof payload.phase === "number" && Number.isFinite(payload.phase)
+        ? payload.phase
+        : null;
+    const x = typeof payload.x === "number" && Number.isFinite(payload.x) ? payload.x : null;
+    const z = typeof payload.y === "number" && Number.isFinite(payload.y) ? payload.y : null;
+    if (projectileId === null || phase === null || x === null || z === null) {
+      return;
+    }
+
+    const ownerPlayerId =
+      typeof payload.ownerPlayerId === "number" && Number.isFinite(payload.ownerPlayerId)
+        ? payload.ownerPlayerId
+        : 0;
+    const targetPlayerId =
+      typeof payload.targetPlayerId === "number" && Number.isFinite(payload.targetPlayerId)
+        ? payload.targetPlayerId
+        : 0;
+    const vx = typeof payload.vx === "number" && Number.isFinite(payload.vx) ? payload.vx : 0;
+    const vz = typeof payload.vy === "number" && Number.isFinite(payload.vy) ? payload.vy : 0;
+
+    if (phase === ProjectilePhase.Spawn) {
+      this.spawnAuthoritativeProjectile({
+        projectileId,
+        ownerPlayerId,
+        targetPlayerId,
+        x,
+        z,
+        vx,
+        vz,
+      });
+      return;
+    }
+
+    const entityId = this.projectileEntityByNetworkId.get(projectileId);
+    const transform = entityId === undefined ? null : this.world.transforms.get(entityId);
+    if (transform) {
+      transform.x = x;
+      transform.z = z;
+    }
+
+    this.removeAuthoritativeProjectile(projectileId);
+
+    if (phase === ProjectilePhase.Hit) {
+      const localPlayerInvolved =
+        ownerPlayerId === this.localNetworkPlayerId ||
+        targetPlayerId === this.localNetworkPlayerId;
+      if (!localPlayerInvolved) {
+        const direction = new THREE.Vector2(vx, vz);
+        if (direction.lengthSq() > 1e-6) {
+          direction.normalize();
+        }
+
+        const ownerTeamId = this.resolveProjectileTeam(ownerPlayerId);
+        const localTeamId =
+          this.world.teams.get(this.localPlayerEntityId)?.id ?? 0;
+        const impactKind: ImpactBurstKind =
+          ownerTeamId !== 0 && ownerTeamId === localTeamId
+            ? "outgoing"
+            : "incoming";
+        this.spawnImpactBurst(
+          x,
+          z,
+          false,
+          impactKind,
+          direction.lengthSq() > 1e-6 ? direction : null,
+          targetPlayerId > 0 ? targetPlayerId : null,
+        );
+      }
+    }
+  }
+
+  private spawnAuthoritativeProjectile(args: {
+    projectileId: number;
+    ownerPlayerId: number;
+    targetPlayerId: number;
+    x: number;
+    z: number;
+    vx: number;
+    vz: number;
+  }): void {
+    this.removeAuthoritativeProjectile(args.projectileId);
+
+    const entityId = this.world.createEntity();
+    const speed = Math.hypot(args.vx, args.vz);
+    const yaw = speed > 0.001 ? Math.atan2(args.vx, args.vz) : 0;
+    const teamId = this.resolveProjectileTeam(args.ownerPlayerId);
+    const color = getTeamTrailColor(teamId);
+    const geometry = new THREE.SphereGeometry(AUTHORITATIVE_PROJECTILE_RADIUS, 8, 8);
+    const material = new THREE.MeshBasicMaterial({ color });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.set(args.x, AUTHORITATIVE_PROJECTILE_HEIGHT, args.z);
+
+    this.sceneRoot.scene.add(mesh);
+    this.world.transforms.set(entityId, {
+      x: args.x,
+      y: AUTHORITATIVE_PROJECTILE_HEIGHT,
+      z: args.z,
+      yaw,
+    });
+    this.world.projectiles.set(entityId, {
+      networkProjectileId: args.projectileId,
+      ownerPlayerId: args.ownerPlayerId,
+      targetPlayerId: args.targetPlayerId,
+      velocityX: args.vx,
+      velocityZ: args.vz,
+      expiresAtMs: performance.now() + AUTHORITATIVE_PROJECTILE_TTL_MS,
+      active: true,
+    });
+    this.world.renderProxies.set(entityId, { object3d: mesh });
+    this.projectileEntityByNetworkId.set(args.projectileId, entityId);
+  }
+
+  private resolveProjectileTeam(ownerPlayerId: number): number {
+    const ownerEntityId = this.resolveEntityIdByNetworkPlayerId(ownerPlayerId);
+    return ownerEntityId === null
+      ? this.teamIdByNetworkPlayerId.get(ownerPlayerId) ?? 0
+      : this.world.teams.get(ownerEntityId)?.id ?? 0;
+  }
+
+  private cleanupExpiredAuthoritativeProjectiles(): void {
+    for (const [projectileId, entityId] of this.projectileEntityByNetworkId) {
+      const projectile = this.world.projectiles.get(entityId);
+      if (projectile?.active) {
+        continue;
+      }
+
+      this.removeAuthoritativeProjectile(projectileId);
+    }
+  }
+
+  private removeAuthoritativeProjectile(projectileId: number): void {
+    const entityId = this.projectileEntityByNetworkId.get(projectileId);
+    if (entityId === undefined) {
+      return;
+    }
+
+    this.projectileEntityByNetworkId.delete(projectileId);
+    const proxy = this.world.renderProxies.get(entityId);
+    if (proxy) {
+      this.sceneRoot.scene.remove(proxy.object3d);
+      this.disposeRenderProxy(proxy);
+    }
+
+    this.world.renderProxies.delete(entityId);
+    this.world.transforms.delete(entityId);
+    this.world.projectiles.delete(entityId);
+  }
+
+  private clearAuthoritativeProjectiles(): void {
+    for (const projectileId of [...this.projectileEntityByNetworkId.keys()]) {
+      this.removeAuthoritativeProjectile(projectileId);
+    }
+  }
+
   private onSnapshot(snapshot: WorldSnapshot): void {
     this.replay.logSnapshot(snapshot);
     this.netMetrics.onSnapshotTick(snapshot.serverTick);
     this.updateServerTimeOffset(snapshot.serverTimeMs);
+    if (typeof snapshot.serverTickRate === "number" && Number.isFinite(snapshot.serverTickRate)) {
+      this.serverTickRate = Math.max(1, Math.round(snapshot.serverTickRate));
+    }
+
+    for (const player of snapshot.players) {
+      this.teamIdByNetworkPlayerId.set(player.playerId, player.team === 2 ? 2 : 1);
+    }
+
+    const visiblePlayerIds = new Set(snapshot.players.map((player) => player.playerId));
+    for (const playerId of this.pendingStatusEffectEventsByPlayerId.keys()) {
+      if (playerId !== this.localNetworkPlayerId && !visiblePlayerIds.has(playerId)) {
+        this.pendingStatusEffectEventsByPlayerId.delete(playerId);
+      }
+    }
+    for (const playerId of this.pendingSkillCuesByPlayerId.keys()) {
+      if (playerId !== this.localNetworkPlayerId && !visiblePlayerIds.has(playerId)) {
+        this.pendingSkillCuesByPlayerId.delete(playerId);
+      }
+    }
+    for (const playerId of this.teamIdByNetworkPlayerId.keys()) {
+      if (
+        playerId !== this.localNetworkPlayerId &&
+        !visiblePlayerIds.has(playerId) &&
+        !this.remoteEntities.has(playerId)
+      ) {
+        this.teamIdByNetworkPlayerId.delete(playerId);
+        this.heroIdByNetworkPlayerId.delete(playerId);
+      }
+    }
 
     const local = snapshot.players.find((player) => player.playerId === this.localNetworkPlayerId);
     if (local) {
       this.applyReconciliation(local);
+      this.hasReceivedLocalPlayerState = true;
+      this.resolveInitialWorldWaitersIfReady();
     }
 
     this.commands.consumeAck(snapshot.ackSeq);
     this.interpolationBuffer.push(snapshot);
 
     useUiStore.getState().setHud({
-      reconnectState: "Connected",
       packetLossPct: this.netMetrics.packetLossPct,
     });
+  }
+
+  private resolveInitialWorldWaitersIfReady(): void {
+    if (
+      this.initialWorldReady ||
+      !this.hasReceivedWelcome ||
+      !this.hasReceivedBaseSnapshot ||
+      !this.hasReceivedLocalPlayerState ||
+      !this.hasSynchronizedSelectedProfile
+    ) {
+      return;
+    }
+
+    this.initialWorldReady = true;
+    for (const waiter of this.initialWorldWaiters) {
+      window.clearTimeout(waiter.timeoutId);
+      waiter.resolve();
+    }
+    this.initialWorldWaiters.clear();
+  }
+
+  private rejectInitialWorldWaiters(error: Error): void {
+    for (const waiter of this.initialWorldWaiters) {
+      window.clearTimeout(waiter.timeoutId);
+      waiter.reject(error);
+    }
+    this.initialWorldWaiters.clear();
   }
 
   private updateServerTimeOffset(serverTimeMs: number): void {
@@ -1091,29 +1812,57 @@ export class GameApp {
     const velocity = this.world.velocities.get(this.localPlayerEntityId);
     if (!transform || !velocity) return;
 
+    const authoritativeHeroId =
+      typeof authoritative.heroId === "string" && authoritative.heroId.trim().length > 0
+        ? normalizeHeroId(authoritative.heroId)
+        : this.heroIdByNetworkPlayerId.get(this.localNetworkPlayerId) ?? this.localHeroDef.id;
+    this.syncEntityHero(
+      this.localNetworkPlayerId,
+      this.localPlayerEntityId,
+      authoritativeHeroId,
+    );
+
+    const isFirstAuthoritativeSpawn = !this.hasAuthoritativeLocalSpawn;
     const pending = this.commands.pendingAfter(authoritative.lastProcessedInputSeq);
-    const reconciled = reconcileLocalState({
-      authoritative,
-      currentPredicted: {
-        position: { x: transform.x, y: transform.z },
-        velocity: { x: velocity.x, y: velocity.z },
-        lastSeq: authoritative.lastProcessedInputSeq,
-      },
-      pendingCommands: pending,
-      dtSeconds: this.config.simulation.fixedDtMs / 1000,
-      moveSpeed: this.simulationMoveSpeedMps,
-      hardSnapThreshold: this.config.simulation.hardSnapThreshold,
-      smoothCorrectionAlpha: this.config.simulation.smoothCorrectionAlpha,
-    });
+    const reconciled = isFirstAuthoritativeSpawn
+      ? {
+          position: { x: authoritative.x, y: authoritative.y },
+          velocity: { x: authoritative.vx, y: authoritative.vy },
+          lastSeq: authoritative.lastProcessedInputSeq,
+        }
+      : reconcileLocalState({
+          authoritative,
+          currentPredicted: {
+            position: { x: transform.x, y: transform.z },
+            velocity: { x: velocity.x, y: velocity.z },
+            lastSeq: authoritative.lastProcessedInputSeq,
+          },
+          pendingCommands: pending,
+          dtSeconds: this.config.simulation.fixedDtMs / 1000,
+          moveSpeed: this.simulationMoveSpeedMps,
+          hardSnapThreshold: this.config.simulation.hardSnapThreshold,
+          smoothCorrectionAlpha: this.config.simulation.smoothCorrectionAlpha,
+        });
 
     const correctionX = reconciled.position.x - transform.x;
     const correctionZ = reconciled.position.y - transform.z;
     const correctionSq = correctionX * correctionX + correctionZ * correctionZ;
 
     // Ignore tiny correction jitter from network quantization/timing drift.
-    if (correctionSq > 0.0004) {
+    if (isFirstAuthoritativeSpawn || correctionSq > 0.0004) {
       transform.x = reconciled.position.x;
       transform.z = reconciled.position.y;
+    }
+
+    if (isFirstAuthoritativeSpawn) {
+      const serverAim = this.resolvePlayerAim(authoritative);
+      transform.yaw = serverAim;
+      const renderProxy = this.world.renderProxies.get(this.localPlayerEntityId);
+      if (renderProxy) {
+        renderProxy.object3d.position.set(transform.x, transform.y, transform.z);
+        renderProxy.object3d.rotation.y = transform.yaw;
+      }
+      this.hasAuthoritativeLocalSpawn = true;
     }
 
     velocity.x = reconciled.velocity.x;
@@ -1131,7 +1880,11 @@ export class GameApp {
       }
       health.current = authoritative.hp;
       health.shield = authoritative.shield;
-      useUiStore.getState().setHud({ hp: health.current, maxHp: health.max });
+      useUiStore.getState().setHud({
+        hp: health.current,
+        maxHp: health.max,
+        shield: health.shield,
+      });
     }
 
     this.setEntityAliveState(this.localPlayerEntityId, authoritative.alive);
@@ -1148,21 +1901,93 @@ export class GameApp {
 
     if (weapon) {
       weapon.ammo = nextAmmo;
+      weapon.maxAmmo = nextMaxAmmo;
+      weapon.reloading = Boolean(authoritative.reloading);
+      weapon.reloadRemainingTicks = this.toServerTickValue(authoritative.reloadRemainingTicks);
+    }
+
+
+    const skillSet = this.world.skills.get(this.localPlayerEntityId);
+    if (skillSet) {
+      this.applyAuthoritativeSkillState(skillSet, authoritative);
     }
 
     const nextHeroName =
       typeof authoritative.heroName === "string" && authoritative.heroName.trim().length > 0
         ? authoritative.heroName
-        : typeof authoritative.heroId === "string"
-          ? pickHeroDef(authoritative.heroId).displayName
-          : this.localHeroDef.displayName;
+        : pickHeroDef(authoritativeHeroId).displayName;
 
     useUiStore.getState().setHud({
       heroName: nextHeroName,
       ammo: nextAmmo,
       maxAmmo: nextMaxAmmo,
       reloading: Boolean(authoritative.reloading),
+      reloadRemainingSeconds: this.toRemainingSeconds(
+        authoritative.reloadRemainingSeconds,
+        authoritative.reloadRemainingTicks,
+      ),
+      skillQCooldownSeconds: this.toRemainingSeconds(
+        authoritative.skillQCooldownSeconds,
+        authoritative.skillQCooldownTicks,
+      ),
+      skillECooldownSeconds: this.toRemainingSeconds(
+        authoritative.skillECooldownSeconds,
+        authoritative.skillECooldownTicks,
+      ),
+      skillRCooldownSeconds: this.toRemainingSeconds(
+        authoritative.skillRCooldownSeconds,
+        authoritative.skillRCooldownTicks,
+      ),
+      castingSkill: authoritative.castingSkill ?? 0,
+      castRemainingSeconds: this.toRemainingSeconds(
+        authoritative.castRemainingSeconds,
+        authoritative.castRemainingTicks,
+      ),
     });
+  }
+
+  private toServerTickValue(value: number | undefined): number {
+    return typeof value === "number" && Number.isFinite(value)
+      ? Math.max(0, Math.round(value))
+      : 0;
+  }
+
+  private toRemainingSeconds(seconds: number | undefined, ticks: number | undefined): number {
+    if (typeof seconds === "number" && Number.isFinite(seconds)) {
+      return Math.max(0, seconds);
+    }
+
+    return this.toServerTickValue(ticks) / this.serverTickRate;
+  }
+
+  private applyAuthoritativeSkillState(skillSet: SkillSet, player: NetworkPlayerState): void {
+    const nowMs = performance.now();
+    this.applyAuthoritativeSkillSlot(
+      skillSet.q,
+      this.toServerTickValue(player.skillQCooldownTicks),
+      nowMs,
+    );
+    this.applyAuthoritativeSkillSlot(
+      skillSet.e,
+      this.toServerTickValue(player.skillECooldownTicks),
+      nowMs,
+    );
+    this.applyAuthoritativeSkillSlot(
+      skillSet.r,
+      this.toServerTickValue(player.skillRCooldownTicks),
+      nowMs,
+    );
+    skillSet.castingSkill = player.castingSkill ?? 0;
+    skillSet.castRemainingTicks = this.toServerTickValue(player.castRemainingTicks);
+  }
+
+  private applyAuthoritativeSkillSlot(
+    slot: SkillSlotState,
+    remainingTicks: number,
+    nowMs: number,
+  ): void {
+    slot.cooldownRemainingTicks = remainingTicks;
+    slot.cooldownEndMs = nowMs + remainingTicks * (1000 / this.serverTickRate);
   }
 
   private isRemoteVisibleToLocal(player: NetworkPlayerState): boolean {
@@ -1228,18 +2053,17 @@ export class GameApp {
           : player.playerId === this.localNetworkPlayerId
             ? this.localHeroDef.id
             : this.heroIdByNetworkPlayerId.get(player.playerId) ?? DEFAULT_HERO_ID;
-      this.heroIdByNetworkPlayerId.set(player.playerId, resolvedHeroId);
-
       if (player.playerId === this.localNetworkPlayerId) continue;
       seenRemotePlayerIds.add(player.playerId);
 
-      const entityId = this.ensureRemoteEntity(player.playerId);
+      const entityId = this.ensureRemoteEntity(player, resolvedHeroId);
+      this.syncEntityHero(player.playerId, entityId, resolvedHeroId);
       const transform = this.world.transforms.get(entityId);
       if (!transform) continue;
 
       transform.x = player.x;
       transform.z = player.y;
-      transform.yaw = player.rot;
+      transform.yaw = this.resolvePlayerAim(player);
 
       const velocity = this.world.velocities.get(entityId);
       if (velocity) {
@@ -1280,6 +2104,25 @@ export class GameApp {
         this.snapshotAmmoByPlayerId.set(player.playerId, nextAmmo);
       }
 
+      const weapon = this.world.weapons.get(entityId);
+      if (weapon) {
+        weapon.ammo =
+          typeof player.ammo === "number" && Number.isFinite(player.ammo)
+            ? Math.max(0, Math.round(player.ammo))
+            : weapon.ammo;
+        weapon.maxAmmo =
+          typeof player.maxAmmo === "number" && Number.isFinite(player.maxAmmo)
+            ? Math.max(1, Math.round(player.maxAmmo))
+            : weapon.maxAmmo;
+        weapon.reloading = Boolean(player.reloading);
+        weapon.reloadRemainingTicks = this.toServerTickValue(player.reloadRemainingTicks);
+      }
+
+      const skillSet = this.world.skills.get(entityId);
+      if (skillSet) {
+        this.applyAuthoritativeSkillState(skillSet, player);
+      }
+
       const health = this.world.healths.get(entityId);
       if (health) {
         if (typeof player.maxHp === "number" && Number.isFinite(player.maxHp)) {
@@ -1298,23 +2141,55 @@ export class GameApp {
     }
   }
 
-  private ensureRemoteEntity(networkPlayerId: number): EntityId {
-    const existing = this.remoteEntities.get(networkPlayerId);
+  private resolvePlayerAim(player: NetworkPlayerState): number {
+    return typeof player.aimRadian === "number" && Number.isFinite(player.aimRadian)
+      ? player.aimRadian
+      : player.rot;
+  }
+
+  private ensureRemoteEntity(player: NetworkPlayerState, heroId: string): EntityId {
+    const existing = this.remoteEntities.get(player.playerId);
     if (existing) return existing;
 
     const entityId = this.createPlayerEntity({
-      networkPlayerId,
+      networkPlayerId: player.playerId,
       isLocal: false,
       color: 0xffb780,
+      heroId,
+      initialX: player.x,
+      initialZ: player.y,
+      initialYaw: this.resolvePlayerAim(player),
     });
 
-    this.remoteEntities.set(networkPlayerId, entityId);
-
-    this.loadHeroModel(entityId).catch((error) => {
-      console.error("[GameApp] Failed to load remote hero GLB:", error);
-    });
+    this.remoteEntities.set(player.playerId, entityId);
+    this.flushPendingRemoteEvents(player.playerId);
 
     return entityId;
+  }
+
+  private flushPendingRemoteEvents(networkPlayerId: number): void {
+    const skillCues = this.pendingSkillCuesByPlayerId.get(networkPlayerId);
+    if (skillCues) {
+      this.pendingSkillCuesByPlayerId.delete(networkPlayerId);
+      for (const cue of skillCues) {
+        this.spawnSkillCastCue(
+          networkPlayerId,
+          cue.skillSlot,
+          cue.worldX,
+          cue.worldZ,
+          cue.aimRadian,
+          cue.serverTick,
+        );
+      }
+    }
+
+    const statusEvents = this.pendingStatusEffectEventsByPlayerId.get(networkPlayerId);
+    if (statusEvents) {
+      this.pendingStatusEffectEventsByPlayerId.delete(networkPlayerId);
+      for (const payload of statusEvents) {
+        this.handleExplicitStatusEffectEvent(payload);
+      }
+    }
   }
 
   private removeRemoteEntity(networkPlayerId: number): void {
@@ -1325,7 +2200,13 @@ export class GameApp {
     this.remoteVisibilityByPlayerId.delete(networkPlayerId);
     this.remoteVisibilityHoldUntilByPlayerId.delete(networkPlayerId);
     this.heroIdByNetworkPlayerId.delete(networkPlayerId);
+    this.teamIdByNetworkPlayerId.delete(networkPlayerId);
     this.snapshotAmmoByPlayerId.delete(networkPlayerId);
+    this.pendingStatusEffectEventsByPlayerId.delete(networkPlayerId);
+    this.pendingSkillCuesByPlayerId.delete(networkPlayerId);
+    this.modelHeroIdByEntityId.delete(entityId);
+    this.modelLoadRevisionByEntityId.delete(entityId);
+    this.skillRuntimeRenderSystem.clearOwner(networkPlayerId);
 
     const proxy = this.world.renderProxies.get(entityId);
     if (proxy) {
@@ -1340,26 +2221,33 @@ export class GameApp {
     this.world.teams.delete(entityId);
     this.world.weapons.delete(entityId);
     this.world.skills.delete(entityId);
+    this.world.skillRuntimes.delete(entityId);
     this.world.statusEffects.delete(entityId);
+    this.world.projectiles.delete(entityId);
     this.aliveByEntityId.delete(entityId);
+    this.noClipFeedbackByEntityId.delete(entityId);
+    this.proxyBaseScaleByEntityId.delete(entityId);
   }
 
   private createPlayerEntity(args: {
     networkPlayerId: number;
     isLocal: boolean;
     color: number;
+    heroId: string;
+    initialX: number;
+    initialZ: number;
+    initialYaw: number;
   }): EntityId {
     const entityId = this.world.createEntity();
-
-    const spawnX = args.isLocal ? 0 : ((args.networkPlayerId % 4) - 1.5) * 1.2;
-    const spawnZ = args.isLocal ? 0 : 2.4;
-
-    const heroDef = args.isLocal
-      ? this.localHeroDef
-      : HERO_DEFS[(args.networkPlayerId - 1 + HERO_DEFS.length) % HERO_DEFS.length] ?? this.localHeroDef;
+    const heroDef = pickHeroDef(args.heroId);
     const weaponDef = WEAPON_DEF_BY_ID.get(heroDef.weaponId) ?? WEAPON_DEFS[0]!;
 
-    this.world.transforms.set(entityId, { x: spawnX, y: 0, z: spawnZ, yaw: 0 });
+    this.world.transforms.set(entityId, {
+      x: args.initialX,
+      y: 0,
+      z: args.initialZ,
+      yaw: args.initialYaw,
+    });
     this.world.velocities.set(entityId, { x: 0, y: 0, z: 0 });
     this.world.healths.set(entityId, {
       current: heroDef.baseHp,
@@ -1372,12 +2260,11 @@ export class GameApp {
       cooldownMs: Math.round(1000 / Math.max(1, weaponDef.fireRate)),
       lastFiredAtMs: -1,
       ammo: weaponDef.ammo,
+      maxAmmo: weaponDef.ammo,
+      reloading: false,
+      reloadRemainingTicks: 0,
     });
-    this.world.skills.set(entityId, {
-      qCooldownEndMs: 0,
-      eCooldownEndMs: 0,
-      rCooldownEndMs: 0,
-    });
+    this.world.skills.set(entityId, this.createSkillSet(heroDef));
     this.world.statusEffects.set(entityId, []);
 
     const fallbackVisual = this.createFallbackPlayerVisual(args.color, args.isLocal);
@@ -1385,6 +2272,7 @@ export class GameApp {
 
     this.world.renderProxies.set(entityId, { object3d: fallbackVisual });
     this.aliveByEntityId.set(entityId, true);
+    this.heroIdByNetworkPlayerId.set(args.networkPlayerId, heroDef.id);
 
     return entityId;
   }
@@ -1411,37 +2299,156 @@ export class GameApp {
     return root;
   }
 
-  private async loadHeroModel(entityId: EntityId): Promise<void> {
-    const gltf = await this.loadGltf(this.localHeroAssetPath);
-    const preparedModel = this.prepareModelRoot(gltf.scene);
+  private createSkillSet(heroDef: HeroDef): SkillSet {
+    const [qSkillId, eSkillId, rSkillId] = heroDef.skillIds;
 
-    if (entityId === this.localPlayerEntityId) {
-      this.addLocalMarker(preparedModel);
+    return {
+      q: this.createSkillSlot(qSkillId, "Q"),
+      e: this.createSkillSlot(eSkillId, "E"),
+      r: this.createSkillSlot(rSkillId, "R"),
+      castingSkill: 0,
+      castRemainingTicks: 0,
+    };
+  }
+
+  private createSkillSlot(skillId: string, slot: "Q" | "E" | "R"): SkillSlotState {
+    const skillDef = SKILL_DEF_BY_ID.get(skillId);
+    const definition = COMBAT_SKILL_DEF_BY_ID.get(skillId);
+    if (!definition) {
+      throw new Error(`[GameApp] Missing combat data for skill: ${skillId}`);
+    }
+    return {
+      skillId,
+      archetype: skillDef?.archetype ?? this.getFallbackSkillArchetype(slot),
+      definition,
+      cooldownEndMs: 0,
+      cooldownRemainingTicks: 0,
+    };
+  }
+
+  private getFallbackSkillArchetype(slot: "Q" | "E" | "R"): SkillArchetype {
+    switch (slot) {
+      case "Q":
+        return "Projectile";
+      case "E":
+        return "Zone";
+      case "R":
+        return "Buff";
+    }
+  }
+
+  private syncEntityHero(networkPlayerId: number, entityId: EntityId, heroId: string): void {
+    const normalizedHeroId = normalizeHeroId(heroId);
+    const previousHeroId = this.heroIdByNetworkPlayerId.get(networkPlayerId);
+    this.heroIdByNetworkPlayerId.set(networkPlayerId, normalizedHeroId);
+    if (previousHeroId === normalizedHeroId && this.modelHeroIdByEntityId.get(entityId) === normalizedHeroId) {
+      return;
     }
 
-    const animation = this.createAnimationState(gltf, preparedModel, this.localHeroAsset);
-    const alive = this.aliveByEntityId.get(entityId) ?? true;
-
-    if (animation) {
-      animation.isDead = !alive;
-      if (!alive && animation.dieClip && animation.activeClip !== animation.dieClip) {
-        animation.actions.get(animation.activeClip)?.stop();
-        animation.actions.get(animation.dieClip)?.reset().play();
-        animation.activeClip = animation.dieClip;
-      }
+    const heroDef = pickHeroDef(normalizedHeroId);
+    const weaponDef = WEAPON_DEF_BY_ID.get(heroDef.weaponId) ?? WEAPON_DEFS[0]!;
+    const weapon = this.world.weapons.get(entityId);
+    if (weapon) {
+      weapon.weaponId = weaponDef.id;
+      weapon.cooldownMs = Math.round(1000 / Math.max(1, weaponDef.fireRate));
+      weapon.maxAmmo = weaponDef.ammo;
+    }
+    this.world.skills.set(entityId, this.createSkillSet(heroDef));
+    if (previousHeroId !== normalizedHeroId) {
+      this.world.skillRuntimes.delete(entityId);
+      this.skillRuntimeRenderSystem.clearOwner(networkPlayerId);
     }
 
-    const previous = this.world.renderProxies.get(entityId);
-    if (previous) {
-      this.sceneRoot.scene.remove(previous.object3d);
-      this.disposeRenderProxy(previous);
-    }
-
-    this.sceneRoot.scene.add(preparedModel);
-    this.world.renderProxies.set(entityId, {
-      object3d: preparedModel,
-      ...(animation ? { animation } : {}),
+    this.loadHeroModel(entityId, normalizedHeroId).catch((error) => {
+      console.error(`[GameApp] Failed to load hero GLB (${normalizedHeroId}):`, error);
     });
+  }
+
+  private async loadHeroModel(entityId: EntityId, heroId: string): Promise<void> {
+    const normalizedHeroId = normalizeHeroId(heroId);
+    const heroAsset = pickHeroAsset(normalizedHeroId);
+    const previousModelHeroId = this.modelHeroIdByEntityId.get(entityId);
+    this.modelHeroIdByEntityId.set(entityId, normalizedHeroId);
+    const loadRevision = (this.modelLoadRevisionByEntityId.get(entityId) ?? 0) + 1;
+    this.modelLoadRevisionByEntityId.set(entityId, loadRevision);
+
+    let gltf: GLTF | null = null;
+    let preparedModel: THREE.Group | null = null;
+    try {
+      gltf = await this.loadGltf(heroAsset.gltfPath);
+      preparedModel = this.prepareModelRoot(gltf.scene);
+      if (this.modelLoadRevisionByEntityId.get(entityId) !== loadRevision) {
+        this.disposeObjectResources(preparedModel);
+        return;
+      }
+
+      if (!this.world.transforms.has(entityId)) {
+        this.disposeObjectResources(preparedModel);
+        return;
+      }
+
+      if (entityId === this.localPlayerEntityId) {
+        this.addLocalMarker(preparedModel);
+      }
+
+      const animation = this.createAnimationState(gltf, preparedModel, heroAsset);
+      const alive = this.aliveByEntityId.get(entityId) ?? true;
+
+      if (animation) {
+        animation.isDead = !alive;
+        if (!alive && animation.dieClip && animation.activeClip !== animation.dieClip) {
+          animation.actions.get(animation.activeClip)?.stop();
+          animation.actions.get(animation.dieClip)?.reset().play();
+          animation.activeClip = animation.dieClip;
+        }
+      }
+
+      const previous = this.world.renderProxies.get(entityId);
+      if (previous) {
+        this.sceneRoot.scene.remove(previous.object3d);
+        this.disposeRenderProxy(previous);
+      }
+
+      this.sceneRoot.scene.add(preparedModel);
+      this.world.renderProxies.set(entityId, {
+        object3d: preparedModel,
+        ...(animation ? { animation } : {}),
+      });
+      this.proxyBaseScaleByEntityId.delete(entityId);
+    } catch (error) {
+      if (preparedModel) {
+        this.disposeObjectResources(preparedModel);
+      } else if (gltf) {
+        this.disposeObjectResources(gltf.scene);
+      }
+
+      if (this.modelLoadRevisionByEntityId.get(entityId) === loadRevision) {
+        if (previousModelHeroId === undefined) {
+          this.modelHeroIdByEntityId.delete(entityId);
+        } else {
+          this.modelHeroIdByEntityId.set(entityId, previousModelHeroId);
+        }
+
+        // Keep revisions monotonic so an older async load can never match a retry.
+        this.modelLoadRevisionByEntityId.set(entityId, loadRevision + 1);
+      }
+      throw error;
+    }
+  }
+
+  private invalidatePendingHeroModelLoads(): void {
+    for (const [entityId, revision] of this.modelLoadRevisionByEntityId) {
+      this.modelLoadRevisionByEntityId.set(entityId, revision + 1);
+    }
+    this.modelHeroIdByEntityId.clear();
+  }
+
+  private clearRenderProxies(): void {
+    for (const [entityId, proxy] of this.world.renderProxies) {
+      this.sceneRoot.scene.remove(proxy.object3d);
+      this.disposeRenderProxy(proxy);
+      this.world.renderProxies.delete(entityId);
+    }
   }
 
   private loadGltf(path: string): Promise<GLTF> {
@@ -1922,7 +2929,8 @@ export class GameApp {
     const weaponDef = WEAPON_DEF_BY_ID.get(heroDef.weaponId) ?? WEAPON_DEFS[0]!;
     const range = Math.max(4, weaponDef.range);
 
-    const dir = new THREE.Vector2(Math.sin(player.rot), Math.cos(player.rot));
+    const aimRadian = this.resolvePlayerAim(player);
+    const dir = new THREE.Vector2(Math.sin(aimRadian), Math.cos(aimRadian));
     if (dir.lengthSq() < 1e-6) {
       dir.set(0, 1);
     }
@@ -1940,6 +2948,8 @@ export class GameApp {
     skillSlot: "Q" | "E" | "R",
     worldX: number,
     worldZ: number,
+    approvedAimRadian: number | null = null,
+    serverTick = 0,
   ): void {
     const attackerEntityId = this.resolveEntityIdByNetworkPlayerId(attackerPlayerId);
     if (attackerEntityId === null) {
@@ -1952,8 +2962,16 @@ export class GameApp {
       (attackerPlayerId === this.localNetworkPlayerId ? 1 : 2);
 
     const direction = new THREE.Vector2(
-      transform ? Math.sin(transform.yaw) : 0,
-      transform ? Math.cos(transform.yaw) : 1,
+      approvedAimRadian !== null
+        ? Math.sin(approvedAimRadian)
+        : transform
+          ? Math.sin(transform.yaw)
+          : 0,
+      approvedAimRadian !== null
+        ? Math.cos(approvedAimRadian)
+        : transform
+          ? Math.cos(transform.yaw)
+          : 1,
     );
     if (direction.lengthSq() < 1e-6) {
       direction.set(0, 1);
@@ -1965,6 +2983,24 @@ export class GameApp {
       (isLocalCaster ? this.localHeroDef.id : null);
     const impactKind: ImpactBurstKind = isLocalCaster ? "outgoing" : "incoming";
     const origin = new THREE.Vector3(worldX, BULLET_TRAIL_MUZZLE_HEIGHT, worldZ);
+    const skillSlotState = this.resolveSkillSlotState(attackerEntityId, skillSlot);
+    const skillArchetype = skillSlotState?.archetype ?? this.getFallbackSkillArchetype(skillSlot);
+    if (skillSlotState) {
+      const aimRadian = Math.atan2(direction.x, direction.y);
+      const runtimes = this.world.skillRuntimes.get(attackerEntityId) ?? [];
+      const runtime = createApprovedSkillRuntime({
+        definition: skillSlotState.definition,
+        ownerPlayerId: attackerPlayerId,
+        serverTick,
+        approvedAtMs: performance.now(),
+        originX: worldX,
+        originZ: worldZ,
+        aimRadian,
+      });
+      this.linkExistingStatusEffectsToRuntime(runtime);
+      runtimes.push(runtime);
+      this.world.skillRuntimes.set(attackerEntityId, runtimes);
+    }
 
     if (attackerHeroId === "coral_cat") {
       const coralColor = skillSlot === "R" ? 0x8cc8ff : 0x80e8ff;
@@ -2017,31 +3053,99 @@ export class GameApp {
       return;
     }
 
-    const fallbackColor =
-      skillSlot === "E"
-        ? teamId === 1
-          ? 0x8cffb2
-          : 0xff9aa2
-        : skillSlot === "R"
-          ? teamId === 1
-            ? 0x7db8ff
-            : 0xffb47d
-          : getTeamTrailColor(teamId);
+    const fallbackColor = getTeamTrailColor(teamId);
+    this.spawnSkillArchetypeCue(
+      skillArchetype,
+      origin,
+      direction,
+      fallbackColor,
+      impactKind,
+      attackerPlayerId,
+    );
+  }
 
-    if (skillSlot === "Q") {
-      this.spawnMuzzleFlash(origin, direction, fallbackColor);
-      this.spawnBulletTrail(origin, direction, 7.8, fallbackColor);
-      this.spawnImpactBurst(worldX, worldZ, false, impactKind, direction, attackerPlayerId);
+  private resolveSkillSlotState(
+    entityId: EntityId,
+    skillSlot: "Q" | "E" | "R",
+  ): SkillSlotState | null {
+    const skillSet = this.world.skills.get(entityId);
+    if (!skillSet) {
+      return null;
+    }
+
+    switch (skillSlot) {
+      case "Q":
+        return skillSet.q;
+      case "E":
+        return skillSet.e;
+      case "R":
+        return skillSet.r;
+    }
+  }
+
+  private linkExistingStatusEffectsToRuntime(runtime: SkillRuntime): void {
+    if (runtime.archetype === "Dash" || runtime.archetype === "Projectile") {
       return;
     }
 
-    if (skillSlot === "E") {
-      this.spawnImpactBurst(worldX, worldZ, false, impactKind, direction, attackerPlayerId);
-      return;
-    }
+    for (const effects of this.world.statusEffects.values()) {
+      for (const effect of effects) {
+        if (
+          effect.sourcePlayerId !== runtime.ownerPlayerId ||
+          (runtime.serverTick > 0 && effect.serverTick > 0 && effect.serverTick !== runtime.serverTick)
+        ) {
+          continue;
+        }
 
-    this.spawnMuzzleFlash(origin, direction, fallbackColor);
-    this.spawnImpactBurst(worldX, worldZ, true, impactKind, direction, attackerPlayerId);
+        this.linkStatusEffectToRuntime(runtime, effect.id, effect.remainingMs);
+      }
+    }
+  }
+
+  private spawnSkillArchetypeCue(
+    archetype: SkillArchetype,
+    origin: THREE.Vector3,
+    direction: THREE.Vector2,
+    color: number,
+    impactKind: ImpactBurstKind,
+    attackerPlayerId: number,
+  ): void {
+    const worldX = origin.x;
+    const worldZ = origin.z;
+
+    switch (archetype) {
+      case "Projectile":
+        this.spawnMuzzleFlash(origin, direction, color);
+        this.spawnBulletTrail(origin, direction, 8.5, color);
+        this.spawnImpactBurst(worldX, worldZ, false, impactKind, direction, attackerPlayerId);
+        return;
+      case "Dash":
+        this.spawnImpactBurst(worldX, worldZ, false, impactKind, direction, attackerPlayerId);
+        this.spawnImpactBurst(
+          worldX + direction.x * 1.1,
+          worldZ + direction.y * 1.1,
+          false,
+          impactKind,
+          direction,
+          attackerPlayerId,
+        );
+        return;
+      case "Channel":
+        this.spawnMuzzleFlash(origin, direction, color);
+        this.spawnBulletTrail(origin, direction, 6.5, color);
+        return;
+      case "Zone":
+        this.spawnImpactBurst(worldX, worldZ, false, impactKind, null, attackerPlayerId);
+        this.spawnImpactBurst(worldX, worldZ, true, impactKind, null, attackerPlayerId);
+        return;
+      case "Shield":
+      case "Rescue":
+        this.spawnImpactBurst(worldX, worldZ, true, impactKind, null, attackerPlayerId);
+        return;
+      case "Buff":
+        this.spawnMuzzleFlash(origin, direction, color);
+        this.spawnImpactBurst(worldX, worldZ, true, impactKind, direction, attackerPlayerId);
+    }
   }
 
   private spawnMuzzleFlash(origin: THREE.Vector3, directionXZ: THREE.Vector2, flashColor: number): void {
@@ -2954,18 +4058,70 @@ export class GameApp {
   }
 
   private disposeObjectResources(object3d: THREE.Object3D): void {
+    const disposedGeometries = new Set<THREE.BufferGeometry>();
+    const disposedMaterials = new Set<THREE.Material>();
+    const disposedTextures = new Set<THREE.Texture>();
+    const disposedSkeletons = new Set<THREE.Skeleton>();
+
     object3d.traverse((node) => {
       const maybeMesh = node as THREE.Mesh;
       if (!maybeMesh.isMesh) return;
 
-      maybeMesh.geometry.dispose();
-      if (Array.isArray(maybeMesh.material)) {
-        for (const material of maybeMesh.material) {
-          material.dispose();
-        }
-      } else {
-        maybeMesh.material.dispose();
+      if (!disposedGeometries.has(maybeMesh.geometry)) {
+        disposedGeometries.add(maybeMesh.geometry);
+        maybeMesh.geometry.dispose();
+      }
+
+      const materials = Array.isArray(maybeMesh.material)
+        ? maybeMesh.material
+        : [maybeMesh.material];
+      for (const material of materials) {
+        if (disposedMaterials.has(material)) continue;
+        disposedMaterials.add(material);
+        this.disposeMaterialTextures(material, disposedTextures);
+        material.dispose();
+      }
+
+      const maybeSkinnedMesh = node as THREE.SkinnedMesh;
+      if (maybeSkinnedMesh.isSkinnedMesh && !disposedSkeletons.has(maybeSkinnedMesh.skeleton)) {
+        disposedSkeletons.add(maybeSkinnedMesh.skeleton);
+        maybeSkinnedMesh.skeleton.dispose();
       }
     });
+  }
+
+  private disposeMaterialTextures(
+    material: THREE.Material,
+    disposedTextures: Set<THREE.Texture>,
+  ): void {
+    const disposeTextureValue = (value: unknown): void => {
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          disposeTextureValue(item);
+        }
+        return;
+      }
+
+      const texture = value as THREE.Texture | null | undefined;
+      if (!texture?.isTexture || disposedTextures.has(texture)) {
+        return;
+      }
+
+      disposedTextures.add(texture);
+      texture.dispose();
+    };
+
+    for (const value of Object.values(material)) {
+      disposeTextureValue(value);
+    }
+
+    const shaderMaterial = material as THREE.ShaderMaterial;
+    if (!shaderMaterial.isShaderMaterial) {
+      return;
+    }
+
+    for (const uniform of Object.values(shaderMaterial.uniforms)) {
+      disposeTextureValue(uniform.value);
+    }
   }
 }

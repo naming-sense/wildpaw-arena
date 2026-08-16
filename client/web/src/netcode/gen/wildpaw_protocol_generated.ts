@@ -16,5 +16,8 @@ export { SelectProfilePayload } from './wildpaw/protocol/select-profile-payload'
 export { SkillSlot } from './wildpaw/protocol/skill-slot';
 export { SnapshotKind } from './wildpaw/protocol/snapshot-kind';
 export { SnapshotPayload } from './wildpaw/protocol/snapshot-payload';
+export { StatusEffectEventPayload } from './wildpaw/protocol/status-effect-event-payload';
+export { StatusEffectKind } from './wildpaw/protocol/status-effect-kind';
+export { StatusEffectPhase } from './wildpaw/protocol/status-effect-phase';
 export { Vec2 } from './wildpaw/protocol/vec2';
 export { WelcomePayload } from './wildpaw/protocol/welcome-payload';

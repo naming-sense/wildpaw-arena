@@ -30,7 +30,7 @@
 ### 제외(아직 미구현)
 - Gateway/Matchmaker 실코드(인증/매칭/입장 토큰 검증)
 - TLS, 실서비스 보안(서명/암호화/ratelimit/ban)
-- lag compensation(리와인드), LOS 판정, 장애물/맵 충돌
+- lag compensation(리와인드)
 - deterministic physics / 리플레이 / persistence(저장)
 
 ### 0-1) 용어 정리 (헷갈림 방지)
@@ -73,7 +73,7 @@ cmake --build build -j
 
 ### 2-2. 실행
 ```bash
-./build/room/wildpaw-room [port] [io_threads] [tick_rate] [metrics_port] [rules_json_path] [team_size]
+./build/room/wildpaw-room [port] [io_threads] [tick_rate] [metrics_port] [rules_json_path] [team_size] [map_data_root]
 
 # 예시 (3:3)
 ./build/room/wildpaw-room 7001 4 30 9100 room/config/combat_rules.json 3
@@ -123,13 +123,15 @@ Envelope 필드:
 ### 4-3. S2C payload
 - `WelcomePayload(player_id, server_tick_rate, server_tick)`
 - `SnapshotPayload(kind=Base|Delta, server_tick, server_time_ms, players[])`
-- `CombatEventPayload`
+- `CombatEventPayload` (`aim_radian`은 스킬 실행에 사용한 승인 조준각)
 - `ProjectileEventPayload`
+- `StatusEffectEventPayload` (`effect_id`, source/target, kind, apply/remove, duration)
 - `EventPayload(name, message)`
 
 ### 4-4. Snapshot PlayerState(서버→클라 계약)
 `SnapshotPayload.players[].PlayerState`는 아래 상태를 포함한다.
-- 이동/체력: `position`, `velocity`, `hp`, `alive`, `last_processed_input_seq`
+- 이동/생존: `position`, `velocity`, `hp`, `shield`, `alive`, `last_processed_input_seq`
+- 선택·조준: `hero_id`, `aim_radian`
 - 무기: `ammo`, `max_ammo`, `is_reloading`, `reload_remaining_ticks`
 - 스킬: `skill_q/e/r_cooldown_ticks`
 - 캐스팅: `casting_skill`, `cast_remaining_ticks`
@@ -407,7 +409,9 @@ npx tsx ./scripts/room-capacity-smoke.ts ws://127.0.0.1:7001 7 3000
 ## 16) Known gaps / 다음 TODO(구현 관점)
 
 - lag compensation(리와인드) 미구현
-- 장애물/맵 충돌/LOS 미구현
+- objective, score, respawn, match end 규칙 미구현
+- Slow 이동 감속, Stun 이동·사격·스킬 잠금과 cast 취소, Shield 피해 선흡수·잔량 snapshot 구현
+- Root, DamageAmp, HealOverTime 등 추가 상태이상과 6히어로 전용 스킬 판정은 확장 필요
 - 입력은 player별 최신 프레임 기반(현재) → 향후 `popUpTo()` 기반 리플레이/정밀 적용 가능
 - 보안(TLS/JWT/ratelimit) 및 Gateway 검증 미구현
 - interest filtering의 viewer별 visible set 계산 최적화(현재는 매 tick viewer마다 계산)

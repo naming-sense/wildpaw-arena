@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -35,16 +36,33 @@ enum class ProjectilePhase : std::uint8_t {
   Despawn,
 };
 
+enum class StatusEffectKind : std::uint8_t {
+  None = 0,
+  Slow,
+  Stun,
+  Shield,
+};
+
+enum class StatusEffectPhase : std::uint8_t {
+  Apply = 0,
+  Remove,
+};
+
 struct PlayerState {
   std::uint32_t playerId{0};
   Vec2 position{};
   Vec2 velocity{};
+  float mAimRadian{0.0f};
   std::uint16_t hp{100};
+  std::uint16_t mShield{0};
   bool alive{true};
   std::uint32_t lastProcessedInputSeq{0};
 
   std::uint8_t teamId{0};
   std::uint16_t teamSlot{0};
+
+  // 클라이언트가 선택한 실제 히어로 id(스냅샷 전송용)
+  std::string mHeroId{"iris_wolf"};
 
   // 플레이어 룰 프로필 id(서버 내부용)
   std::string profileId{"ranger"};
@@ -72,6 +90,7 @@ struct CombatEvent {
   bool critical{false};
   std::uint32_t serverTick{0};
   Vec2 position{};
+  float mAimRadian{0.0f};
 };
 
 struct ProjectileEvent {
@@ -84,9 +103,21 @@ struct ProjectileEvent {
   Vec2 velocity{};
 };
 
+struct StatusEffectEvent {
+  std::uint32_t mEffectId{0};
+  std::uint32_t mSourcePlayerId{0};
+  std::uint32_t mTargetPlayerId{0};
+  StatusEffectKind mKind{StatusEffectKind::None};
+  StatusEffectPhase mPhase{StatusEffectPhase::Apply};
+  std::uint32_t mDurationTicks{0};
+  float mMagnitude{0.0f};
+  std::uint32_t mServerTick{0};
+};
+
 struct WorldSnapshot {
   std::uint32_t serverTick{0};
   std::vector<PlayerState> players;
+  std::vector<StatusEffectEvent> mActiveStatusEffects;
 };
 
 struct StaticCollider {
@@ -97,6 +128,13 @@ struct StaticCollider {
   bool blocksMovement{false};
   bool blocksProjectile{false};
   bool blocksLineOfSight{false};
+};
+
+struct TeamSpawnPoint {
+  std::uint8_t mTeamId{0};
+  Vec2 mPosition{};
+  float mRadius{0.0f};
+  std::uint32_t mPhase{0};
 };
 
 class RoomSimulation {
@@ -112,12 +150,14 @@ class RoomSimulation {
 
   void setMapBounds(float minX, float maxX, float minY, float maxY);
   void setStaticColliders(std::vector<StaticCollider> colliders);
+  void setTeamSpawnPoints(std::vector<TeamSpawnPoint> spawnPoints);
 
   WorldSnapshot tick();
   [[nodiscard]] WorldSnapshot snapshot() const;
 
   std::vector<CombatEvent> drainCombatEvents();
   std::vector<ProjectileEvent> drainProjectileEvents();
+  std::vector<StatusEffectEvent> drainStatusEffectEvents();
 
   [[nodiscard]] std::uint32_t tickRate() const { return tickRate_; }
   [[nodiscard]] std::uint32_t currentTick() const { return tick_; }
@@ -130,20 +170,62 @@ class RoomSimulation {
     float aimRadian{0.0f};
   };
 
+  struct PendingProjectile {
+    std::uint32_t mProjectileId{0};
+    std::uint32_t mOwnerPlayerId{0};
+    std::uint32_t mTargetPlayerId{0};
+    ProjectilePhase mTerminalPhase{ProjectilePhase::Despawn};
+    std::uint32_t mTerminalTick{0};
+    Vec2 mOriginPosition{};
+    Vec2 mTerminalPosition{};
+    Vec2 mVelocity{};
+    std::uint8_t mOwnerTeamId{0};
+    std::uint16_t mDamage{0};
+    bool mCritical{false};
+  };
+
+  struct PendingStatusEffect {
+    std::uint32_t mEffectId{0};
+    std::uint32_t mSourcePlayerId{0};
+    std::uint32_t mTargetPlayerId{0};
+    StatusEffectKind mKind{StatusEffectKind::None};
+    std::uint32_t mExpireTick{0};
+    float mMagnitude{0.0f};
+  };
+
   void collectInputs();
   void applyMovement();
+  void applyDamageFromSource(std::uint32_t sourcePlayerId,
+                             std::uint8_t sourceTeamId,
+                             PlayerState& target,
+                             std::uint16_t damage,
+                             SkillSlot skillSlot,
+                             bool critical);
+  [[nodiscard]] bool hasActiveStatusEffect(
+      std::uint32_t playerId, StatusEffectKind kind) const;
+  [[nodiscard]] float activeStatusEffectMagnitude(
+      std::uint32_t playerId, StatusEffectKind kind) const;
+  void cancelPendingSkillCasts(std::uint32_t playerId);
+  void removeStatusEffectsForPlayer(std::uint32_t playerId,
+                                    bool emitRemoveEvents);
+  void processProjectileLifecycle();
+  void processStatusEffectLifecycle();
   void processCombat();
   WorldSnapshot collectSnapshot() const;
+  [[nodiscard]] std::optional<Vec2> resolveTeamSpawn(
+      std::uint8_t teamId, std::uint16_t teamSlot) const;
 
   std::uint32_t tickRate_{30};
   std::uint32_t tick_{0};
   std::uint32_t nextProjectileId_{1};
+  std::uint32_t mNextStatusEffectId{1};
 
   float worldMinX_{-50.0f};
   float worldMaxX_{50.0f};
   float worldMinY_{-50.0f};
   float worldMaxY_{50.0f};
   std::vector<StaticCollider> staticColliders_;
+  std::vector<TeamSpawnPoint> mTeamSpawnPoints;
 
   InputBuffer inputBuffer_;
   std::unordered_map<std::uint32_t, PlayerState> players_;
@@ -152,8 +234,11 @@ class RoomSimulation {
   std::unordered_map<std::uint32_t, std::uint32_t> lastFireTick_;
 
   std::vector<PendingSkillCast> pendingSkillCasts_;
+  std::vector<PendingProjectile> mPendingProjectiles;
+  std::vector<PendingStatusEffect> mPendingStatusEffects;
   std::vector<CombatEvent> pendingCombatEvents_;
   std::vector<ProjectileEvent> pendingProjectileEvents_;
+  std::vector<StatusEffectEvent> mPendingStatusEffectEvents;
 };
 
 }  // namespace wildpaw::room

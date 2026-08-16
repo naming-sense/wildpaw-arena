@@ -92,6 +92,40 @@ export function validateCombatData(tables: CombatDataTables): CombatDataValidati
     validateSkill(skill, i, issues);
   }
 
+  const skillById = new Map(tables.skills.map((skill) => [skill.id, skill]));
+  for (let i = 0; i < tables.heroes.length; i += 1) {
+    const hero = tables.heroes[i]!;
+    if (!weaponIds.has(hero.weaponId)) {
+      issues.push({
+        path: `heroes[${i}].weaponId`,
+        message: `unknown weapon id: ${hero.weaponId}`,
+      });
+    }
+
+    const skillRefs = [
+      ["skillQId", hero.skillQId, "Q"],
+      ["skillEId", hero.skillEId, "E"],
+      ["skillRId", hero.skillRId, "R"],
+    ] as const;
+    for (const [field, skillId, expectedSlot] of skillRefs) {
+      const skill = skillById.get(skillId);
+      if (!skill) {
+        issues.push({
+          path: `heroes[${i}].${field}`,
+          message: `unknown skill id: ${skillId}`,
+        });
+        continue;
+      }
+
+      if (skill.slot !== expectedSlot) {
+        issues.push({
+          path: `heroes[${i}].${field}`,
+          message: `skill slot mismatch (${expectedSlot} expected, ${skill.slot} found)`,
+        });
+      }
+    }
+  }
+
   return {
     ok: issues.length === 0,
     issues,

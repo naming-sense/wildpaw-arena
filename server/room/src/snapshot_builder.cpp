@@ -9,6 +9,7 @@ namespace {
 bool changedEnough(const PlayerState& a, const PlayerState& b) {
   constexpr float kPosEpsilon = 0.001f;
   constexpr float kVelEpsilon = 0.001f;
+  constexpr float kTwoPi = 6.28318530717958647692f;
 
   auto diff2 = [](float x, float y) {
     const float d = x - y;
@@ -17,9 +18,11 @@ bool changedEnough(const PlayerState& a, const PlayerState& b) {
 
   const float posDistSq = diff2(a.position.x, b.position.x) + diff2(a.position.y, b.position.y);
   const float velDistSq = diff2(a.velocity.x, b.velocity.x) + diff2(a.velocity.y, b.velocity.y);
+  const float aimDelta = std::abs(std::remainder(a.mAimRadian - b.mAimRadian, kTwoPi));
 
   return posDistSq > kPosEpsilon || velDistSq > kVelEpsilon ||
-         a.hp != b.hp || a.alive != b.alive ||
+         aimDelta > kPosEpsilon ||
+         a.hp != b.hp || a.mShield != b.mShield || a.alive != b.alive ||
          a.lastProcessedInputSeq != b.lastProcessedInputSeq ||
          a.ammo != b.ammo || a.maxAmmo != b.maxAmmo ||
          a.reloading != b.reloading ||
@@ -28,7 +31,8 @@ bool changedEnough(const PlayerState& a, const PlayerState& b) {
          a.skillECooldownTicks != b.skillECooldownTicks ||
          a.skillRCooldownTicks != b.skillRCooldownTicks ||
          a.castingSkill != b.castingSkill ||
-         a.castRemainingTicks != b.castRemainingTicks;
+         a.castRemainingTicks != b.castRemainingTicks ||
+         a.mHeroId != b.mHeroId;
 }
 }  // namespace
 

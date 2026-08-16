@@ -17,6 +17,12 @@ export class CommandBuffer {
   private readonly pending = new RingBuffer<InputCommand>(256);
   private lastSent: InputCommand | null = null;
 
+  reset(): void {
+    this.nextSeq = 1;
+    this.pending.retain(() => false);
+    this.lastSent = null;
+  }
+
   create(nowMs: number, raw: RawInputState, aim: AimTarget): InputCommand {
     return {
       seq: this.nextSeq++,

@@ -1,9 +1,11 @@
 import type {
   CombatDataTables,
   HeroDefinition,
+  HeroId,
   SkillDefinition,
   WeaponDefinition,
 } from "../combat/combatTypes";
+import { SKILL_DEFS_BY_HERO } from "../skill/skillDefs";
 import { validateCombatData } from "./combatDataValidator";
 
 export class CombatDataValidationError extends Error {
@@ -27,6 +29,7 @@ function inferWeaponClass(rawClass: unknown): WeaponDefinition["class"] {
 function toHeroDefinition(raw: any): HeroDefinition {
   const heroId = String(raw?.id ?? "coral_cat");
   const normalizedId = heroId === "whitecat_commando" ? "coral_cat" : heroId;
+  const canonicalSkills = SKILL_DEFS_BY_HERO[normalizedId as HeroId];
 
   return {
     id: normalizedId as HeroDefinition["id"],
@@ -39,9 +42,9 @@ function toHeroDefinition(raw: any): HeroDefinition {
     },
     weaponId: normalizedId,
     passiveId: `${normalizedId}_passive`,
-    skillQId: `${normalizedId}_q`,
-    skillEId: `${normalizedId}_e`,
-    skillRId: `${normalizedId}_r`,
+    skillQId: canonicalSkills?.[0].id ?? `${normalizedId}_q`,
+    skillEId: canonicalSkills?.[1].id ?? `${normalizedId}_e`,
+    skillRId: canonicalSkills?.[2].id ?? `${normalizedId}_r`,
   };
 }
 
@@ -69,6 +72,7 @@ function toWeaponDefinition(raw: any, heroId: string): WeaponDefinition {
 
 function toSkillDefinition(raw: any, heroId: string): SkillDefinition[] {
   const skillRows: SkillDefinition[] = [];
+  const canonicalSkills = SKILL_DEFS_BY_HERO[heroId as HeroId];
 
   const slots: Array<["Q" | "E" | "R", "q" | "e" | "r"]> = [
     ["Q", "q"],
@@ -76,9 +80,11 @@ function toSkillDefinition(raw: any, heroId: string): SkillDefinition[] {
     ["R", "r"],
   ];
 
-  for (const [slot, key] of slots) {
+  for (let index = 0; index < slots.length; index += 1) {
+    const [slot, key] = slots[index]!;
     const skill = raw?.skills?.[key];
     if (!skill) continue;
+    const canonicalSkill = canonicalSkills?.[index];
 
     const params: Record<string, number | boolean | string> = {};
     for (const [paramKey, paramValue] of Object.entries(skill)) {
@@ -96,9 +102,9 @@ function toSkillDefinition(raw: any, heroId: string): SkillDefinition[] {
     }
 
     skillRows.push({
-      id: `${heroId}_${key}`,
+      id: canonicalSkill?.id ?? `${heroId}_${key}`,
       slot,
-      archetype: "Projectile",
+      archetype: canonicalSkill?.archetype ?? "Projectile",
       cooldownMs: Number(skill.cooldownMs ?? 1000),
       castTimeMs: Number(skill.castTimeMs ?? skill.castTime ?? 0),
       params,

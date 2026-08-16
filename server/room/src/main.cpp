@@ -207,6 +207,17 @@ bool shouldSendProjectileEvent(
   return false;
 }
 
+bool shouldSendStatusEffectEvent(
+    std::uint32_t viewerId,
+    const std::unordered_set<std::uint32_t>& visibleIds,
+    const wildpaw::room::StatusEffectEvent& event) {
+  if (viewerId == event.mSourcePlayerId || viewerId == event.mTargetPlayerId) {
+    return true;
+  }
+
+  return visibleIds.contains(event.mTargetPlayerId);
+}
+
 std::uint32_t fnv1a32(std::string_view input) {
   std::uint32_t hash = 2166136261u;
   for (const unsigned char ch : input) {
@@ -388,7 +399,21 @@ struct LoadedMapRuntimeConfig {
   float minY{-50.0f};
   float maxY{50.0f};
   std::vector<wildpaw::room::StaticCollider> colliders;
+  std::vector<wildpaw::room::TeamSpawnPoint> mTeamSpawnPoints;
 };
+
+std::uint8_t parseSpawnTeamId(std::string_view rawTeamId) {
+  const auto teamId = toLowerAscii(std::string{rawTeamId});
+  if (teamId == "a" || teamId == "1" || teamId == "team_a" ||
+      teamId == "team1") {
+    return 1;
+  }
+  if (teamId == "b" || teamId == "2" || teamId == "team_b" ||
+      teamId == "team2") {
+    return 2;
+  }
+  return 0;
+}
 
 std::optional<LoadedMapRuntimeConfig> loadMapRuntimeConfig(
     const std::filesystem::path& mapDataRoot,
@@ -412,6 +437,26 @@ std::optional<LoadedMapRuntimeConfig> loadMapRuntimeConfig(
     config.maxX = originX + width * 0.5f;
     config.minY = originY - height * 0.5f;
     config.maxY = originY + height * 0.5f;
+
+    if (const auto spawnPointsNode = root.get_child_optional("spawnPoints")) {
+      for (const auto& [_, spawnPointNode] : *spawnPointsNode) {
+        const auto teamId = parseSpawnTeamId(
+            spawnPointNode.get<std::string>("team", ""));
+        if (teamId == 0) {
+          continue;
+        }
+
+        config.mTeamSpawnPoints.push_back(wildpaw::room::TeamSpawnPoint{
+            .mTeamId = teamId,
+            .mPosition = wildpaw::room::Vec2{
+                .x = spawnPointNode.get<float>("position.x", 0.0f),
+                .y = spawnPointNode.get<float>("position.y", 0.0f),
+            },
+            .mRadius = std::max(0.0f, spawnPointNode.get<float>("radius", 0.0f)),
+            .mPhase = spawnPointNode.get<std::uint32_t>("phase", 0),
+        });
+      }
+    }
 
     if (const auto prefabsNode = root.get_child_optional("prefabs")) {
       const auto& specs = prefabSpecs();
@@ -564,8 +609,19 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
     invalidProfileSelectTotal_.fetch_add(1, std::memory_order_relaxed);
   }
 
-  [[nodiscard]] bool isReady() const { return ready_; }
-  void markReady() { ready_ = true; }
+  [[nodiscard]] bool isReady() const {
+    return ready_.load(std::memory_order_acquire);
+  }
+  void markReady() {
+    ready_.store(true, std::memory_order_release);
+  }
+
+  [[nodiscard]] bool hasSelectedProfile() const {
+    return mProfileSelected.load(std::memory_order_acquire);
+  }
+  void markProfileSelected() {
+    mProfileSelected.store(true, std::memory_order_release);
+  }
 
   void requestClose(std::string_view reason);
 
@@ -638,7 +694,8 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
   bool closed_{false};
   bool closeRequested_{false};
   bool closing_{false};
-  bool ready_{false};
+  std::atomic<bool> ready_{false};
+  std::atomic<bool> mProfileSelected{false};
   std::string closeReason_;
 };
 
@@ -1132,22 +1189,29 @@ class RoomServer {
   void applyMapRuntimeConfig(std::string_view mapId) {
     const auto loaded = loadMapRuntimeConfig(mapDataRootPath_, mapId);
     if (!loaded.has_value()) {
+      std::lock_guard<std::mutex> lock(simulationMutex_);
       simulation_.setMapBounds(-50.0f, 50.0f, -50.0f, 50.0f);
       simulation_.setStaticColliders({});
+      simulation_.setTeamSpawnPoints({});
       std::cerr << "[room] map runtime load failed mapId=" << mapId
                 << " path=" << mapDataRootPath_.string()
                 << " fallback=world-boundary-only\n";
       return;
     }
 
-    simulation_.setMapBounds(loaded->minX, loaded->maxX,
-                             loaded->minY, loaded->maxY);
-    simulation_.setStaticColliders(loaded->colliders);
+    {
+      std::lock_guard<std::mutex> lock(simulationMutex_);
+      simulation_.setMapBounds(loaded->minX, loaded->maxX,
+                               loaded->minY, loaded->maxY);
+      simulation_.setStaticColliders(loaded->colliders);
+      simulation_.setTeamSpawnPoints(loaded->mTeamSpawnPoints);
+    }
 
     std::cout << "[room] map runtime configured mapId=" << mapId
               << " boundsX=[" << loaded->minX << "," << loaded->maxX << "]"
               << " boundsY=[" << loaded->minY << "," << loaded->maxY << "]"
-              << " colliders=" << loaded->colliders.size() << '\n';
+              << " colliders=" << loaded->colliders.size()
+              << " teamSpawns=" << loaded->mTeamSpawnPoints.size() << '\n';
   }
 
   bool onSessionReady(const std::shared_ptr<WsSession>& session,
@@ -1281,39 +1345,66 @@ class RoomServer {
         ensureSoloPracticeDummyLocked();
       }
       baseSnapshot = simulation_.snapshot();
+
+      wildpaw::room::InterestManager initialInterestManager;
+      auto basePlayers = initialInterestManager.filterFor(
+          playerId, baseSnapshot.players, 25.0f);
+      const auto baseVisibleIds = makeVisibleIdSet(basePlayers);
+
+      {
+        std::lock_guard<std::mutex> sessionsLock(sessionsMutex_);
+        const auto sessionFound = sessions_.find(playerId);
+        if (sessionFound == sessions_.end() || sessionFound->second != session) {
+          return false;
+        }
+        mPreviousVisiblePlayerIdsBySession[playerId] = baseVisibleIds;
+      }
+
+      std::ostringstream helloAckMessage;
+      helloAckMessage << "{\"status\":\"ok\",\"matchId\":\""
+                      << jsonEscape(parsedToken.matchId)
+                      << "\",\"mapId\":\"" << jsonEscape(parsedToken.mapId)
+                      << "\",\"clientVersion\":\""
+                      << jsonEscape(std::string{clientVersion}) << "\"}";
+      sendEventWithPolicy(session, "hello.ack", helloAckMessage.str(),
+                          WsSession::ReliableClass::Standard);
+
+      const auto welcomeMeta = session->nextEnvelopeMeta();
+      auto welcomePayload = wildpaw::room::wire::encodeWelcomeEnvelope(
+          playerId, simulation_.tickRate(), baseSnapshot.serverTick, welcomeMeta);
+      session->sendReliableBinary(welcomeMeta.seq, std::move(welcomePayload),
+                                  WsSession::ReliableClass::Critical);
+
+      const auto baseMeta = session->nextEnvelopeMeta();
+      auto basePayload = wildpaw::room::wire::encodeSnapshotEnvelope(
+          false, baseSnapshot.serverTick, unixTimeMs(), basePlayers,
+          std::span<const std::uint32_t>{}, baseMeta);
+      session->sendReliableBinary(baseMeta.seq, std::move(basePayload),
+                                  WsSession::ReliableClass::Critical);
+      snapshotBaseSentTotal_.fetch_add(1, std::memory_order_relaxed);
+
+      std::ostringstream teamAssignedMessage;
+      teamAssignedMessage << "{\"teamId\":" << static_cast<int>(assignment.teamId)
+                          << ",\"teamSlot\":" << assignment.slot
+                          << ",\"teamSize\":" << teamSize_ << "}";
+      sendEventWithPolicy(session, "team.assigned", teamAssignedMessage.str(),
+                          WsSession::ReliableClass::Standard);
+
+      for (const auto& statusEffect : baseSnapshot.mActiveStatusEffects) {
+        if (!baseVisibleIds.contains(statusEffect.mTargetPlayerId)) {
+          continue;
+        }
+
+        const auto statusMeta = session->nextEnvelopeMeta();
+        auto statusPayload = wildpaw::room::wire::encodeStatusEffectEventEnvelope(
+            statusEffect, statusMeta);
+        session->sendReliableBinary(statusMeta.seq, std::move(statusPayload),
+                                    WsSession::ReliableClass::Standard);
+      }
+
+      // Base와 baseline이 송신 큐에 등록된 뒤 tick 송신 대상으로 공개한다.
+      session->markReady();
     }
-
-    session->markReady();
-
-    std::ostringstream helloAckMessage;
-    helloAckMessage << "{\"status\":\"ok\",\"matchId\":\""
-                    << jsonEscape(parsedToken.matchId)
-                    << "\",\"mapId\":\"" << jsonEscape(parsedToken.mapId)
-                    << "\",\"clientVersion\":\""
-                    << jsonEscape(std::string{clientVersion}) << "\"}";
-    sendEventWithPolicy(session, "hello.ack", helloAckMessage.str(),
-                        WsSession::ReliableClass::Standard);
-
-    const auto welcomeMeta = session->nextEnvelopeMeta();
-    auto welcomePayload = wildpaw::room::wire::encodeWelcomeEnvelope(
-        playerId, simulation_.tickRate(), simulation_.currentTick(), welcomeMeta);
-    session->sendReliableBinary(welcomeMeta.seq, std::move(welcomePayload),
-                                WsSession::ReliableClass::Critical);
-
-    const auto baseMeta = session->nextEnvelopeMeta();
-    auto basePayload = wildpaw::room::wire::encodeSnapshotEnvelope(
-        false, baseSnapshot.serverTick, unixTimeMs(), baseSnapshot.players,
-        std::span<const std::uint32_t>{}, baseMeta);
-    session->sendReliableBinary(baseMeta.seq, std::move(basePayload),
-                                WsSession::ReliableClass::Critical);
-    snapshotBaseSentTotal_.fetch_add(1, std::memory_order_relaxed);
-
-    std::ostringstream teamAssignedMessage;
-    teamAssignedMessage << "{\"teamId\":" << static_cast<int>(assignment.teamId)
-                        << ",\"teamSlot\":" << assignment.slot
-                        << ",\"teamSize\":" << teamSize_ << "}";
-    sendEventWithPolicy(session, "team.assigned", teamAssignedMessage.str(),
-                        WsSession::ReliableClass::Standard);
 
     std::cout << "[room] player connected: " << playerId
               << " team=" << static_cast<int>(assignment.teamId)
@@ -1365,8 +1456,18 @@ class RoomServer {
         return;
 
       case wildpaw::room::wire::ClientMessageType::SelectProfile: {
+        if (session->hasSelectedProfile()) {
+          session->noteInvalidProfileSelect();
+          recordViolation(playerId, session->remoteEndpoint(),
+                          "profile_already_selected", decoded->profileId);
+          sendEventWithPolicy(session, "profile.invalid", "already-selected",
+                              WsSession::ReliableClass::Standard);
+          return;
+        }
+
         const bool applied = setPlayerProfile(playerId, decoded->profileId);
         if (applied) {
+          session->markProfileSelected();
           sendEventWithPolicy(session, "profile.applied", decoded->profileId,
                               WsSession::ReliableClass::Standard);
         } else {
@@ -1401,6 +1502,7 @@ class RoomServer {
       std::lock_guard<std::mutex> lock(sessionsMutex_);
       sessions_.erase(playerId);
       teamAssignments_.erase(playerId);
+      mPreviousVisiblePlayerIdsBySession.erase(playerId);
       becameEmpty = teamAssignments_.empty();
     }
 
@@ -1723,6 +1825,7 @@ class RoomServer {
     wildpaw::room::SnapshotDelta deltaSnapshot;
     std::vector<wildpaw::room::CombatEvent> combatEvents;
     std::vector<wildpaw::room::ProjectileEvent> projectileEvents;
+    std::vector<wildpaw::room::StatusEffectEvent> statusEffectEvents;
 
     {
       std::lock_guard<std::mutex> lock(simulationMutex_);
@@ -1735,6 +1838,7 @@ class RoomServer {
       deltaSnapshot = snapshotBuilder_.buildDelta(worldSnapshot);
       combatEvents = simulation_.drainCombatEvents();
       projectileEvents = simulation_.drainProjectileEvents();
+      statusEffectEvents = simulation_.drainStatusEffectEvents();
     }
 
     tickTotal_.fetch_add(1, std::memory_order_relaxed);
@@ -1747,14 +1851,24 @@ class RoomServer {
         !sessions.empty() &&
         (!deltaSnapshot.changedPlayers.empty() ||
          !deltaSnapshot.removedPlayerIds.empty() || !combatEvents.empty() ||
-         !projectileEvents.empty());
+         !projectileEvents.empty() || !statusEffectEvents.empty());
 
     std::unordered_map<std::uint32_t, std::unordered_set<std::uint32_t>>
         visibleIdsByPlayer;
+    std::unordered_map<std::uint32_t, const wildpaw::room::PlayerState*>
+        worldPlayerById;
+    std::unordered_set<std::uint32_t> allWorldPlayerIds;
 
     if (needInterestFiltering) {
       interestManager_.rebuild(worldSnapshot.players, 8.0f);
       visibleIdsByPlayer.reserve(sessions.size());
+      worldPlayerById.reserve(worldSnapshot.players.size());
+      allWorldPlayerIds.reserve(worldSnapshot.players.size());
+
+      for (const auto& player : worldSnapshot.players) {
+        worldPlayerById.emplace(player.playerId, &player);
+        allWorldPlayerIds.insert(player.playerId);
+      }
 
       for (const auto& [playerId, _] : sessions) {
         const auto visiblePlayers = interestManager_.filterFor(playerId, 25.0f);
@@ -1769,17 +1883,96 @@ class RoomServer {
       }
 
       const auto& visibleIds = visibleFound->second;
+      std::unordered_set<std::uint32_t> previousVisibleIds;
+      std::unordered_set<std::uint32_t> newlyVisiblePlayerIds;
 
-      const auto visibleChanged =
+      {
+        std::lock_guard<std::mutex> lock(sessionsMutex_);
+        const auto sessionFound = sessions_.find(playerId);
+        if (sessionFound == sessions_.end() || sessionFound->second != session) {
+          continue;
+        }
+
+        const auto previousFound =
+            mPreviousVisiblePlayerIdsBySession.find(playerId);
+        previousVisibleIds =
+            previousFound == mPreviousVisiblePlayerIdsBySession.end()
+                ? allWorldPlayerIds
+                : previousFound->second;
+        mPreviousVisiblePlayerIdsBySession[playerId] = visibleIds;
+      }
+
+      auto visibleChanged =
           selectVisibleChangedPlayers(deltaSnapshot, visibleIds);
+      std::unordered_set<std::uint32_t> includedPlayerIds;
+      includedPlayerIds.reserve(visibleChanged.size() + visibleIds.size());
+      for (const auto& player : visibleChanged) {
+        includedPlayerIds.insert(player.playerId);
+      }
 
-      if (!visibleChanged.empty() || !deltaSnapshot.removedPlayerIds.empty()) {
+      for (const auto visiblePlayerId : visibleIds) {
+        const bool newlyVisible =
+            !previousVisibleIds.contains(visiblePlayerId);
+        if (newlyVisible) {
+          newlyVisiblePlayerIds.insert(visiblePlayerId);
+        }
+
+        if (!newlyVisible || includedPlayerIds.contains(visiblePlayerId)) {
+          continue;
+        }
+
+        const auto worldPlayerFound = worldPlayerById.find(visiblePlayerId);
+        if (worldPlayerFound == worldPlayerById.end()) {
+          continue;
+        }
+
+        visibleChanged.push_back(*worldPlayerFound->second);
+        includedPlayerIds.insert(visiblePlayerId);
+      }
+
+      std::vector<std::uint32_t> removedPlayerIds;
+      removedPlayerIds.reserve(deltaSnapshot.removedPlayerIds.size() +
+                               previousVisibleIds.size());
+      std::unordered_set<std::uint32_t> includedRemovedPlayerIds;
+      includedRemovedPlayerIds.reserve(deltaSnapshot.removedPlayerIds.size() +
+                                       previousVisibleIds.size());
+
+      for (const auto removedPlayerId : deltaSnapshot.removedPlayerIds) {
+        if (includedRemovedPlayerIds.insert(removedPlayerId).second) {
+          removedPlayerIds.push_back(removedPlayerId);
+        }
+      }
+
+      for (const auto previousVisiblePlayerId : previousVisibleIds) {
+        if (visibleIds.contains(previousVisiblePlayerId) ||
+            !includedRemovedPlayerIds.insert(previousVisiblePlayerId).second) {
+          continue;
+        }
+
+        removedPlayerIds.push_back(previousVisiblePlayerId);
+      }
+
+      if (!visibleChanged.empty() || !removedPlayerIds.empty()) {
         const auto meta = session->nextEnvelopeMeta();
         auto payload = wildpaw::room::wire::encodeSnapshotEnvelope(
             true, deltaSnapshot.serverTick, serverTimeMs, visibleChanged,
-            deltaSnapshot.removedPlayerIds, meta);
+            removedPlayerIds, meta);
         session->sendBinary(std::move(payload));
         snapshotDeltaSentTotal_.fetch_add(1, std::memory_order_relaxed);
+      }
+
+      for (const auto& activeStatusEffect :
+           worldSnapshot.mActiveStatusEffects) {
+        if (!newlyVisiblePlayerIds.contains(
+                activeStatusEffect.mTargetPlayerId)) {
+          continue;
+        }
+
+        const auto meta = session->nextEnvelopeMeta();
+        auto payload = wildpaw::room::wire::encodeStatusEffectEventEnvelope(
+            activeStatusEffect, meta);
+        session->sendReliableBinary(meta.seq, std::move(payload),
+                                    WsSession::ReliableClass::Standard);
       }
 
       for (const auto& combatEvent : combatEvents) {
@@ -1796,7 +1989,24 @@ class RoomServer {
       }
 
       for (const auto& projectileEvent : projectileEvents) {
-        if (!shouldSendProjectileEvent(playerId, visibleIds, projectileEvent)) {
+        bool shouldSend = false;
+        if (projectileEvent.phase ==
+            wildpaw::room::ProjectilePhase::Spawn) {
+          shouldSend = shouldSendProjectileEvent(playerId, visibleIds,
+                                                 projectileEvent);
+          if (shouldSend) {
+            mProjectileRecipientsById[projectileEvent.projectileId].insert(
+                playerId);
+          }
+        } else {
+          const auto recipientsFound =
+              mProjectileRecipientsById.find(projectileEvent.projectileId);
+          shouldSend =
+              recipientsFound != mProjectileRecipientsById.end() &&
+              recipientsFound->second.contains(playerId);
+        }
+
+        if (!shouldSend) {
           projectileEventFilteredTotal_.fetch_add(1, std::memory_order_relaxed);
           continue;
         }
@@ -1806,6 +2016,25 @@ class RoomServer {
             projectileEvent, meta);
         session->sendBinary(std::move(payload));
         projectileEventSentTotal_.fetch_add(1, std::memory_order_relaxed);
+      }
+
+      for (const auto& statusEffectEvent : statusEffectEvents) {
+        if (!shouldSendStatusEffectEvent(playerId, visibleIds,
+                                         statusEffectEvent)) {
+          continue;
+        }
+
+        const auto meta = session->nextEnvelopeMeta();
+        auto payload = wildpaw::room::wire::encodeStatusEffectEventEnvelope(
+            statusEffectEvent, meta);
+        session->sendReliableBinary(meta.seq, std::move(payload),
+                                    WsSession::ReliableClass::Standard);
+      }
+    }
+
+    for (const auto& projectileEvent : projectileEvents) {
+      if (projectileEvent.phase != wildpaw::room::ProjectilePhase::Spawn) {
+        mProjectileRecipientsById.erase(projectileEvent.projectileId);
       }
     }
 
@@ -1869,6 +2098,10 @@ class RoomServer {
   std::mutex sessionsMutex_;
   std::unordered_map<std::uint32_t, std::shared_ptr<WsSession>> sessions_;
   std::unordered_map<std::uint32_t, TeamAssignment> teamAssignments_;
+  std::unordered_map<std::uint32_t, std::unordered_set<std::uint32_t>>
+      mPreviousVisiblePlayerIdsBySession;
+  std::unordered_map<std::uint32_t, std::unordered_set<std::uint32_t>>
+      mProjectileRecipientsById;
 
   std::mutex violationsMutex_;
   std::deque<ViolationEvent> violations_;

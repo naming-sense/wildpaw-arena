@@ -14,14 +14,19 @@
   - Render: `requestAnimationFrame`
   - Simulation: `33.33ms (30Hz)` 고정 스텝
 - ECS 골격
-  - Component: `Transform`, `Velocity`, `Health`, `Team`, `Weapon`, `SkillSet`, `StatusEffect`, `RenderProxy`
-  - System: Input → Movement → Collision → WeaponFire → Projectile → Skill → BuffDebuff → Animation
+  - Component: `Transform`, `Velocity`, `Health`, `Team`, `Weapon`, `SkillSet`, `StatusEffect`, `Projectile`, `RenderProxy`
+  - System: Input → Movement → Collision → WeaponFire → Projectile → Skill → SkillRuntime → SkillRuntimeRender → BuffDebuff → Animation
   - 렌더 보간: `GameApp.syncRenderProxies()`에서 프레임 단위 보간
 - Netcode 구현
   - `InputCommand` + 로컬 prediction/reconciliation
   - remote snapshot interpolation + dead reckoning(extrapolation)
+  - 서버 hero ID와 정지 조준 방향 기반 원격 모델·회전 동기화
+  - 서버 재장전/쿨다운/캐스팅 잔여 tick의 HUD 동기화
+  - 권위형 투사체 Spawn/Hit/Despawn과 Slow/Stun/Shield Apply/Remove ECS 반영
+  - shared 밸런스 기반 8히어로 24스킬 아키타입 ECS 런타임과 지속형 Three.js 표현
+  - 서버 승인 스킬 조준각 기반 아키타입 연출
   - server time offset(clock skew) 보정 샘플링
-  - 재접속 상태머신 + persistent `clientId`
+  - 초기 동기화 watchdog과 재접속 상태머신 + persistent `clientId`
 - 디버그/운영 지표
   - FPS / frame time / draw calls
   - ping / jitter / packet loss
@@ -51,7 +56,8 @@ Flow Overlay에서 제공하는 동작:
 - ROOM_CONNECT_OK/FAIL
 - REMATCH_YES
 
-> 현재는 계약서 검증용 구현으로, 전투 room socket 자동 전환(매치할당 endpoint로 즉시 스위치)은 다음 단계에서 고도화합니다.
+매치 할당을 받으면 해당 room endpoint/token으로 전투 소켓을 연다. `Welcome`, 최초 Base Snapshot,
+`profile.applied`, 선택한 hero가 반영된 로컬 플레이어 상태가 모두 도착한 뒤에만 Gateway에 `ROOM_CONNECT_OK`를 보고한다.
 
 ## 모델/애니메이션 QA
 

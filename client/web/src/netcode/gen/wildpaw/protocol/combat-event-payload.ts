@@ -69,8 +69,13 @@ y():number {
   return offset ? this.bb!.readFloat32(this.bb_pos + offset) : 0.0;
 }
 
+aimRadian():number {
+  const offset = this.bb!.__offset(this.bb_pos, 22);
+  return offset ? this.bb!.readFloat32(this.bb_pos + offset) : 0.0;
+}
+
 static startCombatEventPayload(builder:flatbuffers.Builder) {
-  builder.startObject(9);
+  builder.startObject(10);
 }
 
 static addEventType(builder:flatbuffers.Builder, eventType:CombatEventType) {
@@ -109,12 +114,16 @@ static addY(builder:flatbuffers.Builder, y:number) {
   builder.addFieldFloat32(8, y, 0.0);
 }
 
+static addAimRadian(builder:flatbuffers.Builder, aimRadian:number) {
+  builder.addFieldFloat32(9, aimRadian, 0.0);
+}
+
 static endCombatEventPayload(builder:flatbuffers.Builder):flatbuffers.Offset {
   const offset = builder.endObject();
   return offset;
 }
 
-static createCombatEventPayload(builder:flatbuffers.Builder, eventType:CombatEventType, sourcePlayerId:number, targetPlayerId:number, skillSlot:SkillSlot, damage:number, isCritical:boolean, serverTick:number, x:number, y:number):flatbuffers.Offset {
+static createCombatEventPayload(builder:flatbuffers.Builder, eventType:CombatEventType, sourcePlayerId:number, targetPlayerId:number, skillSlot:SkillSlot, damage:number, isCritical:boolean, serverTick:number, x:number, y:number, aimRadian:number):flatbuffers.Offset {
   CombatEventPayload.startCombatEventPayload(builder);
   CombatEventPayload.addEventType(builder, eventType);
   CombatEventPayload.addSourcePlayerId(builder, sourcePlayerId);
@@ -125,6 +134,7 @@ static createCombatEventPayload(builder:flatbuffers.Builder, eventType:CombatEve
   CombatEventPayload.addServerTick(builder, serverTick);
   CombatEventPayload.addX(builder, x);
   CombatEventPayload.addY(builder, y);
+  CombatEventPayload.addAimRadian(builder, aimRadian);
   return CombatEventPayload.endCombatEventPayload(builder);
 }
 }

@@ -1,12 +1,21 @@
 import { lerp } from "../../core/math/vec2";
 import type { NetworkPlayerState, WorldSnapshot } from "../protocol/schemas";
 
+function lerpAngle(a: number, b: number, t: number): number {
+  const delta = Math.atan2(Math.sin(b - a), Math.cos(b - a));
+  return a + delta * t;
+}
+
 function lerpPlayer(a: NetworkPlayerState, b: NetworkPlayerState, t: number): NetworkPlayerState {
+  const aAim = typeof a.aimRadian === "number" ? a.aimRadian : a.rot;
+  const bAim = typeof b.aimRadian === "number" ? b.aimRadian : b.rot;
+
   return {
     ...a,
     x: lerp(a.x, b.x, t),
     y: lerp(a.y, b.y, t),
-    rot: lerp(a.rot, b.rot, t),
+    rot: lerpAngle(a.rot, b.rot, t),
+    aimRadian: lerpAngle(aAim, bAim, t),
     vx: lerp(a.vx, b.vx, t),
     vy: lerp(a.vy, b.vy, t),
     hp: t < 0.5 ? a.hp : b.hp,
@@ -21,6 +30,17 @@ function lerpPlayer(a: NetworkPlayerState, b: NetworkPlayerState, t: number): Ne
     ammo: t < 0.5 ? a.ammo : b.ammo,
     maxAmmo: t < 0.5 ? a.maxAmmo : b.maxAmmo,
     reloading: t < 0.5 ? a.reloading : b.reloading,
+    reloadRemainingTicks: t < 0.5 ? a.reloadRemainingTicks : b.reloadRemainingTicks,
+    reloadRemainingSeconds: t < 0.5 ? a.reloadRemainingSeconds : b.reloadRemainingSeconds,
+    skillQCooldownTicks: t < 0.5 ? a.skillQCooldownTicks : b.skillQCooldownTicks,
+    skillQCooldownSeconds: t < 0.5 ? a.skillQCooldownSeconds : b.skillQCooldownSeconds,
+    skillECooldownTicks: t < 0.5 ? a.skillECooldownTicks : b.skillECooldownTicks,
+    skillECooldownSeconds: t < 0.5 ? a.skillECooldownSeconds : b.skillECooldownSeconds,
+    skillRCooldownTicks: t < 0.5 ? a.skillRCooldownTicks : b.skillRCooldownTicks,
+    skillRCooldownSeconds: t < 0.5 ? a.skillRCooldownSeconds : b.skillRCooldownSeconds,
+    castingSkill: t < 0.5 ? a.castingSkill : b.castingSkill,
+    castRemainingTicks: t < 0.5 ? a.castRemainingTicks : b.castRemainingTicks,
+    castRemainingSeconds: t < 0.5 ? a.castRemainingSeconds : b.castRemainingSeconds,
   };
 }
 
@@ -32,6 +52,10 @@ export class SnapshotInterpolationBuffer {
     private readonly maxExtrapolationMs: number,
     private readonly maxSnapshots = 64,
   ) {}
+
+  clear(): void {
+    this.snapshots.length = 0;
+  }
 
   push(snapshot: WorldSnapshot): void {
     this.snapshots.push(snapshot);
@@ -81,6 +105,7 @@ export class SnapshotInterpolationBuffer {
 
     return {
       serverTick: Math.round(lerp(older.serverTick, newer.serverTick, t)),
+      serverTickRate: newer.serverTickRate ?? older.serverTickRate,
       serverTimeMs: targetTime,
       ackSeq: Math.round(lerp(older.ackSeq, newer.ackSeq, t)),
       players: newer.players.map((nextPlayer) => {

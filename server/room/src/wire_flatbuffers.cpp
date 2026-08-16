@@ -1,6 +1,7 @@
 #include "room/wire_flatbuffers.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -61,7 +62,33 @@ wildpaw::protocol::ProjectilePhase toProtocolProjectilePhase(ProjectilePhase pha
   }
 }
 
-void fillInputFrameFromProtocol(InputFrame& dst,
+wildpaw::protocol::StatusEffectKind toProtocolStatusEffectKind(
+    StatusEffectKind kind) {
+  switch (kind) {
+    case StatusEffectKind::Slow:
+      return wildpaw::protocol::StatusEffectKind::Slow;
+    case StatusEffectKind::Stun:
+      return wildpaw::protocol::StatusEffectKind::Stun;
+    case StatusEffectKind::Shield:
+      return wildpaw::protocol::StatusEffectKind::Shield;
+    case StatusEffectKind::None:
+    default:
+      return wildpaw::protocol::StatusEffectKind::None;
+  }
+}
+
+wildpaw::protocol::StatusEffectPhase toProtocolStatusEffectPhase(
+    StatusEffectPhase phase) {
+  switch (phase) {
+    case StatusEffectPhase::Remove:
+      return wildpaw::protocol::StatusEffectPhase::Remove;
+    case StatusEffectPhase::Apply:
+    default:
+      return wildpaw::protocol::StatusEffectPhase::Apply;
+  }
+}
+
+bool fillInputFrameFromProtocol(InputFrame& dst,
                                 std::uint32_t inputSeq,
                                 int moveX,
                                 int moveY,
@@ -70,14 +97,20 @@ void fillInputFrameFromProtocol(InputFrame& dst,
                                 bool skillQ,
                                 bool skillE,
                                 bool skillR) {
+  if (!std::isfinite(aimRadian)) {
+    return false;
+  }
+
+  constexpr float kTwoPi = 6.28318530717958647692f;
   dst.inputSeq = inputSeq;
   dst.moveX = static_cast<std::int8_t>(std::clamp(moveX, -1, 1));
   dst.moveY = static_cast<std::int8_t>(std::clamp(moveY, -1, 1));
   dst.firing = fire;
-  dst.aimRadian = aimRadian;
+  dst.aimRadian = std::remainder(aimRadian, kTwoPi);
   dst.skillQ = skillQ;
   dst.skillE = skillE;
   dst.skillR = skillR;
+  return true;
 }
 
 }  // namespace
@@ -126,10 +159,12 @@ std::optional<DecodedClientEnvelope> decodeClientEnvelope(
       }
 
       decoded.type = ClientMessageType::Input;
-      fillInputFrameFromProtocol(decoded.input, input->input_seq(), input->move_x(),
-                                 input->move_y(), input->fire(),
-                                 input->aim_radian(), input->skill_q(),
-                                 input->skill_e(), input->skill_r());
+      if (!fillInputFrameFromProtocol(
+              decoded.input, input->input_seq(), input->move_x(), input->move_y(),
+              input->fire(), input->aim_radian(), input->skill_q(),
+              input->skill_e(), input->skill_r())) {
+        return std::nullopt;
+      }
       return decoded;
     }
 
@@ -140,11 +175,12 @@ std::optional<DecodedClientEnvelope> decodeClientEnvelope(
       }
 
       decoded.type = ClientMessageType::ActionCommand;
-      fillInputFrameFromProtocol(decoded.input, action->input_seq(),
-                                 action->move_x(), action->move_y(),
-                                 action->fire(), action->aim_radian(),
-                                 action->skill_q(), action->skill_e(),
-                                 action->skill_r());
+      if (!fillInputFrameFromProtocol(
+              decoded.input, action->input_seq(), action->move_x(),
+              action->move_y(), action->fire(), action->aim_radian(),
+              action->skill_q(), action->skill_e(), action->skill_r())) {
+        return std::nullopt;
+      }
       return decoded;
     }
 
@@ -203,6 +239,8 @@ std::vector<std::uint8_t> encodeSnapshotEnvelope(
         wildpaw::protocol::CreateVec2(builder, player.position.x, player.position.y);
     const auto velocity =
         wildpaw::protocol::CreateVec2(builder, player.velocity.x, player.velocity.y);
+    const auto heroId =
+        builder.CreateString(player.mHeroId.data(), player.mHeroId.size());
 
     const auto playerState = wildpaw::protocol::CreatePlayerState(
         builder, player.playerId, position, velocity, player.hp, player.alive,
@@ -210,7 +248,8 @@ std::vector<std::uint8_t> encodeSnapshotEnvelope(
         player.reloading, player.reloadRemainingTicks, player.skillQCooldownTicks,
         player.skillECooldownTicks, player.skillRCooldownTicks,
         toProtocolSkillSlot(player.castingSkill), player.castRemainingTicks,
-        player.teamId, player.teamSlot);
+        player.teamId, player.teamSlot, heroId, player.mAimRadian,
+        player.mShield);
     playerOffsets.push_back(playerState);
   }
 
@@ -242,7 +281,8 @@ std::vector<std::uint8_t> encodeCombatEventEnvelope(const CombatEvent& event,
   const auto payload = wildpaw::protocol::CreateCombatEventPayload(
       builder, toProtocolCombatEventType(event.type), event.sourcePlayerId,
       event.targetPlayerId, toProtocolSkillSlot(event.skillSlot), event.damage,
-      event.critical, event.serverTick, event.position.x, event.position.y);
+      event.critical, event.serverTick, event.position.x, event.position.y,
+      event.mAimRadian);
 
   const auto envelope = wildpaw::protocol::CreateEnvelope(
       builder, meta.seq, meta.ack, meta.ackBits,
@@ -264,6 +304,25 @@ std::vector<std::uint8_t> encodeProjectileEventEnvelope(
   const auto envelope = wildpaw::protocol::CreateEnvelope(
       builder, meta.seq, meta.ack, meta.ackBits,
       wildpaw::protocol::MessagePayload::ProjectileEventPayload,
+      payload.Union());
+
+  return finalizeEnvelope(builder, envelope);
+}
+
+std::vector<std::uint8_t> encodeStatusEffectEventEnvelope(
+    const StatusEffectEvent& event,
+    const EnvelopeMeta& meta) {
+  flatbuffers::FlatBufferBuilder builder(256);
+
+  const auto payload = wildpaw::protocol::CreateStatusEffectEventPayload(
+      builder, event.mEffectId, event.mSourcePlayerId, event.mTargetPlayerId,
+      toProtocolStatusEffectKind(event.mKind),
+      toProtocolStatusEffectPhase(event.mPhase), event.mDurationTicks,
+      event.mMagnitude, event.mServerTick);
+
+  const auto envelope = wildpaw::protocol::CreateEnvelope(
+      builder, meta.seq, meta.ack, meta.ackBits,
+      wildpaw::protocol::MessagePayload::StatusEffectEventPayload,
       payload.Union());
 
   return finalizeEnvelope(builder, envelope);

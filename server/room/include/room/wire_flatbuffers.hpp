@@ -59,6 +59,10 @@ std::vector<std::uint8_t> encodeProjectileEventEnvelope(
     const ProjectileEvent& event,
     const EnvelopeMeta& meta);
 
+std::vector<std::uint8_t> encodeStatusEffectEventEnvelope(
+    const StatusEffectEvent& event,
+    const EnvelopeMeta& meta);
+
 std::vector<std::uint8_t> encodeEventEnvelope(std::string_view eventName,
                                               std::string_view message,
                                               const EnvelopeMeta& meta);

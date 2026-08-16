@@ -4,6 +4,8 @@ export * from "./CollisionSystem";
 export * from "./WeaponFireSystem";
 export * from "./ProjectileSystem";
 export * from "./SkillSystem";
+export * from "./SkillRuntimeSystem";
+export * from "./SkillRuntimeRenderSystem";
 export * from "./BuffDebuffSystem";
 export * from "./AnimationSystem";
 export * from "./RenderSyncSystem";

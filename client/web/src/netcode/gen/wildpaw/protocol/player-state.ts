@@ -109,8 +109,25 @@ teamSlot():number {
   return offset ? this.bb!.readUint16(this.bb_pos + offset) : 0;
 }
 
+heroId():string|null
+heroId(optionalEncoding:flatbuffers.Encoding):string|Uint8Array|null
+heroId(optionalEncoding?:any):string|Uint8Array|null {
+  const offset = this.bb!.__offset(this.bb_pos, 38);
+  return offset ? this.bb!.__string(this.bb_pos + offset, optionalEncoding) : null;
+}
+
+aimRadian():number {
+  const offset = this.bb!.__offset(this.bb_pos, 40);
+  return offset ? this.bb!.readFloat32(this.bb_pos + offset) : 0.0;
+}
+
+shield():number {
+  const offset = this.bb!.__offset(this.bb_pos, 42);
+  return offset ? this.bb!.readUint16(this.bb_pos + offset) : 0;
+}
+
 static startPlayerState(builder:flatbuffers.Builder) {
-  builder.startObject(17);
+  builder.startObject(20);
 }
 
 static addPlayerId(builder:flatbuffers.Builder, playerId:number) {
@@ -179,6 +196,18 @@ static addTeamId(builder:flatbuffers.Builder, teamId:number) {
 
 static addTeamSlot(builder:flatbuffers.Builder, teamSlot:number) {
   builder.addFieldInt16(16, teamSlot, 0);
+}
+
+static addHeroId(builder:flatbuffers.Builder, heroIdOffset:flatbuffers.Offset) {
+  builder.addFieldOffset(17, heroIdOffset, 0);
+}
+
+static addAimRadian(builder:flatbuffers.Builder, aimRadian:number) {
+  builder.addFieldFloat32(18, aimRadian, 0.0);
+}
+
+static addShield(builder:flatbuffers.Builder, shield:number) {
+  builder.addFieldInt16(19, shield, 0);
 }
 
 static endPlayerState(builder:flatbuffers.Builder):flatbuffers.Offset {

@@ -1,8 +1,10 @@
 import type { InputCommand } from "../net/protocol/schemas";
 import type {
   Health,
+  Projectile,
   RenderProxy,
   SkillSet,
+  SkillRuntime,
   StatusEffect,
   Team,
   Transform,
@@ -47,7 +49,9 @@ export class World {
   readonly teams = new Map<EntityId, Team>();
   readonly weapons = new Map<EntityId, Weapon>();
   readonly skills = new Map<EntityId, SkillSet>();
+  readonly skillRuntimes = new Map<EntityId, SkillRuntime[]>();
   readonly statusEffects = new Map<EntityId, StatusEffect[]>();
+  readonly projectiles = new Map<EntityId, Projectile>();
   readonly renderProxies = new Map<EntityId, RenderProxy>();
 
   private readonly systems: EcsSystem[] = [];

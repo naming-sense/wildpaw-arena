@@ -85,7 +85,7 @@ export function AppShell(): JSX.Element {
       roomToken: loading.roomToken,
       mapId: loading.mapId ?? undefined,
     })
-      .then((app) => {
+      .then(async (app) => {
         if (cancelled) {
           app.stop();
           return;
@@ -94,16 +94,22 @@ export function AppShell(): JSX.Element {
         appRef.current = app;
         setLoadingVisual("SYNCING_WORLD", 94);
 
-        window.setTimeout(() => {
-          if (cancelled) return;
-          setLoadingVisual("READY", 100);
-          reportRoomConnectResult("OK");
-        }, 80);
+        await app.waitForInitialWorld(
+          Math.max(1, loading.roomConnectTimeoutSec) * 1000,
+        );
+
+        if (cancelled) return;
+        setLoadingVisual("READY", 100);
+        reportRoomConnectResult("OK");
       })
       .catch((error: unknown) => {
         if (cancelled) return;
 
         console.error("[AppShell] bootstrap failed", error);
+        if (appRef.current) {
+          appRef.current.stop();
+          appRef.current = null;
+        }
         bumpLoadingRetry();
         reportRoomConnectResult("FAIL");
 
@@ -117,12 +123,20 @@ export function AppShell(): JSX.Element {
 
     return () => {
       cancelled = true;
+      if (appRef.current) {
+        appRef.current.stop();
+        appRef.current = null;
+      }
+      if (loadingAttemptKeyRef.current === loadingAttemptKey) {
+        loadingAttemptKeyRef.current = null;
+      }
     };
   }, [
     bumpLoadingRetry,
     loading.assignmentVersion,
     loading.matchId,
     loading.roomEndpoint,
+    loading.roomConnectTimeoutSec,
     loading.roomToken,
     reportRoomConnectResult,
     selectedHeroId,

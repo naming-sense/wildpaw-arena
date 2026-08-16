@@ -9,6 +9,7 @@ import { PingPayload } from '../../wildpaw/protocol/ping-payload';
 import { ProjectileEventPayload } from '../../wildpaw/protocol/projectile-event-payload';
 import { SelectProfilePayload } from '../../wildpaw/protocol/select-profile-payload';
 import { SnapshotPayload } from '../../wildpaw/protocol/snapshot-payload';
+import { StatusEffectEventPayload } from '../../wildpaw/protocol/status-effect-event-payload';
 import { WelcomePayload } from '../../wildpaw/protocol/welcome-payload';
 
 
@@ -23,15 +24,16 @@ export enum MessagePayload {
   SnapshotPayload = 7,
   CombatEventPayload = 8,
   ProjectileEventPayload = 9,
-  EventPayload = 10
+  EventPayload = 10,
+  StatusEffectEventPayload = 11
 }
 
 export function unionToMessagePayload(
   type: MessagePayload,
-  accessor: (obj:ActionCommandPayload|CombatEventPayload|EventPayload|HelloPayload|InputPayload|PingPayload|ProjectileEventPayload|SelectProfilePayload|SnapshotPayload|WelcomePayload) => ActionCommandPayload|CombatEventPayload|EventPayload|HelloPayload|InputPayload|PingPayload|ProjectileEventPayload|SelectProfilePayload|SnapshotPayload|WelcomePayload|null
-): ActionCommandPayload|CombatEventPayload|EventPayload|HelloPayload|InputPayload|PingPayload|ProjectileEventPayload|SelectProfilePayload|SnapshotPayload|WelcomePayload|null {
+  accessor: (obj:ActionCommandPayload|CombatEventPayload|EventPayload|HelloPayload|InputPayload|PingPayload|ProjectileEventPayload|SelectProfilePayload|SnapshotPayload|StatusEffectEventPayload|WelcomePayload) => ActionCommandPayload|CombatEventPayload|EventPayload|HelloPayload|InputPayload|PingPayload|ProjectileEventPayload|SelectProfilePayload|SnapshotPayload|StatusEffectEventPayload|WelcomePayload|null
+): ActionCommandPayload|CombatEventPayload|EventPayload|HelloPayload|InputPayload|PingPayload|ProjectileEventPayload|SelectProfilePayload|SnapshotPayload|StatusEffectEventPayload|WelcomePayload|null {
   switch(MessagePayload[type]) {
-    case 'NONE': return null; 
+    case 'NONE': return null;
     case 'HelloPayload': return accessor(new HelloPayload())! as HelloPayload;
     case 'InputPayload': return accessor(new InputPayload())! as InputPayload;
     case 'ActionCommandPayload': return accessor(new ActionCommandPayload())! as ActionCommandPayload;
@@ -42,17 +44,18 @@ export function unionToMessagePayload(
     case 'CombatEventPayload': return accessor(new CombatEventPayload())! as CombatEventPayload;
     case 'ProjectileEventPayload': return accessor(new ProjectileEventPayload())! as ProjectileEventPayload;
     case 'EventPayload': return accessor(new EventPayload())! as EventPayload;
+    case 'StatusEffectEventPayload': return accessor(new StatusEffectEventPayload())! as StatusEffectEventPayload;
     default: return null;
   }
 }
 
 export function unionListToMessagePayload(
-  type: MessagePayload, 
-  accessor: (index: number, obj:ActionCommandPayload|CombatEventPayload|EventPayload|HelloPayload|InputPayload|PingPayload|ProjectileEventPayload|SelectProfilePayload|SnapshotPayload|WelcomePayload) => ActionCommandPayload|CombatEventPayload|EventPayload|HelloPayload|InputPayload|PingPayload|ProjectileEventPayload|SelectProfilePayload|SnapshotPayload|WelcomePayload|null, 
+  type: MessagePayload,
+  accessor: (index: number, obj:ActionCommandPayload|CombatEventPayload|EventPayload|HelloPayload|InputPayload|PingPayload|ProjectileEventPayload|SelectProfilePayload|SnapshotPayload|StatusEffectEventPayload|WelcomePayload) => ActionCommandPayload|CombatEventPayload|EventPayload|HelloPayload|InputPayload|PingPayload|ProjectileEventPayload|SelectProfilePayload|SnapshotPayload|StatusEffectEventPayload|WelcomePayload|null,
   index: number
-): ActionCommandPayload|CombatEventPayload|EventPayload|HelloPayload|InputPayload|PingPayload|ProjectileEventPayload|SelectProfilePayload|SnapshotPayload|WelcomePayload|null {
+): ActionCommandPayload|CombatEventPayload|EventPayload|HelloPayload|InputPayload|PingPayload|ProjectileEventPayload|SelectProfilePayload|SnapshotPayload|StatusEffectEventPayload|WelcomePayload|null {
   switch(MessagePayload[type]) {
-    case 'NONE': return null; 
+    case 'NONE': return null;
     case 'HelloPayload': return accessor(index, new HelloPayload())! as HelloPayload;
     case 'InputPayload': return accessor(index, new InputPayload())! as InputPayload;
     case 'ActionCommandPayload': return accessor(index, new ActionCommandPayload())! as ActionCommandPayload;
@@ -63,6 +66,7 @@ export function unionListToMessagePayload(
     case 'CombatEventPayload': return accessor(index, new CombatEventPayload())! as CombatEventPayload;
     case 'ProjectileEventPayload': return accessor(index, new ProjectileEventPayload())! as ProjectileEventPayload;
     case 'EventPayload': return accessor(index, new EventPayload())! as EventPayload;
+    case 'StatusEffectEventPayload': return accessor(index, new StatusEffectEventPayload())! as StatusEffectEventPayload;
     default: return null;
   }
 }

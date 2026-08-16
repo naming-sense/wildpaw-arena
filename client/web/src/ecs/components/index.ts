@@ -4,5 +4,7 @@ export * from "./Health";
 export * from "./Team";
 export * from "./Weapon";
 export * from "./SkillSet";
+export * from "./SkillRuntime";
 export * from "./StatusEffect";
 export * from "./RenderProxy";
+export * from "./Projectile";

@@ -52,6 +52,9 @@ struct ProjectileEventPayloadBuilder;
 struct EventPayload;
 struct EventPayloadBuilder;
 
+struct StatusEffectEventPayload;
+struct StatusEffectEventPayloadBuilder;
+
 struct Envelope;
 struct EnvelopeBuilder;
 
@@ -190,6 +193,72 @@ inline const char *EnumNameProjectilePhase(ProjectilePhase e) {
   return EnumNamesProjectilePhase()[index];
 }
 
+enum class StatusEffectKind : uint8_t {
+  None = 0,
+  Slow = 1,
+  Stun = 2,
+  Shield = 3,
+  MIN = None,
+  MAX = Shield
+};
+
+inline const StatusEffectKind (&EnumValuesStatusEffectKind())[4] {
+  static const StatusEffectKind values[] = {
+    StatusEffectKind::None,
+    StatusEffectKind::Slow,
+    StatusEffectKind::Stun,
+    StatusEffectKind::Shield
+  };
+  return values;
+}
+
+inline const char * const *EnumNamesStatusEffectKind() {
+  static const char * const names[5] = {
+    "None",
+    "Slow",
+    "Stun",
+    "Shield",
+    nullptr
+  };
+  return names;
+}
+
+inline const char *EnumNameStatusEffectKind(StatusEffectKind e) {
+  if (flatbuffers::IsOutRange(e, StatusEffectKind::None, StatusEffectKind::Shield)) return "";
+  const size_t index = static_cast<size_t>(e);
+  return EnumNamesStatusEffectKind()[index];
+}
+
+enum class StatusEffectPhase : uint8_t {
+  Apply = 0,
+  Remove = 1,
+  MIN = Apply,
+  MAX = Remove
+};
+
+inline const StatusEffectPhase (&EnumValuesStatusEffectPhase())[2] {
+  static const StatusEffectPhase values[] = {
+    StatusEffectPhase::Apply,
+    StatusEffectPhase::Remove
+  };
+  return values;
+}
+
+inline const char * const *EnumNamesStatusEffectPhase() {
+  static const char * const names[3] = {
+    "Apply",
+    "Remove",
+    nullptr
+  };
+  return names;
+}
+
+inline const char *EnumNameStatusEffectPhase(StatusEffectPhase e) {
+  if (flatbuffers::IsOutRange(e, StatusEffectPhase::Apply, StatusEffectPhase::Remove)) return "";
+  const size_t index = static_cast<size_t>(e);
+  return EnumNamesStatusEffectPhase()[index];
+}
+
 enum class MessagePayload : uint8_t {
   NONE = 0,
   HelloPayload = 1,
@@ -202,11 +271,12 @@ enum class MessagePayload : uint8_t {
   CombatEventPayload = 8,
   ProjectileEventPayload = 9,
   EventPayload = 10,
+  StatusEffectEventPayload = 11,
   MIN = NONE,
-  MAX = EventPayload
+  MAX = StatusEffectEventPayload
 };
 
-inline const MessagePayload (&EnumValuesMessagePayload())[11] {
+inline const MessagePayload (&EnumValuesMessagePayload())[12] {
   static const MessagePayload values[] = {
     MessagePayload::NONE,
     MessagePayload::HelloPayload,
@@ -218,13 +288,14 @@ inline const MessagePayload (&EnumValuesMessagePayload())[11] {
     MessagePayload::SnapshotPayload,
     MessagePayload::CombatEventPayload,
     MessagePayload::ProjectileEventPayload,
-    MessagePayload::EventPayload
+    MessagePayload::EventPayload,
+    MessagePayload::StatusEffectEventPayload
   };
   return values;
 }
 
 inline const char * const *EnumNamesMessagePayload() {
-  static const char * const names[12] = {
+  static const char * const names[13] = {
     "NONE",
     "HelloPayload",
     "InputPayload",
@@ -236,13 +307,14 @@ inline const char * const *EnumNamesMessagePayload() {
     "CombatEventPayload",
     "ProjectileEventPayload",
     "EventPayload",
+    "StatusEffectEventPayload",
     nullptr
   };
   return names;
 }
 
 inline const char *EnumNameMessagePayload(MessagePayload e) {
-  if (flatbuffers::IsOutRange(e, MessagePayload::NONE, MessagePayload::EventPayload)) return "";
+  if (flatbuffers::IsOutRange(e, MessagePayload::NONE, MessagePayload::StatusEffectEventPayload)) return "";
   const size_t index = static_cast<size_t>(e);
   return EnumNamesMessagePayload()[index];
 }
@@ -289,6 +361,10 @@ template<> struct MessagePayloadTraits<wildpaw::protocol::ProjectileEventPayload
 
 template<> struct MessagePayloadTraits<wildpaw::protocol::EventPayload> {
   static const MessagePayload enum_value = MessagePayload::EventPayload;
+};
+
+template<> struct MessagePayloadTraits<wildpaw::protocol::StatusEffectEventPayload> {
+  static const MessagePayload enum_value = MessagePayload::StatusEffectEventPayload;
 };
 
 bool VerifyMessagePayload(flatbuffers::Verifier &verifier, const void *obj, MessagePayload type);
@@ -364,7 +440,10 @@ struct PlayerState FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
     VT_CASTING_SKILL = 30,
     VT_CAST_REMAINING_TICKS = 32,
     VT_TEAM_ID = 34,
-    VT_TEAM_SLOT = 36
+    VT_TEAM_SLOT = 36,
+    VT_HERO_ID = 38,
+    VT_AIM_RADIAN = 40,
+    VT_SHIELD = 42
   };
   uint32_t player_id() const {
     return GetField<uint32_t>(VT_PLAYER_ID, 0);
@@ -417,6 +496,15 @@ struct PlayerState FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   uint16_t team_slot() const {
     return GetField<uint16_t>(VT_TEAM_SLOT, 0);
   }
+  const flatbuffers::String *hero_id() const {
+    return GetPointer<const flatbuffers::String *>(VT_HERO_ID);
+  }
+  float aim_radian() const {
+    return GetField<float>(VT_AIM_RADIAN, 0.0f);
+  }
+  uint16_t shield() const {
+    return GetField<uint16_t>(VT_SHIELD, 0);
+  }
   bool Verify(flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyField<uint32_t>(verifier, VT_PLAYER_ID, 4) &&
@@ -438,6 +526,10 @@ struct PlayerState FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
            VerifyField<uint32_t>(verifier, VT_CAST_REMAINING_TICKS, 4) &&
            VerifyField<uint8_t>(verifier, VT_TEAM_ID, 1) &&
            VerifyField<uint16_t>(verifier, VT_TEAM_SLOT, 2) &&
+           VerifyOffset(verifier, VT_HERO_ID) &&
+           verifier.VerifyString(hero_id()) &&
+           VerifyField<float>(verifier, VT_AIM_RADIAN, 4) &&
+           VerifyField<uint16_t>(verifier, VT_SHIELD, 2) &&
            verifier.EndTable();
   }
 };
@@ -497,6 +589,15 @@ struct PlayerStateBuilder {
   void add_team_slot(uint16_t team_slot) {
     fbb_.AddElement<uint16_t>(PlayerState::VT_TEAM_SLOT, team_slot, 0);
   }
+  void add_hero_id(flatbuffers::Offset<flatbuffers::String> hero_id) {
+    fbb_.AddOffset(PlayerState::VT_HERO_ID, hero_id);
+  }
+  void add_aim_radian(float aim_radian) {
+    fbb_.AddElement<float>(PlayerState::VT_AIM_RADIAN, aim_radian, 0.0f);
+  }
+  void add_shield(uint16_t shield) {
+    fbb_.AddElement<uint16_t>(PlayerState::VT_SHIELD, shield, 0);
+  }
   explicit PlayerStateBuilder(flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
     start_ = fbb_.StartTable();
@@ -526,8 +627,13 @@ inline flatbuffers::Offset<PlayerState> CreatePlayerState(
     wildpaw::protocol::SkillSlot casting_skill = wildpaw::protocol::SkillSlot::None,
     uint32_t cast_remaining_ticks = 0,
     uint8_t team_id = 0,
-    uint16_t team_slot = 0) {
+    uint16_t team_slot = 0,
+    flatbuffers::Offset<flatbuffers::String> hero_id = 0,
+    float aim_radian = 0.0f,
+    uint16_t shield = 0) {
   PlayerStateBuilder builder_(_fbb);
+  builder_.add_aim_radian(aim_radian);
+  builder_.add_hero_id(hero_id);
   builder_.add_cast_remaining_ticks(cast_remaining_ticks);
   builder_.add_skill_r_cooldown_ticks(skill_r_cooldown_ticks);
   builder_.add_skill_e_cooldown_ticks(skill_e_cooldown_ticks);
@@ -537,6 +643,7 @@ inline flatbuffers::Offset<PlayerState> CreatePlayerState(
   builder_.add_velocity(velocity);
   builder_.add_position(position);
   builder_.add_player_id(player_id);
+  builder_.add_shield(shield);
   builder_.add_team_slot(team_slot);
   builder_.add_max_ammo(max_ammo);
   builder_.add_ammo(ammo);
@@ -546,6 +653,53 @@ inline flatbuffers::Offset<PlayerState> CreatePlayerState(
   builder_.add_is_reloading(is_reloading);
   builder_.add_alive(alive);
   return builder_.Finish();
+}
+
+inline flatbuffers::Offset<PlayerState> CreatePlayerStateDirect(
+    flatbuffers::FlatBufferBuilder &_fbb,
+    uint32_t player_id = 0,
+    flatbuffers::Offset<wildpaw::protocol::Vec2> position = 0,
+    flatbuffers::Offset<wildpaw::protocol::Vec2> velocity = 0,
+    uint16_t hp = 100,
+    bool alive = true,
+    uint32_t last_processed_input_seq = 0,
+    uint16_t ammo = 0,
+    uint16_t max_ammo = 0,
+    bool is_reloading = false,
+    uint32_t reload_remaining_ticks = 0,
+    uint32_t skill_q_cooldown_ticks = 0,
+    uint32_t skill_e_cooldown_ticks = 0,
+    uint32_t skill_r_cooldown_ticks = 0,
+    wildpaw::protocol::SkillSlot casting_skill = wildpaw::protocol::SkillSlot::None,
+    uint32_t cast_remaining_ticks = 0,
+    uint8_t team_id = 0,
+    uint16_t team_slot = 0,
+    const char *hero_id = nullptr,
+    float aim_radian = 0.0f,
+    uint16_t shield = 0) {
+  auto hero_id__ = hero_id ? _fbb.CreateString(hero_id) : 0;
+  return wildpaw::protocol::CreatePlayerState(
+      _fbb,
+      player_id,
+      position,
+      velocity,
+      hp,
+      alive,
+      last_processed_input_seq,
+      ammo,
+      max_ammo,
+      is_reloading,
+      reload_remaining_ticks,
+      skill_q_cooldown_ticks,
+      skill_e_cooldown_ticks,
+      skill_r_cooldown_ticks,
+      casting_skill,
+      cast_remaining_ticks,
+      team_id,
+      team_slot,
+      hero_id__,
+      aim_radian,
+      shield);
 }
 
 struct HelloPayload FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
@@ -1089,7 +1243,8 @@ struct CombatEventPayload FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
     VT_IS_CRITICAL = 14,
     VT_SERVER_TICK = 16,
     VT_X = 18,
-    VT_Y = 20
+    VT_Y = 20,
+    VT_AIM_RADIAN = 22
   };
   wildpaw::protocol::CombatEventType event_type() const {
     return static_cast<wildpaw::protocol::CombatEventType>(GetField<uint8_t>(VT_EVENT_TYPE, 0));
@@ -1118,6 +1273,9 @@ struct CombatEventPayload FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   float y() const {
     return GetField<float>(VT_Y, 0.0f);
   }
+  float aim_radian() const {
+    return GetField<float>(VT_AIM_RADIAN, 0.0f);
+  }
   bool Verify(flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyField<uint8_t>(verifier, VT_EVENT_TYPE, 1) &&
@@ -1129,6 +1287,7 @@ struct CombatEventPayload FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
            VerifyField<uint32_t>(verifier, VT_SERVER_TICK, 4) &&
            VerifyField<float>(verifier, VT_X, 4) &&
            VerifyField<float>(verifier, VT_Y, 4) &&
+           VerifyField<float>(verifier, VT_AIM_RADIAN, 4) &&
            verifier.EndTable();
   }
 };
@@ -1164,6 +1323,9 @@ struct CombatEventPayloadBuilder {
   void add_y(float y) {
     fbb_.AddElement<float>(CombatEventPayload::VT_Y, y, 0.0f);
   }
+  void add_aim_radian(float aim_radian) {
+    fbb_.AddElement<float>(CombatEventPayload::VT_AIM_RADIAN, aim_radian, 0.0f);
+  }
   explicit CombatEventPayloadBuilder(flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
     start_ = fbb_.StartTable();
@@ -1185,8 +1347,10 @@ inline flatbuffers::Offset<CombatEventPayload> CreateCombatEventPayload(
     bool is_critical = false,
     uint32_t server_tick = 0,
     float x = 0.0f,
-    float y = 0.0f) {
+    float y = 0.0f,
+    float aim_radian = 0.0f) {
   CombatEventPayloadBuilder builder_(_fbb);
+  builder_.add_aim_radian(aim_radian);
   builder_.add_y(y);
   builder_.add_x(x);
   builder_.add_server_tick(server_tick);
@@ -1385,6 +1549,117 @@ inline flatbuffers::Offset<EventPayload> CreateEventPayloadDirect(
       message__);
 }
 
+struct StatusEffectEventPayload FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
+  typedef StatusEffectEventPayloadBuilder Builder;
+  enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
+    VT_EFFECT_ID = 4,
+    VT_SOURCE_PLAYER_ID = 6,
+    VT_TARGET_PLAYER_ID = 8,
+    VT_KIND = 10,
+    VT_PHASE = 12,
+    VT_DURATION_TICKS = 14,
+    VT_MAGNITUDE = 16,
+    VT_SERVER_TICK = 18
+  };
+  uint32_t effect_id() const {
+    return GetField<uint32_t>(VT_EFFECT_ID, 0);
+  }
+  uint32_t source_player_id() const {
+    return GetField<uint32_t>(VT_SOURCE_PLAYER_ID, 0);
+  }
+  uint32_t target_player_id() const {
+    return GetField<uint32_t>(VT_TARGET_PLAYER_ID, 0);
+  }
+  wildpaw::protocol::StatusEffectKind kind() const {
+    return static_cast<wildpaw::protocol::StatusEffectKind>(GetField<uint8_t>(VT_KIND, 0));
+  }
+  wildpaw::protocol::StatusEffectPhase phase() const {
+    return static_cast<wildpaw::protocol::StatusEffectPhase>(GetField<uint8_t>(VT_PHASE, 0));
+  }
+  uint32_t duration_ticks() const {
+    return GetField<uint32_t>(VT_DURATION_TICKS, 0);
+  }
+  float magnitude() const {
+    return GetField<float>(VT_MAGNITUDE, 0.0f);
+  }
+  uint32_t server_tick() const {
+    return GetField<uint32_t>(VT_SERVER_TICK, 0);
+  }
+  bool Verify(flatbuffers::Verifier &verifier) const {
+    return VerifyTableStart(verifier) &&
+           VerifyField<uint32_t>(verifier, VT_EFFECT_ID, 4) &&
+           VerifyField<uint32_t>(verifier, VT_SOURCE_PLAYER_ID, 4) &&
+           VerifyField<uint32_t>(verifier, VT_TARGET_PLAYER_ID, 4) &&
+           VerifyField<uint8_t>(verifier, VT_KIND, 1) &&
+           VerifyField<uint8_t>(verifier, VT_PHASE, 1) &&
+           VerifyField<uint32_t>(verifier, VT_DURATION_TICKS, 4) &&
+           VerifyField<float>(verifier, VT_MAGNITUDE, 4) &&
+           VerifyField<uint32_t>(verifier, VT_SERVER_TICK, 4) &&
+           verifier.EndTable();
+  }
+};
+
+struct StatusEffectEventPayloadBuilder {
+  typedef StatusEffectEventPayload Table;
+  flatbuffers::FlatBufferBuilder &fbb_;
+  flatbuffers::uoffset_t start_;
+  void add_effect_id(uint32_t effect_id) {
+    fbb_.AddElement<uint32_t>(StatusEffectEventPayload::VT_EFFECT_ID, effect_id, 0);
+  }
+  void add_source_player_id(uint32_t source_player_id) {
+    fbb_.AddElement<uint32_t>(StatusEffectEventPayload::VT_SOURCE_PLAYER_ID, source_player_id, 0);
+  }
+  void add_target_player_id(uint32_t target_player_id) {
+    fbb_.AddElement<uint32_t>(StatusEffectEventPayload::VT_TARGET_PLAYER_ID, target_player_id, 0);
+  }
+  void add_kind(wildpaw::protocol::StatusEffectKind kind) {
+    fbb_.AddElement<uint8_t>(StatusEffectEventPayload::VT_KIND, static_cast<uint8_t>(kind), 0);
+  }
+  void add_phase(wildpaw::protocol::StatusEffectPhase phase) {
+    fbb_.AddElement<uint8_t>(StatusEffectEventPayload::VT_PHASE, static_cast<uint8_t>(phase), 0);
+  }
+  void add_duration_ticks(uint32_t duration_ticks) {
+    fbb_.AddElement<uint32_t>(StatusEffectEventPayload::VT_DURATION_TICKS, duration_ticks, 0);
+  }
+  void add_magnitude(float magnitude) {
+    fbb_.AddElement<float>(StatusEffectEventPayload::VT_MAGNITUDE, magnitude, 0.0f);
+  }
+  void add_server_tick(uint32_t server_tick) {
+    fbb_.AddElement<uint32_t>(StatusEffectEventPayload::VT_SERVER_TICK, server_tick, 0);
+  }
+  explicit StatusEffectEventPayloadBuilder(flatbuffers::FlatBufferBuilder &_fbb)
+        : fbb_(_fbb) {
+    start_ = fbb_.StartTable();
+  }
+  flatbuffers::Offset<StatusEffectEventPayload> Finish() {
+    const auto end = fbb_.EndTable(start_);
+    auto o = flatbuffers::Offset<StatusEffectEventPayload>(end);
+    return o;
+  }
+};
+
+inline flatbuffers::Offset<StatusEffectEventPayload> CreateStatusEffectEventPayload(
+    flatbuffers::FlatBufferBuilder &_fbb,
+    uint32_t effect_id = 0,
+    uint32_t source_player_id = 0,
+    uint32_t target_player_id = 0,
+    wildpaw::protocol::StatusEffectKind kind = wildpaw::protocol::StatusEffectKind::None,
+    wildpaw::protocol::StatusEffectPhase phase = wildpaw::protocol::StatusEffectPhase::Apply,
+    uint32_t duration_ticks = 0,
+    float magnitude = 0.0f,
+    uint32_t server_tick = 0) {
+  StatusEffectEventPayloadBuilder builder_(_fbb);
+  builder_.add_server_tick(server_tick);
+  builder_.add_magnitude(magnitude);
+  builder_.add_duration_ticks(duration_ticks);
+  builder_.add_target_player_id(target_player_id);
+  builder_.add_source_player_id(source_player_id);
+  builder_.add_effect_id(effect_id);
+  builder_.add_phase(phase);
+  builder_.add_kind(kind);
+  return builder_.Finish();
+}
+
 struct Envelope FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   typedef EnvelopeBuilder Builder;
   enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
@@ -1440,6 +1715,9 @@ struct Envelope FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   const wildpaw::protocol::EventPayload *payload_as_EventPayload() const {
     return payload_type() == wildpaw::protocol::MessagePayload::EventPayload ? static_cast<const wildpaw::protocol::EventPayload *>(payload()) : nullptr;
   }
+  const wildpaw::protocol::StatusEffectEventPayload *payload_as_StatusEffectEventPayload() const {
+    return payload_type() == wildpaw::protocol::MessagePayload::StatusEffectEventPayload ? static_cast<const wildpaw::protocol::StatusEffectEventPayload *>(payload()) : nullptr;
+  }
   bool Verify(flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyField<uint32_t>(verifier, VT_SEQ, 4) &&
@@ -1490,6 +1768,10 @@ template<> inline const wildpaw::protocol::ProjectileEventPayload *Envelope::pay
 
 template<> inline const wildpaw::protocol::EventPayload *Envelope::payload_as<wildpaw::protocol::EventPayload>() const {
   return payload_as_EventPayload();
+}
+
+template<> inline const wildpaw::protocol::StatusEffectEventPayload *Envelope::payload_as<wildpaw::protocol::StatusEffectEventPayload>() const {
+  return payload_as_StatusEffectEventPayload();
 }
 
 struct EnvelopeBuilder {
@@ -1581,6 +1863,10 @@ inline bool VerifyMessagePayload(flatbuffers::Verifier &verifier, const void *ob
     }
     case MessagePayload::EventPayload: {
       auto ptr = reinterpret_cast<const wildpaw::protocol::EventPayload *>(obj);
+      return verifier.VerifyTable(ptr);
+    }
+    case MessagePayload::StatusEffectEventPayload: {
+      auto ptr = reinterpret_cast<const wildpaw::protocol::StatusEffectEventPayload *>(obj);
       return verifier.VerifyTable(ptr);
     }
     default: return true;

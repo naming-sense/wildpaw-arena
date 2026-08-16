@@ -36,7 +36,7 @@ cmake --build build -j
 
 ## 실행
 ```bash
-./build/room/wildpaw-room [port] [io_threads] [tick_rate] [metrics_port] [rules_json_path] [team_size]
+./build/room/wildpaw-room [port] [io_threads] [tick_rate] [metrics_port] [rules_json_path] [team_size] [map_data_root]
 
 # 예시 (3:3)
 ./build/room/wildpaw-room 7001 4 30 9100 room/config/combat_rules.json 3
@@ -52,6 +52,7 @@ cmake --build build -j
 - `metrics_port` (기본: `9100`)
 - `rules_json_path` (기본: `room/config/combat_rules.json`)
 - `team_size` (기본: `3`) → `maxPlayersPerRoom = team_size * 2`
+- `map_data_root` (기본: `../client/web/src/level/data/maps`)
 
 ## 실행 (gateway control channel)
 ```bash
@@ -89,14 +90,16 @@ Gateway는 `20_게임플로우_API_이벤트_서버계약서.md` 기준으로
 - `SnapshotPayload` (`kind=Base|Delta`)
 - `CombatEventPayload` (사격/스킬/데미지/다운)
 - `ProjectileEventPayload` (spawn/hit/despawn)
+- `StatusEffectEventPayload` (apply/remove, duration/magnitude)
 - `EventPayload` (예: `hello.ack`, `profile.applied`, `team.assigned`, `room.full`)
 
 > 현재 combat/skill 판정은 스캐폴드용 서버 authoritative 샘플 룰이며,
 > 기본값은 `room/src/combat_rule_table.cpp`, 런타임 오버라이드는
 > `room/config/combat_rules.json`(또는 실행 인자 `rules_json_path`)으로 적용됩니다.
-> 현재 스캐폴드에서는 접속 순서에 따라 프로필(`ranger/bruiser/skirmisher`)을 라운드로빈 배정합니다.
-> 클라이언트는 `SelectProfilePayload`로 세션 중 프로필 변경을 요청할 수 있으며,
-> 서버는 `profile.applied` / `profile.invalid` 이벤트를 반환합니다.
+> 접속 시 기본 프로필을 배정한 뒤 클라이언트가 `SelectProfilePayload`로 실제 hero ID를 전달합니다.
+> 서버는 hero ID를 snapshot에 보존하고 전용 룰이 없을 때만 `ranger/bruiser/skirmisher` 규칙으로 판정하며,
+> `profile.applied` / `profile.invalid` 이벤트를 반환합니다.
+> 유효 hero 선택은 세션당 최초 1회만 적용해 탄약·쿨다운 초기화 악용을 막습니다.
 > 룰 JSON 파일 수정 시 서버가 주기적으로 변경을 감지해 핫리로드합니다.
 
 ## 코드젠

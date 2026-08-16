@@ -31,13 +31,26 @@ export interface NetworkPlayerState {
   lastProcessedInputSeq: number;
   heroId?: string;
   heroName?: string;
+  aimRadian?: number;
   ammo?: number;
   maxAmmo?: number;
   reloading?: boolean;
+  reloadRemainingTicks?: number;
+  reloadRemainingSeconds?: number;
+  skillQCooldownTicks?: number;
+  skillQCooldownSeconds?: number;
+  skillECooldownTicks?: number;
+  skillECooldownSeconds?: number;
+  skillRCooldownTicks?: number;
+  skillRCooldownSeconds?: number;
+  castingSkill?: 0 | 1 | 2 | 3;
+  castRemainingTicks?: number;
+  castRemainingSeconds?: number;
 }
 
 export interface WorldSnapshot {
   serverTick: number;
+  serverTickRate?: number;
   serverTimeMs: number;
   ackSeq: number;
   players: NetworkPlayerState[];

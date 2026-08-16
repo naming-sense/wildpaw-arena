@@ -12,6 +12,104 @@ namespace wildpaw::room {
 namespace {
 constexpr float kPlayerSpeedMps = 4.0f;
 constexpr float kPlayerCollisionRadius = 0.45f;
+constexpr float kProjectileHitRadiusMeters = 0.65f;
+constexpr float kSpawnSlotSpacingMeters = 1.25f;
+
+std::uint32_t durationTicksFromMilliseconds(std::uint32_t durationMs,
+                                            std::uint32_t tickRate) {
+  const std::uint64_t scaled =
+      static_cast<std::uint64_t>(durationMs) * std::max(1u, tickRate);
+  return std::max<std::uint32_t>(
+      1, static_cast<std::uint32_t>((scaled + 999u) / 1000u));
+}
+
+std::uint32_t projectileTravelTicks(float distanceMeters,
+                                    float speedMetersPerSecond,
+                                    std::uint32_t tickRate) {
+  if (distanceMeters <= 0.0f || speedMetersPerSecond <= 0.0f) {
+    return 1;
+  }
+
+  const float travelSeconds = distanceMeters / speedMetersPerSecond;
+  const float travelTicks = travelSeconds * static_cast<float>(std::max(1u, tickRate));
+  return std::max(1u, static_cast<std::uint32_t>(std::ceil(travelTicks)));
+}
+
+struct HeroRuleProfileMapping {
+  std::string_view mHeroId;
+  std::string_view mPrimaryProfileId;
+  std::string_view mFallbackProfileId;
+};
+
+constexpr HeroRuleProfileMapping kHeroRuleProfileMappings[] = {
+    {"iris_wolf", "iris_wolf", "ranger"},
+    {"coral_cat", "coral_cat", "ranger"},
+    {"bruno_bear", "bruno_bear", "bruiser"},
+    {"lumifox", "lumifox", "skirmisher"},
+    {"stinkrat", "stinkrat", "ranger"},
+    {"milky_rabbit", "milky_rabbit", "ranger"},
+    {"rockhorn_rhino", "rockhorn_rhino", "bruiser"},
+    {"pearl_panda", "pearl_panda", "ranger"},
+};
+
+std::string_view normalizeHeroId(std::string_view selectionId) {
+  return selectionId == "whitecat_commando" ? std::string_view{"coral_cat"}
+                                               : selectionId;
+}
+
+const HeroRuleProfileMapping* findHeroMapping(std::string_view selectionId) {
+  const auto heroId = normalizeHeroId(selectionId);
+  for (const auto& mapping : kHeroRuleProfileMappings) {
+    if (mapping.mHeroId == heroId) {
+      return &mapping;
+    }
+  }
+  return nullptr;
+}
+
+bool hasProfile(const std::vector<std::string>& profileIds,
+                std::string_view profileId) {
+  return std::find(profileIds.begin(), profileIds.end(), profileId) !=
+         profileIds.end();
+}
+
+std::optional<std::string> resolveRuleProfileId(
+    std::string_view selectionId,
+    const std::vector<std::string>& profileIds) {
+  const auto* heroMapping = findHeroMapping(selectionId);
+  if (heroMapping == nullptr) {
+    if (hasProfile(profileIds, selectionId)) {
+      return std::string{selectionId};
+    }
+    return std::nullopt;
+  }
+
+  if (hasProfile(profileIds, heroMapping->mPrimaryProfileId)) {
+    return std::string{heroMapping->mPrimaryProfileId};
+  }
+  if (hasProfile(profileIds, heroMapping->mFallbackProfileId)) {
+    return std::string{heroMapping->mFallbackProfileId};
+  }
+
+  const auto defaultProfileId = defaultCombatRuleProfileId();
+  if (hasProfile(profileIds, defaultProfileId)) {
+    return defaultProfileId;
+  }
+  return std::nullopt;
+}
+
+std::string defaultHeroIdForProfile(std::string_view profileId) {
+  if (profileId == "coral_cat") {
+    return "coral_cat";
+  }
+  if (profileId == "bruno_bear" || profileId == "bruiser") {
+    return "bruno_bear";
+  }
+  if (profileId == "skirmisher") {
+    return "lumifox";
+  }
+  return "iris_wolf";
+}
 
 float distSq(const Vec2& a, const Vec2& b) {
   const float dx = a.x - b.x;
@@ -152,11 +250,16 @@ void RoomSimulation::addPlayer(std::uint32_t playerId,
   state.teamId = teamId;
   state.teamSlot = teamSlot;
 
-  // 단순 스폰 분산: 초기 중첩을 피하기 위해 원형 배치.
-  const float ringRadius = 3.0f;
-  const float angle =
-      static_cast<float>((players_.size() % 12) * (3.1415926535 / 6.0));
-  state.position = {ringRadius * std::cos(angle), ringRadius * std::sin(angle)};
+  const auto approvedSpawn = resolveTeamSpawn(teamId, teamSlot);
+  if (approvedSpawn.has_value()) {
+    state.position = approvedSpawn.value();
+  } else {
+    // 맵 스폰 정보가 없을 때만 기존 개발용 원형 배치를 사용한다.
+    const float ringRadius = 3.0f;
+    const float angle =
+        static_cast<float>((players_.size() % 12) * (3.1415926535 / 6.0));
+    state.position = {ringRadius * std::cos(angle), ringRadius * std::sin(angle)};
+  }
   state.velocity = {0.0f, 0.0f};
 
   auto profileIds = combatRuleProfileIds();
@@ -167,6 +270,7 @@ void RoomSimulation::addPlayer(std::uint32_t playerId,
   } else {
     state.profileId = defaultCombatRuleProfileId();
   }
+  state.mHeroId = defaultHeroIdForProfile(state.profileId);
 
   const auto rules = combatRuleForProfile(state.profileId);
   state.maxAmmo = rules.maxAmmo;
@@ -183,14 +287,21 @@ bool RoomSimulation::setPlayerProfile(std::uint32_t playerId,
   }
 
   const auto profileIds = combatRuleProfileIds();
-  const bool exists =
-      std::find(profileIds.begin(), profileIds.end(), profileId) != profileIds.end();
-  if (!exists) {
+  const auto resolvedProfileId = resolveRuleProfileId(profileId, profileIds);
+  if (!resolvedProfileId.has_value()) {
     return false;
   }
 
+  cancelPendingSkillCasts(playerId);
+
   auto& player = playerFound->second;
-  player.profileId = std::string{profileId};
+  player.profileId = resolvedProfileId.value();
+  if (const auto* heroMapping = findHeroMapping(profileId);
+      heroMapping != nullptr) {
+    player.mHeroId = std::string{heroMapping->mHeroId};
+  } else {
+    player.mHeroId = defaultHeroIdForProfile(player.profileId);
+  }
 
   const auto rules = combatRuleForProfile(player.profileId);
   player.maxAmmo = rules.maxAmmo;
@@ -221,18 +332,80 @@ void RoomSimulation::setStaticColliders(std::vector<StaticCollider> colliders) {
   staticColliders_ = std::move(colliders);
 }
 
+void RoomSimulation::setTeamSpawnPoints(
+    std::vector<TeamSpawnPoint> spawnPoints) {
+  mTeamSpawnPoints = std::move(spawnPoints);
+}
+
+std::optional<Vec2> RoomSimulation::resolveTeamSpawn(
+    std::uint8_t teamId,
+    std::uint16_t teamSlot) const {
+  std::uint32_t firstPhase = std::numeric_limits<std::uint32_t>::max();
+  for (const auto& spawnPoint : mTeamSpawnPoints) {
+    if (spawnPoint.mTeamId == teamId) {
+      firstPhase = std::min(firstPhase, spawnPoint.mPhase);
+    }
+  }
+
+  if (firstPhase == std::numeric_limits<std::uint32_t>::max()) {
+    return std::nullopt;
+  }
+
+  std::size_t candidateCount = 0;
+  for (const auto& spawnPoint : mTeamSpawnPoints) {
+    if (spawnPoint.mTeamId == teamId && spawnPoint.mPhase == firstPhase) {
+      ++candidateCount;
+    }
+  }
+
+  if (candidateCount == 0) {
+    return std::nullopt;
+  }
+
+  const std::size_t slotIndex = teamSlot > 0 ? teamSlot - 1u : 0u;
+  const std::size_t selectedIndex = slotIndex % candidateCount;
+  const TeamSpawnPoint* selectedSpawn = nullptr;
+  std::size_t candidateIndex = 0;
+
+  for (const auto& spawnPoint : mTeamSpawnPoints) {
+    if (spawnPoint.mTeamId != teamId || spawnPoint.mPhase != firstPhase) {
+      continue;
+    }
+    if (candidateIndex == selectedIndex) {
+      selectedSpawn = &spawnPoint;
+      break;
+    }
+    ++candidateIndex;
+  }
+
+  if (selectedSpawn == nullptr) {
+    return std::nullopt;
+  }
+
+  Vec2 position = selectedSpawn->mPosition;
+  const std::size_t repeatIndex = slotIndex / candidateCount;
+  if (repeatIndex > 0) {
+    const std::size_t magnitude = (repeatIndex + 1u) / 2u;
+    const float direction = repeatIndex % 2u == 1u ? 1.0f : -1.0f;
+    const float maxOffset = std::max(0.0f, selectedSpawn->mRadius * 0.75f);
+    const float offset = std::min(
+        static_cast<float>(magnitude) * kSpawnSlotSpacingMeters, maxOffset);
+    position.y += direction * offset;
+  }
+
+  position.x = std::clamp(position.x, worldMinX_, worldMaxX_);
+  position.y = std::clamp(position.y, worldMinY_, worldMaxY_);
+  return position;
+}
+
 void RoomSimulation::removePlayer(std::uint32_t playerId) {
+  cancelPendingSkillCasts(playerId);
+  removeStatusEffectsForPlayer(playerId, false);
+
   players_.erase(playerId);
   frameInputs_.erase(playerId);
   previousFrameInputs_.erase(playerId);
   lastFireTick_.erase(playerId);
-
-  pendingSkillCasts_.erase(
-      std::remove_if(pendingSkillCasts_.begin(), pendingSkillCasts_.end(),
-                     [playerId](const PendingSkillCast& cast) {
-                       return cast.sourcePlayerId == playerId;
-                     }),
-      pendingSkillCasts_.end());
 }
 
 void RoomSimulation::pushInput(std::uint32_t playerId, const InputFrame& frame) {
@@ -243,7 +416,10 @@ WorldSnapshot RoomSimulation::tick() {
   ++tick_;
   pendingCombatEvents_.clear();
   pendingProjectileEvents_.clear();
+  mPendingStatusEffectEvents.clear();
 
+  processProjectileLifecycle();
+  processStatusEffectLifecycle();
   collectInputs();
   applyMovement();
   processCombat();
@@ -265,12 +441,303 @@ std::vector<ProjectileEvent> RoomSimulation::drainProjectileEvents() {
   return out;
 }
 
+std::vector<StatusEffectEvent> RoomSimulation::drainStatusEffectEvents() {
+  std::vector<StatusEffectEvent> out;
+  out.swap(mPendingStatusEffectEvents);
+  return out;
+}
+
+bool RoomSimulation::hasActiveStatusEffect(std::uint32_t playerId,
+                                           StatusEffectKind kind) const {
+  return std::any_of(
+      mPendingStatusEffects.begin(), mPendingStatusEffects.end(),
+      [this, playerId, kind](const PendingStatusEffect& effect) {
+        return effect.mTargetPlayerId == playerId && effect.mKind == kind &&
+               effect.mExpireTick > tick_;
+      });
+}
+
+float RoomSimulation::activeStatusEffectMagnitude(
+    std::uint32_t playerId,
+    StatusEffectKind kind) const {
+  float magnitude = 0.0f;
+  for (const auto& effect : mPendingStatusEffects) {
+    if (effect.mTargetPlayerId != playerId || effect.mKind != kind ||
+        effect.mExpireTick <= tick_ || !std::isfinite(effect.mMagnitude)) {
+      continue;
+    }
+
+    magnitude = std::max(magnitude, effect.mMagnitude);
+  }
+  return magnitude;
+}
+
+void RoomSimulation::cancelPendingSkillCasts(std::uint32_t playerId) {
+  pendingSkillCasts_.erase(
+      std::remove_if(pendingSkillCasts_.begin(), pendingSkillCasts_.end(),
+                     [playerId](const PendingSkillCast& cast) {
+                       return cast.sourcePlayerId == playerId;
+                     }),
+      pendingSkillCasts_.end());
+
+  const auto playerFound = players_.find(playerId);
+  if (playerFound == players_.end()) {
+    return;
+  }
+
+  playerFound->second.castingSkill = SkillSlot::None;
+  playerFound->second.castRemainingTicks = 0;
+}
+
+void RoomSimulation::removeStatusEffectsForPlayer(
+    std::uint32_t playerId,
+    bool emitRemoveEvents) {
+  auto effect = mPendingStatusEffects.begin();
+  while (effect != mPendingStatusEffects.end()) {
+    if (effect->mTargetPlayerId != playerId) {
+      ++effect;
+      continue;
+    }
+
+    if (emitRemoveEvents) {
+      mPendingStatusEffectEvents.push_back(StatusEffectEvent{
+          .mEffectId = effect->mEffectId,
+          .mSourcePlayerId = effect->mSourcePlayerId,
+          .mTargetPlayerId = effect->mTargetPlayerId,
+          .mKind = effect->mKind,
+          .mPhase = StatusEffectPhase::Remove,
+          .mDurationTicks = 0,
+          .mMagnitude = 0.0f,
+          .mServerTick = tick_,
+      });
+    }
+
+    effect = mPendingStatusEffects.erase(effect);
+  }
+
+  const auto playerFound = players_.find(playerId);
+  if (playerFound != players_.end()) {
+    playerFound->second.mShield = 0;
+  }
+}
+
+void RoomSimulation::applyDamageFromSource(std::uint32_t sourcePlayerId,
+                                           std::uint8_t sourceTeamId,
+                                           PlayerState& target,
+                                           std::uint16_t damage,
+                                           SkillSlot skillSlot,
+                                           bool critical) {
+  if (!target.alive || damage == 0) {
+    return;
+  }
+
+  if (sourceTeamId != 0 && sourceTeamId == target.teamId) {
+    return;
+  }
+
+  std::uint16_t remainingDamage = damage;
+  auto effect = mPendingStatusEffects.begin();
+  while (effect != mPendingStatusEffects.end() && remainingDamage > 0) {
+    if (effect->mTargetPlayerId != target.playerId ||
+        effect->mKind != StatusEffectKind::Shield ||
+        effect->mExpireTick <= tick_ || effect->mMagnitude <= 0.0f) {
+      ++effect;
+      continue;
+    }
+
+    const auto shieldPoints = static_cast<std::uint16_t>(std::clamp(
+        effect->mMagnitude, 0.0f,
+        static_cast<float>(std::numeric_limits<std::uint16_t>::max())));
+    const auto absorbed = std::min(remainingDamage, shieldPoints);
+    remainingDamage = static_cast<std::uint16_t>(remainingDamage - absorbed);
+    effect->mMagnitude -= static_cast<float>(absorbed);
+    target.mShield = target.mShield >= absorbed
+                         ? static_cast<std::uint16_t>(target.mShield - absorbed)
+                         : 0;
+
+    if (effect->mMagnitude <= 0.0f) {
+      mPendingStatusEffectEvents.push_back(StatusEffectEvent{
+          .mEffectId = effect->mEffectId,
+          .mSourcePlayerId = effect->mSourcePlayerId,
+          .mTargetPlayerId = effect->mTargetPlayerId,
+          .mKind = effect->mKind,
+          .mPhase = StatusEffectPhase::Remove,
+          .mDurationTicks = 0,
+          .mMagnitude = 0.0f,
+          .mServerTick = tick_,
+      });
+      effect = mPendingStatusEffects.erase(effect);
+      continue;
+    }
+
+    mPendingStatusEffectEvents.push_back(StatusEffectEvent{
+        .mEffectId = effect->mEffectId,
+        .mSourcePlayerId = effect->mSourcePlayerId,
+        .mTargetPlayerId = effect->mTargetPlayerId,
+        .mKind = effect->mKind,
+        .mPhase = StatusEffectPhase::Apply,
+        .mDurationTicks = effect->mExpireTick - tick_,
+        .mMagnitude = effect->mMagnitude,
+        .mServerTick = tick_,
+    });
+    ++effect;
+  }
+
+  const auto applied = std::min<std::uint16_t>(remainingDamage, target.hp);
+  if (applied == 0) {
+    return;
+  }
+
+  target.hp -= applied;
+
+  pendingCombatEvents_.push_back(CombatEvent{
+      .type = CombatEventType::DamageApplied,
+      .sourcePlayerId = sourcePlayerId,
+      .targetPlayerId = target.playerId,
+      .skillSlot = skillSlot,
+      .damage = applied,
+      .critical = critical,
+      .serverTick = tick_,
+      .position = target.position,
+  });
+
+  if (target.hp != 0) {
+    return;
+  }
+
+  target.alive = false;
+  target.velocity = Vec2{};
+  target.reloading = false;
+  target.reloadRemainingTicks = 0;
+  cancelPendingSkillCasts(target.playerId);
+  removeStatusEffectsForPlayer(target.playerId, true);
+
+  pendingCombatEvents_.push_back(CombatEvent{
+      .type = CombatEventType::Knockout,
+      .sourcePlayerId = sourcePlayerId,
+      .targetPlayerId = target.playerId,
+      .skillSlot = skillSlot,
+      .damage = 0,
+      .critical = critical,
+      .serverTick = tick_,
+      .position = target.position,
+  });
+}
+
+void RoomSimulation::processProjectileLifecycle() {
+  if (mPendingProjectiles.empty()) {
+    return;
+  }
+
+  std::vector<PendingProjectile> remaining;
+  remaining.reserve(mPendingProjectiles.size());
+
+  for (const auto& projectile : mPendingProjectiles) {
+    if (projectile.mTerminalTick > tick_) {
+      remaining.push_back(projectile);
+      continue;
+    }
+
+    auto terminalPhase = projectile.mTerminalPhase;
+    auto terminalTargetPlayerId = projectile.mTargetPlayerId;
+    auto terminalPosition = projectile.mTerminalPosition;
+
+    if (terminalPhase == ProjectilePhase::Hit) {
+      const auto targetFound = players_.find(projectile.mTargetPlayerId);
+      bool pathBlocked = false;
+      for (const auto& collider : staticColliders_) {
+        if (!collider.blocksLineOfSight && !collider.blocksProjectile) {
+          continue;
+        }
+
+        if (segmentIntersectsAabb2D(
+                projectile.mOriginPosition.x, projectile.mOriginPosition.y,
+                projectile.mTerminalPosition.x,
+                projectile.mTerminalPosition.y, collider, 0.02f)) {
+          pathBlocked = true;
+          break;
+        }
+      }
+
+      const bool targetAtTerminal =
+          targetFound != players_.end() && targetFound->second.alive &&
+          distSq(targetFound->second.position, projectile.mTerminalPosition) <=
+              kProjectileHitRadiusMeters * kProjectileHitRadiusMeters;
+
+      if (!targetAtTerminal || pathBlocked) {
+        terminalPhase = ProjectilePhase::Despawn;
+        terminalTargetPlayerId = 0;
+      } else {
+        applyDamageFromSource(
+            projectile.mOwnerPlayerId, projectile.mOwnerTeamId,
+            targetFound->second, projectile.mDamage, SkillSlot::None,
+            projectile.mCritical);
+      }
+    }
+
+    pendingProjectileEvents_.push_back(ProjectileEvent{
+        .projectileId = projectile.mProjectileId,
+        .ownerPlayerId = projectile.mOwnerPlayerId,
+        .targetPlayerId = terminalTargetPlayerId,
+        .phase = terminalPhase,
+        .serverTick = tick_,
+        .position = terminalPosition,
+        .velocity = projectile.mVelocity,
+    });
+  }
+
+  mPendingProjectiles.swap(remaining);
+}
+
+void RoomSimulation::processStatusEffectLifecycle() {
+  if (mPendingStatusEffects.empty()) {
+    return;
+  }
+
+  std::vector<PendingStatusEffect> remaining;
+  remaining.reserve(mPendingStatusEffects.size());
+
+  for (const auto& effect : mPendingStatusEffects) {
+    if (effect.mExpireTick > tick_) {
+      remaining.push_back(effect);
+      continue;
+    }
+
+    if (effect.mKind == StatusEffectKind::Shield) {
+      const auto playerFound = players_.find(effect.mTargetPlayerId);
+      if (playerFound != players_.end()) {
+        const auto shieldPoints = static_cast<std::uint16_t>(std::clamp(
+            effect.mMagnitude, 0.0f,
+            static_cast<float>(std::numeric_limits<std::uint16_t>::max())));
+        auto& shield = playerFound->second.mShield;
+        shield = shield >= shieldPoints
+                     ? static_cast<std::uint16_t>(shield - shieldPoints)
+                     : 0;
+      }
+    }
+
+    mPendingStatusEffectEvents.push_back(StatusEffectEvent{
+        .mEffectId = effect.mEffectId,
+        .mSourcePlayerId = effect.mSourcePlayerId,
+        .mTargetPlayerId = effect.mTargetPlayerId,
+        .mKind = effect.mKind,
+        .mPhase = StatusEffectPhase::Remove,
+        .mDurationTicks = 0,
+        .mMagnitude = 0.0f,
+        .mServerTick = tick_,
+    });
+  }
+
+  mPendingStatusEffects.swap(remaining);
+}
+
 void RoomSimulation::collectInputs() {
   for (auto& [playerId, player] : players_) {
     auto latest = inputBuffer_.latest(playerId);
     if (latest.has_value()) {
       frameInputs_[playerId] = latest.value();
       player.lastProcessedInputSeq = latest->inputSeq;
+      player.mAimRadian = latest->aimRadian;
     } else if (!frameInputs_.contains(playerId)) {
       frameInputs_[playerId] = InputFrame{};
     }
@@ -286,14 +753,23 @@ void RoomSimulation::applyMovement() {
       continue;
     }
 
+    if (hasActiveStatusEffect(playerId, StatusEffectKind::Stun)) {
+      player.velocity = Vec2{};
+      continue;
+    }
+
     const auto inputFound = frameInputs_.find(playerId);
     if (inputFound == frameInputs_.end()) {
       continue;
     }
 
     const auto& input = inputFound->second;
-    player.velocity.x = static_cast<float>(input.moveX) * kPlayerSpeedMps;
-    player.velocity.y = static_cast<float>(input.moveY) * kPlayerSpeedMps;
+    const float slowMagnitude = std::clamp(
+        activeStatusEffectMagnitude(playerId, StatusEffectKind::Slow), 0.0f,
+        1.0f);
+    const float movementSpeed = kPlayerSpeedMps * (1.0f - slowMagnitude);
+    player.velocity.x = static_cast<float>(input.moveX) * movementSpeed;
+    player.velocity.y = static_cast<float>(input.moveY) * movementSpeed;
 
     Vec2 resolved = player.position;
     resolved.x = std::clamp(resolved.x, worldMinX_, worldMaxX_);
@@ -405,7 +881,6 @@ void RoomSimulation::processCombat() {
       return nullptr;
     }
 
-    constexpr float kShotHitRadiusMeters = 0.65f;
     const Vec2 direction = directionFromRadian(aimRadian);
 
     float bestScore = std::numeric_limits<float>::max();
@@ -426,7 +901,7 @@ void RoomSimulation::processCombat() {
       }
 
       const float lateral = std::abs(toX * direction.y - toY * direction.x);
-      if (lateral > kShotHitRadiusMeters) {
+      if (lateral > kProjectileHitRadiusMeters) {
         continue;
       }
 
@@ -491,51 +966,12 @@ void RoomSimulation::processCombat() {
                               std::uint16_t damage,
                               SkillSlot skillSlot,
                               bool critical) {
-    if (!source.alive || !target.alive || damage == 0) {
+    if (!source.alive) {
       return;
     }
 
-    if (source.teamId != 0 && source.teamId == target.teamId) {
-      return;
-    }
-
-    const auto applied = std::min<std::uint16_t>(damage, target.hp);
-    if (applied == 0) {
-      return;
-    }
-
-    target.hp -= applied;
-
-    pendingCombatEvents_.push_back(CombatEvent{
-        .type = CombatEventType::DamageApplied,
-        .sourcePlayerId = source.playerId,
-        .targetPlayerId = target.playerId,
-        .skillSlot = skillSlot,
-        .damage = applied,
-        .critical = critical,
-        .serverTick = tick_,
-        .position = target.position,
-    });
-
-    if (target.hp == 0) {
-      target.alive = false;
-      target.velocity = Vec2{};
-      target.reloading = false;
-      target.reloadRemainingTicks = 0;
-      target.castingSkill = SkillSlot::None;
-      target.castRemainingTicks = 0;
-
-      pendingCombatEvents_.push_back(CombatEvent{
-          .type = CombatEventType::Knockout,
-          .sourcePlayerId = source.playerId,
-          .targetPlayerId = target.playerId,
-          .skillSlot = skillSlot,
-          .damage = 0,
-          .critical = critical,
-          .serverTick = tick_,
-          .position = target.position,
-      });
-    }
+    applyDamageFromSource(source.playerId, source.teamId, target, damage,
+                          skillSlot, critical);
   };
 
   auto movePlayerByDelta = [&](PlayerState& player, const Vec2& delta) {
@@ -570,15 +1006,87 @@ void RoomSimulation::processCombat() {
     player.position.y = std::clamp(resolved.y, worldMinY_, worldMaxY_);
   };
 
-  auto executeSkill = [&](PlayerState& source, SkillSlot slot, float aimRadian) {
-    if (!source.alive) {
+  auto applyStatusEffect = [&](const PlayerState& source,
+                               PlayerState& target,
+                               StatusEffectKind kind,
+                               std::uint32_t durationTicks,
+                               float magnitude) {
+    if (!source.alive || !target.alive || kind == StatusEffectKind::None ||
+        durationTicks == 0 || !std::isfinite(magnitude)) {
       return;
     }
+
+    float appliedMagnitude = std::max(0.0f, magnitude);
+    if (kind == StatusEffectKind::Shield) {
+      const auto requestedShield = static_cast<std::uint16_t>(std::clamp(
+          appliedMagnitude, 0.0f,
+          static_cast<float>(std::numeric_limits<std::uint16_t>::max())));
+      const auto availableShield = static_cast<std::uint16_t>(
+          std::numeric_limits<std::uint16_t>::max() - target.mShield);
+      const auto grantedShield = std::min(requestedShield, availableShield);
+      if (grantedShield == 0) {
+        return;
+      }
+
+      target.mShield =
+          static_cast<std::uint16_t>(target.mShield + grantedShield);
+      appliedMagnitude = static_cast<float>(grantedShield);
+    }
+
+    if (kind == StatusEffectKind::Stun) {
+      target.velocity = Vec2{};
+      cancelPendingSkillCasts(target.playerId);
+    }
+
+    const std::uint32_t effectId = mNextStatusEffectId++;
+    if (mNextStatusEffectId == 0) {
+      mNextStatusEffectId = 1;
+    }
+
+    mPendingStatusEffectEvents.push_back(StatusEffectEvent{
+        .mEffectId = effectId,
+        .mSourcePlayerId = source.playerId,
+        .mTargetPlayerId = target.playerId,
+        .mKind = kind,
+        .mPhase = StatusEffectPhase::Apply,
+        .mDurationTicks = durationTicks,
+        .mMagnitude = appliedMagnitude,
+        .mServerTick = tick_,
+    });
+
+    mPendingStatusEffects.push_back(PendingStatusEffect{
+        .mEffectId = effectId,
+        .mSourcePlayerId = source.playerId,
+        .mTargetPlayerId = target.playerId,
+        .mKind = kind,
+        .mExpireTick = tick_ + durationTicks,
+        .mMagnitude = appliedMagnitude,
+    });
+  };
+
+  auto executeSkill = [&](PlayerState& source, SkillSlot slot, float aimRadian) {
+    if (!source.alive ||
+        hasActiveStatusEffect(source.playerId, StatusEffectKind::Stun)) {
+      return;
+    }
+
+    pendingCombatEvents_.push_back(CombatEvent{
+        .type = CombatEventType::SkillCast,
+        .sourcePlayerId = source.playerId,
+        .targetPlayerId = 0,
+        .skillSlot = slot,
+        .damage = 0,
+        .critical = false,
+        .serverTick = tick_,
+        .position = source.position,
+        .mAimRadian = aimRadian,
+    });
 
     const auto sourceRules = combatRuleForProfile(source.profileId);
     const Vec2 aimDirection = directionFromRadian(aimRadian);
 
-    const bool isBrunoProfile = source.profileId == "bruno_bear";
+    const bool isBrunoProfile = source.profileId == "bruno_bear" ||
+                                source.profileId == "bruiser";
     const bool isCoralProfile = source.profileId == "coral_cat";
 
     if (isBrunoProfile) {
@@ -612,6 +1120,11 @@ void RoomSimulation::processCombat() {
         if (bestTarget != nullptr) {
           pushDamageEvents(source, *bestTarget, rule.damage, SkillSlot::Q,
                            rule.critical);
+          if (bestTarget->alive) {
+            applyStatusEffect(
+                source, *bestTarget, StatusEffectKind::Stun,
+                durationTicksFromMilliseconds(350, tickRate_), 1.0f);
+          }
         }
         return;
       }
@@ -635,6 +1148,10 @@ void RoomSimulation::processCombat() {
         source.hp = std::min<std::uint16_t>(
             kServerMaxHp,
             static_cast<std::uint16_t>(source.hp + healAmount));
+
+        applyStatusEffect(source, source, StatusEffectKind::Shield,
+                          durationTicksFromMilliseconds(4500, tickRate_),
+                          22.0f);
 
         for (auto& [targetId, target] : players_) {
           if (targetId == source.playerId || !target.alive ||
@@ -664,6 +1181,11 @@ void RoomSimulation::processCombat() {
           if (distSq(source.position, target.position) <= radiusSq) {
             pushDamageEvents(source, target, rule.damage, SkillSlot::R,
                              rule.critical);
+            if (target.alive) {
+              applyStatusEffect(
+                  source, target, StatusEffectKind::Stun,
+                  durationTicksFromMilliseconds(1200, tickRate_), 1.0f);
+            }
           }
         }
         return;
@@ -704,6 +1226,11 @@ void RoomSimulation::processCombat() {
               std::max<std::uint16_t>(1, static_cast<std::uint16_t>(rule.damage / 2));
           pushDamageEvents(source, *target, pokeDamage, SkillSlot::E,
                            rule.critical);
+          if (target->alive) {
+            applyStatusEffect(
+                source, *target, StatusEffectKind::Slow,
+                durationTicksFromMilliseconds(2800, tickRate_), 0.22f);
+          }
         }
         return;
       }
@@ -769,6 +1296,10 @@ void RoomSimulation::processCombat() {
 
   // 1) 틱 단위 상태 감소 (쿨다운/캐스트/재장전)
   for (auto& [_, player] : players_) {
+    if (hasActiveStatusEffect(player.playerId, StatusEffectKind::Stun)) {
+      cancelPendingSkillCasts(player.playerId);
+    }
+
     const auto rules = combatRuleForProfile(player.profileId);
 
     // 룰 핫리로드 반영: 탄약 상한/재장전 길이 보정.
@@ -809,22 +1340,26 @@ void RoomSimulation::processCombat() {
 
   // 2) 캐스트 타임이 끝난 스킬 적용
   if (!pendingSkillCasts_.empty()) {
-    std::vector<PendingSkillCast> stillPending;
-    stillPending.reserve(pendingSkillCasts_.size());
+    std::vector<PendingSkillCast> castsToProcess;
+    castsToProcess.swap(pendingSkillCasts_);
+    pendingSkillCasts_.reserve(castsToProcess.size());
 
-    for (const auto& cast : pendingSkillCasts_) {
-      if (cast.executeTick > tick_) {
-        stillPending.push_back(cast);
-        continue;
-      }
-
+    for (const auto& cast : castsToProcess) {
       auto sourceFound = players_.find(cast.sourcePlayerId);
       if (sourceFound == players_.end()) {
         continue;
       }
 
       auto& source = sourceFound->second;
-      if (!source.alive) {
+      if (!source.alive ||
+          hasActiveStatusEffect(source.playerId, StatusEffectKind::Stun)) {
+        source.castingSkill = SkillSlot::None;
+        source.castRemainingTicks = 0;
+        continue;
+      }
+
+      if (cast.executeTick > tick_) {
+        pendingSkillCasts_.push_back(cast);
         continue;
       }
 
@@ -832,8 +1367,6 @@ void RoomSimulation::processCombat() {
       source.castRemainingTicks = 0;
       executeSkill(source, cast.slot, cast.aimRadian);
     }
-
-    pendingSkillCasts_.swap(stillPending);
   }
 
   // 3) 현재 입력 기반 사격/스킬 시전
@@ -856,20 +1389,9 @@ void RoomSimulation::processCombat() {
     const auto rules = combatRuleForProfile(player.profileId);
 
     // 캐스팅 중에는 공격/스킬 입력 잠금.
-    bool actionLocked = player.castRemainingTicks > 0;
-
-    const auto emitSkillCast = [&](SkillSlot slot) {
-      pendingCombatEvents_.push_back(CombatEvent{
-          .type = CombatEventType::SkillCast,
-          .sourcePlayerId = playerId,
-          .targetPlayerId = 0,
-          .skillSlot = slot,
-          .damage = 0,
-          .critical = false,
-          .serverTick = tick_,
-          .position = player.position,
-      });
-    };
+    const bool stunned =
+        hasActiveStatusEffect(playerId, StatusEffectKind::Stun);
+    bool actionLocked = player.castRemainingTicks > 0 || stunned;
 
     if (!actionLocked && input.firing && !player.reloading &&
         player.ammo >= rules.ammoPerShot) {
@@ -896,34 +1418,58 @@ void RoomSimulation::processCombat() {
           });
 
           const std::uint32_t projectileId = nextProjectileId_++;
-          pendingProjectileEvents_.push_back(ProjectileEvent{
-              .projectileId = projectileId,
-              .ownerPlayerId = playerId,
-              .targetPlayerId = 0,
-              .phase = ProjectilePhase::Spawn,
-              .serverTick = tick_,
-              .position = player.position,
-              .velocity =
-                  Vec2{.x = projectileDirection.x * rules.projectileSpeed,
-                       .y = projectileDirection.y * rules.projectileSpeed},
-          });
+          PendingProjectile pendingProjectile{
+              .mProjectileId = projectileId,
+              .mOwnerPlayerId = playerId,
+              .mTargetPlayerId = 0,
+              .mTerminalPhase = ProjectilePhase::Despawn,
+              .mTerminalTick =
+                  tick_ + projectileTravelTicks(rules.shotRangeMeters,
+                                                rules.projectileSpeed, tickRate_),
+              .mOriginPosition = player.position,
+              .mTerminalPosition = Vec2{
+                  .x = std::clamp(
+                      player.position.x +
+                          projectileDirection.x * rules.shotRangeMeters,
+                      worldMinX_, worldMaxX_),
+                  .y = std::clamp(
+                      player.position.y +
+                          projectileDirection.y * rules.shotRangeMeters,
+                      worldMinY_, worldMaxY_),
+              },
+              .mVelocity = Vec2{
+                  .x = projectileDirection.x * rules.projectileSpeed,
+                  .y = projectileDirection.y * rules.projectileSpeed,
+              },
+              .mOwnerTeamId = player.teamId,
+              .mDamage = rules.shotDamage,
+              .mCritical = false,
+          };
 
           if (auto* target =
                   findShotTarget(player, rules.shotRangeMeters, input.aimRadian);
               target != nullptr) {
-            pushDamageEvents(player, *target, rules.shotDamage, SkillSlot::None,
-                             false);
-
-            pendingProjectileEvents_.push_back(ProjectileEvent{
-                .projectileId = projectileId,
-                .ownerPlayerId = playerId,
-                .targetPlayerId = target->playerId,
-                .phase = ProjectilePhase::Hit,
-                .serverTick = tick_,
-                .position = target->position,
-                .velocity = Vec2{},
-            });
+            const float hitDistance = std::sqrt(distSq(player.position,
+                                                       target->position));
+            pendingProjectile.mTargetPlayerId = target->playerId;
+            pendingProjectile.mTerminalPhase = ProjectilePhase::Hit;
+            pendingProjectile.mTerminalTick =
+                tick_ + projectileTravelTicks(hitDistance,
+                                              rules.projectileSpeed, tickRate_);
+            pendingProjectile.mTerminalPosition = target->position;
           }
+
+          pendingProjectileEvents_.push_back(ProjectileEvent{
+              .projectileId = projectileId,
+              .ownerPlayerId = playerId,
+              .targetPlayerId = pendingProjectile.mTargetPlayerId,
+              .phase = ProjectilePhase::Spawn,
+              .serverTick = tick_,
+              .position = player.position,
+              .velocity = pendingProjectile.mVelocity,
+          });
+
+          mPendingProjectiles.push_back(pendingProjectile);
         }
       }
     }
@@ -941,7 +1487,6 @@ void RoomSimulation::processCombat() {
       }
 
       cooldownTicks = rule.cooldownTicks;
-      emitSkillCast(slot);
       actionLocked = true;
 
       if (rule.castTimeTicks > 0) {
@@ -983,6 +1528,24 @@ WorldSnapshot RoomSimulation::collectSnapshot() const {
 
   for (const auto& [_, player] : players_) {
     snapshot.players.push_back(player);
+  }
+
+  snapshot.mActiveStatusEffects.reserve(mPendingStatusEffects.size());
+  for (const auto& effect : mPendingStatusEffects) {
+    if (effect.mExpireTick <= tick_) {
+      continue;
+    }
+
+    snapshot.mActiveStatusEffects.push_back(StatusEffectEvent{
+        .mEffectId = effect.mEffectId,
+        .mSourcePlayerId = effect.mSourcePlayerId,
+        .mTargetPlayerId = effect.mTargetPlayerId,
+        .mKind = effect.mKind,
+        .mPhase = StatusEffectPhase::Apply,
+        .mDurationTicks = effect.mExpireTick - tick_,
+        .mMagnitude = effect.mMagnitude,
+        .mServerTick = tick_,
+    });
   }
 
   return snapshot;

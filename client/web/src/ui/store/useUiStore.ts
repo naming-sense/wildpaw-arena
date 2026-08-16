@@ -30,10 +30,17 @@ export interface FlowErrorState {
 interface HudSlice {
   hp: number;
   maxHp: number;
+  shield: number;
   heroName: string;
   ammo: number;
   maxAmmo: number;
   reloading: boolean;
+  reloadRemainingSeconds: number;
+  skillQCooldownSeconds: number;
+  skillECooldownSeconds: number;
+  skillRCooldownSeconds: number;
+  castingSkill: 0 | 1 | 2 | 3;
+  castRemainingSeconds: number;
   kills: number;
   wave: number;
   fps: number;
@@ -83,10 +90,17 @@ const MAX_FLOW_LOGS = 60;
 export const useUiStore = create<UiState>((set) => ({
   hp: 100,
   maxHp: 100,
+  shield: 0,
   heroName: "코랄 캣",
   ammo: 0,
   maxAmmo: 0,
   reloading: false,
+  reloadRemainingSeconds: 0,
+  skillQCooldownSeconds: 0,
+  skillECooldownSeconds: 0,
+  skillRCooldownSeconds: 0,
+  castingSkill: 0,
+  castRemainingSeconds: 0,
   kills: 0,
   wave: 1,
   fps: 0,
